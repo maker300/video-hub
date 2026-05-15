@@ -12,6 +12,7 @@ import type {
   PromoVideoProps, TimelineClip, MediaFile, SceneType, ObjectShape,
   VideoObject, EntranceAnim, MotionAnim, ExitAnim,
 } from '@/remotion/compositions/PromoVideo'
+import { dbSaveMedia, dbLoadAllMedia, dbDeleteMedia } from '@/lib/mediaDB'
 
 // ── Dynamic imports ───────────────────────────────────────────────────────────
 
@@ -597,6 +598,29 @@ export default function VideoStudioPage() {
 
   // ── Player sync ─────────────────────────────────────────────────────────────
 
+  // ── IndexedDB: load persisted media on mount ──────────────────────────────────
+
+  useEffect(() => {
+    dbLoadAllMedia().then(entries => {
+      const loaded: MediaFile[] = entries.map(e => ({
+        id:   e.id,
+        name: e.name,
+        type: e.type,
+        url:  URL.createObjectURL(e.blob),
+      }))
+      if (loaded.length > 0) setMediaFiles(loaded)
+    }).catch(() => {})
+  }, [])
+
+  async function deleteMediaFile(id: string) {
+    setMediaFiles(prev => {
+      const target = prev.find(m => m.id === id)
+      if (target) URL.revokeObjectURL(target.url)
+      return prev.filter(m => m.id !== id)
+    })
+    await dbDeleteMedia(id).catch(() => {})
+  }
+
   useEffect(() => {
     playerRef.current?.seekTo(currentFrame)
   }, [currentFrame])
@@ -644,14 +668,11 @@ export default function VideoStudioPage() {
     const files = e.target.files
     if (!files) return
     Array.from(files).forEach(file => {
+      const id  = String(Date.now() + Math.random())
       const url = URL.createObjectURL(file)
-      const media: MediaFile = {
-        id: String(Date.now() + Math.random()),
-        url,
-        type,
-        name: file.name,
-      }
+      const media: MediaFile = { id, url, type, name: file.name }
       setMediaFiles(prev => [...prev, media])
+      dbSaveMedia({ id, name: file.name, type, blob: file }).catch(() => {})
     })
     e.target.value = ''
   }
@@ -967,8 +988,10 @@ export default function VideoStudioPage() {
                       if (!files) return
                       Array.from(files).forEach(file => {
                         const t = file.type.startsWith('video') ? 'video' : 'image'
+                        const id = String(Date.now() + Math.random())
                         const url = URL.createObjectURL(file)
-                        setMediaFiles(prev => [...prev, { id: String(Date.now() + Math.random()), url, type: t, name: file.name }])
+                        setMediaFiles(prev => [...prev, { id, url, type: t, name: file.name }])
+                        dbSaveMedia({ id, name: file.name, type: t, blob: file }).catch(() => {})
                       })
                       e.target.value = ''
                     }}
@@ -993,9 +1016,16 @@ export default function VideoStudioPage() {
                         <div className="p-1">
                           <p className="text-[9px] text-gray-500 truncate">{m.name}</p>
                         </div>
-                        <span className="absolute top-1 right-1 bg-black/70 text-[9px] text-white px-1 rounded">
+                        <span className="absolute top-1 left-1 bg-black/70 text-[9px] text-white px-1 rounded">
                           {m.type === 'video' ? 'VID' : 'IMG'}
                         </span>
+                        <button
+                          onClick={e => { e.stopPropagation(); deleteMediaFile(m.id) }}
+                          className="absolute top-1 right-1 bg-black/70 hover:bg-red-600/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Delete"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
                       </div>
                     )
                   })}
@@ -1025,10 +1055,17 @@ export default function VideoStudioPage() {
                         key={m.id}
                         draggable
                         onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
-                        className="bg-[#070d1a] border border-white/8 hover:border-amber-500/30 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing flex items-center gap-2 transition-all"
+                        className="bg-[#070d1a] border border-white/8 hover:border-amber-500/30 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing flex items-center gap-2 transition-all group"
                       >
                         <Music className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                         <p className="text-[11px] text-gray-400 truncate flex-1">{m.name}</p>
+                        <button
+                          onClick={e => { e.stopPropagation(); deleteMediaFile(m.id) }}
+                          className="text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                          title="Delete"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
                       </div>
                     )
                   })}
