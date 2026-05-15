@@ -28,6 +28,21 @@ const PromoVideoComp = dynamic(
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const FPS = 30
+
+const PLACEHOLDER_CLIPS: TimelineClip[] = [{
+  id: '__placeholder__',
+  track: 'main',
+  startFrame: 0,
+  durationFrames: 300,
+  clipType: 'scene',
+  scene: {
+    id: '__placeholder__',
+    type: 'hook',
+    headline: 'Video Hub',
+    subtext: 'Add scenes, media, or objects to the timeline',
+    duration: 10,
+  },
+}]
 const LABEL_WIDTH = 56
 const TRACK_HEIGHTS: Record<string, number> = { main: 48, overlay: 38, audio: 38 }
 const SCENE_TYPES: SceneType[] = [
@@ -973,33 +988,34 @@ export default function VideoStudioPage() {
         </div>
 
         {/* Preview area (flex-1) */}
-        <div className="flex-1 min-w-0 bg-[#0a1020] flex flex-col items-center justify-center p-4 overflow-hidden">
-          {clips.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 text-center">
-              <Film className="w-10 h-10 text-gray-700" />
-              <p className="text-gray-600 text-sm max-w-xs">
-                Drag scenes, media, or objects to the timeline below to get started
-              </p>
-            </div>
-          ) : (
-            <div
-              className="rounded-xl overflow-hidden bg-black border border-white/5"
-              style={{ maxWidth: '100%', maxHeight: '100%' }}
-            >
-              <RemotionPlayer
-                ref={playerRef}
-                component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
-                inputProps={{ clips, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
-                durationInFrames={Math.max(duration, 1)}
-                compositionWidth={dims.width}
-                compositionHeight={dims.height}
-                fps={FPS}
-                style={{ width: '100%', maxHeight: 'calc(100vh - 400px)' }}
-                controls={false}
-                loop={false}
-              />
+        <div className="flex-1 min-w-0 bg-[#0a1020] flex flex-col items-center justify-center p-3 overflow-hidden relative">
+          {clips.length === 0 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none">
+              <div className="bg-black/60 rounded-xl px-4 py-3 text-center backdrop-blur-sm border border-white/10">
+                <Film className="w-6 h-6 text-gray-500 mx-auto mb-1.5" />
+                <p className="text-gray-400 text-xs">Add clips to the timeline to get started</p>
+              </div>
             </div>
           )}
+          <div
+            className="rounded-xl overflow-hidden bg-black border border-white/8 w-full"
+            style={{ maxHeight: 'calc(100vh - 330px)', aspectRatio: aspectRatio === '16:9' ? '16/9' : '9/16', maxWidth: '100%' }}
+          >
+            <RemotionPlayer
+              ref={playerRef}
+              component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
+              inputProps={{ clips: clips.length > 0 ? clips : PLACEHOLDER_CLIPS, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
+              durationInFrames={Math.max(duration, 120)}
+              compositionWidth={dims.width}
+              compositionHeight={dims.height}
+              fps={FPS}
+              style={{ width: '100%', height: '100%' }}
+              controls
+              loop
+              clickToPlay
+              initialFrame={12}
+            />
+          </div>
         </div>
 
         {/* Properties panel (only when clip selected) */}
