@@ -45,7 +45,7 @@ const PLACEHOLDER_CLIPS: TimelineClip[] = [{
   },
 }]
 const LABEL_WIDTH = 56
-const TRACK_HEIGHTS: Record<string, number> = { main: 48, overlay: 38, audio: 38 }
+const TRACK_HEIGHTS: Record<string, number> = { main: 48, overlay: 42, overlay2: 42, audio: 38 }
 const SCENE_TYPES: SceneType[] = [
   'hook','problem','solution','stat','feature','cta',
   'typewriter','reveal','quote','announcement',
@@ -87,6 +87,8 @@ const EXITS: ExitAnim[] = ['none','fade','slideLeft','slideRight','scaleOut']
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type SideTab = 'media' | 'scenes' | 'objects' | 'audio'
+
+type TrackId = 'main' | 'overlay' | 'overlay2' | 'audio'
 
 type DragPayload =
   | { kind: 'scene'; sceneType: SceneType }
@@ -830,7 +832,7 @@ export default function VideoStudioPage() {
 
   const handleDrop = useCallback((
     e: React.DragEvent<HTMLDivElement>,
-    track: 'main' | 'overlay' | 'audio'
+    track: TrackId
   ) => {
     e.preventDefault()
     const raw = e.dataTransfer.getData('application/json')
@@ -846,21 +848,21 @@ export default function VideoStudioPage() {
     let newClip: TimelineClip | null = null
 
     if (payload.kind === 'scene') {
-      newClip = newSceneClip(payload.sceneType, startFrame)
-      newClip = { ...newClip, track: 'main' }
+      // Respect drop target — allows scenes on overlay tracks for simultaneous play
+      const dest = track === 'audio' ? 'main' : track
+      newClip = { ...newSceneClip(payload.sceneType, startFrame), track: dest }
     } else if (payload.kind === 'shape') {
-      newClip = newShapeClip(payload.shape, startFrame)
-      newClip = { ...newClip, track: 'overlay' }
+      // Shapes/text always land on the objects overlay track
+      newClip = { ...newShapeClip(payload.shape, startFrame), track: 'overlay' }
     } else if (payload.kind === 'media') {
       const media = mediaFiles.find(m => m.id === payload.mediaId)
       if (!media) return
-      newClip = newMediaClip(media, startFrame)
-      newClip = { ...newClip, track }
+      const dest = track === 'audio' ? 'main' : track
+      newClip = { ...newMediaClip(media, startFrame), track: dest }
     } else if (payload.kind === 'audio') {
       const media = mediaFiles.find(m => m.id === payload.mediaId)
       if (!media) return
-      newClip = newAudioClip(media, startFrame)
-      newClip = { ...newClip, track: 'audio' }
+      newClip = { ...newAudioClip(media, startFrame), track: 'audio' }
     }
 
     if (newClip) setClips(prev => [...prev, newClip!])
@@ -965,9 +967,9 @@ export default function VideoStudioPage() {
   // ── Add to end shortcuts ──────────────────────────────────────────────────────
 
   function addSceneToEnd(sceneType: SceneType) {
-    const endFrame = totalDurationFrames(clips.filter(c => c.track === 'main'))
-    const realEnd = clips.filter(c => c.track === 'main').length === 0 ? 0 : endFrame
-    setClips(prev => [...prev, newSceneClip(sceneType, realEnd)])
+    const mainClips = clips.filter(c => c.track === 'main')
+    const endFrame = mainClips.length === 0 ? 0 : totalDurationFrames(mainClips)
+    setClips(prev => [...prev, newSceneClip(sceneType, endFrame)])
   }
 
   function addShapeAtCurrent(shape: ObjectShape) {
@@ -1371,20 +1373,26 @@ export default function VideoStudioPage() {
             </div>
 
             {/* Track rows */}
-            {([ ['main', 'MAIN'], ['overlay', 'OVERLAY'], ['audio', 'AUDIO'] ] as ['main'|'overlay'|'audio', string][]).map(([trackId, trackLabel]) => (
+            {([
+              ['main',     'MAIN',  '#059669'],
+              ['overlay',  'OVL 1', '#7c3aed'],
+              ['overlay2', 'OVL 2', '#2563eb'],
+              ['audio',    'AUDIO', '#b45309'],
+            ] as [TrackId, string, string][]).map(([trackId, trackLabel, accent]) => (
               <div
                 key={trackId}
                 className="relative flex items-stretch border-b border-white/5"
                 style={{ height: TRACK_HEIGHTS[trackId] }}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => handleDrop(e, trackId)}
+                onDragOver={e => { e.preventDefault(); e.currentTarget.style.background = `${accent}18` }}
+                onDragLeave={e => { e.currentTarget.style.background = '' }}
+                onDrop={e => { e.currentTarget.style.background = ''; handleDrop(e, trackId) }}
               >
                 {/* Label */}
                 <div
-                  className="shrink-0 flex items-center justify-center bg-[#0a1020] border-r border-white/8 text-[9px] font-bold tracking-widest"
-                  style={{ width: LABEL_WIDTH, color: '#4b5563' }}
+                  className="shrink-0 flex flex-col items-center justify-center bg-[#0a1020] border-r border-white/8"
+                  style={{ width: LABEL_WIDTH, borderLeft: `2px solid ${accent}` }}
                 >
-                  {trackLabel}
+                  <span className="text-[8px] font-bold tracking-widest" style={{ color: accent }}>{trackLabel}</span>
                 </div>
 
                 {/* Drop zone */}

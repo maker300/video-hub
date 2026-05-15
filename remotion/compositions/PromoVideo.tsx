@@ -91,7 +91,7 @@ export type ClipType = 'scene' | 'image' | 'video' | 'shape' | 'audio'
 
 export interface TimelineClip {
   id:             string
-  track:          'main' | 'overlay' | 'audio'
+  track:          'main' | 'overlay' | 'overlay2' | 'audio'
   startFrame:     number
   durationFrames: number
   clipType:       ClipType
@@ -943,35 +943,43 @@ function VideoClipRenderer({ media, totalFrames: tf, mediaX = 50, mediaY = 50, m
 
 // ── Main composition ─────────────────────────────────────────────────────────
 
+function renderClip(clip: TimelineClip): React.ReactNode {
+  if (clip.clipType === 'scene' && clip.scene) {
+    return (
+      <AbsoluteFill style={{ opacity: clip.scene.opacity ?? 1 }}>
+        <SceneContent scene={clip.scene} totalFrames={clip.durationFrames} />
+        {(clip.scene.objects ?? []).map(obj => (
+          <ObjectRenderer key={obj.id} obj={obj} sceneDuration={clip.durationFrames} />
+        ))}
+      </AbsoluteFill>
+    )
+  }
+  if (clip.clipType === 'image' && clip.media) {
+    return <ImageClipRenderer media={clip.media} totalFrames={clip.durationFrames} mediaX={clip.mediaX} mediaY={clip.mediaY} mediaW={clip.mediaW} mediaH={clip.mediaH} />
+  }
+  if (clip.clipType === 'video' && clip.media) {
+    return <VideoClipRenderer media={clip.media} totalFrames={clip.durationFrames} mediaX={clip.mediaX} mediaY={clip.mediaY} mediaW={clip.mediaW} mediaH={clip.mediaH} />
+  }
+  if (clip.clipType === 'shape' && clip.shape) {
+    return <ObjectRenderer obj={clip.shape} sceneDuration={clip.durationFrames} />
+  }
+  return null
+}
+
 export const PromoVideo: React.FC<PromoVideoProps> = ({ clips }) => {
-  const mainClips    = [...clips.filter(c => c.track === 'main')].sort((a, b) => a.startFrame - b.startFrame)
-  const overlayClips = clips.filter(c => c.track === 'overlay')
+  const sort = (track: string) =>
+    [...clips.filter(c => c.track === track)].sort((a, b) => a.startFrame - b.startFrame)
+
+  // Render order: main → overlay2 (behind) → overlay (in front)
+  const ordered = [...sort('main'), ...sort('overlay2'), ...sort('overlay')]
 
   return (
     <AbsoluteFill>
-      {mainClips.map(clip => (
+      {ordered.map(clip => (
         <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
-          <>
-            {clip.clipType === 'scene' && clip.scene ? (
-              <AbsoluteFill style={{ opacity: clip.scene.opacity ?? 1 }}>
-                <SceneContent scene={clip.scene} totalFrames={clip.durationFrames} />
-                {(clip.scene.objects ?? []).map(obj => (
-                  <ObjectRenderer key={obj.id} obj={obj} sceneDuration={clip.durationFrames} />
-                ))}
-              </AbsoluteFill>
-            ) : clip.clipType === 'image' && clip.media ? (
-              <ImageClipRenderer media={clip.media} totalFrames={clip.durationFrames} mediaX={clip.mediaX} mediaY={clip.mediaY} mediaW={clip.mediaW} mediaH={clip.mediaH} />
-            ) : clip.clipType === 'video' && clip.media ? (
-              <VideoClipRenderer media={clip.media} totalFrames={clip.durationFrames} mediaX={clip.mediaX} mediaY={clip.mediaY} mediaW={clip.mediaW} mediaH={clip.mediaH} />
-            ) : null}
-          </>
+          {renderClip(clip)}
         </Sequence>
       ))}
-      {overlayClips.map(clip => clip.shape ? (
-        <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
-          <ObjectRenderer obj={clip.shape} sceneDuration={clip.durationFrames} />
-        </Sequence>
-      ) : null)}
     </AbsoluteFill>
   )
 }
