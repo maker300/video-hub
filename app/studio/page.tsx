@@ -742,11 +742,19 @@ export default function VideoStudioPage() {
   // Overlay / selection
   const [activeObjId, setActiveObjId] = useState<string | null>(null)
 
+  // Export
+  const [showExportModal, setShowExportModal] = useState(false)
+  const [exportState, setExportState]         = useState<'idle' | 'recording'>('idle')
+  const [exportQuality, setExportQuality]     = useState<'1080p' | '4k'>('1080p')
+  const [exportProgress, setExportProgress]   = useState(0)
+
   // Refs
   const playerRef          = useRef<PlayerRef | null>(null)
   const timelineRef        = useRef<HTMLDivElement>(null)
   const previewContainerRef = useRef<HTMLDivElement>(null)
   const playIntervalRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const exportPlayerRef    = useRef<PlayerRef | null>(null)
+  const exportRecorderRef  = useRef<MediaRecorder | null>(null)
 
   const dims     = aspectDims(aspectRatio)
   const duration = totalDurationFrames(clips)
@@ -809,6 +817,90 @@ export default function VideoStudioPage() {
   useEffect(() => {
     return () => { if (playIntervalRef.current) clearInterval(playIntervalRef.current) }
   }, [])
+
+  // ── Export ───────────────────────────────────────────────────────────────────
+
+  async function startExport() {
+    setShowExportModal(false)
+    setExportState('recording')
+    setExportProgress(0)
+    // Wait for cinema-mode player to mount
+    await new Promise(r => setTimeout(r, 300))
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30, displaySurface: 'browser' },
+        audio: true,
+        // Chrome 107+ — auto-selects the current tab
+        selfBrowserSurface: 'include',
+        preferCurrentTab: true,
+        systemAudio: 'include',
+      } as MediaStreamConstraints)
+
+      const mimeType = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+        .find(t => MediaRecorder.isTypeSupported(t)) ?? 'video/webm'
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: exportQuality === '4k' ? 25_000_000 : 8_000_000,
+      })
+      exportRecorderRef.current = recorder
+
+      const chunks: Blob[] = []
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(chunks, { type: mimeType })
+        const url  = URL.createObjectURL(blob)
+        const a    = document.createElement('a')
+        a.href     = url
+        a.download = `${videoTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`
+        document.body.appendChild(a)
+        a.click()
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 1000)
+        setExportState('idle')
+        setExportProgress(0)
+      }
+
+      // If user stops screen sharing manually
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        if (recorder.state !== 'inactive') recorder.stop()
+      })
+
+      recorder.start(100)
+
+      // Seek to beginning and play
+      exportPlayerRef.current?.seekTo(0)
+      exportPlayerRef.current?.play()
+
+      // Track progress and auto-stop
+      const totalMs   = (Math.max(duration, 120) / FPS) * 1000
+      const startTime = Date.now()
+      const tick = setInterval(() => {
+        const pct = Math.min(99, ((Date.now() - startTime) / totalMs) * 100)
+        setExportProgress(pct)
+      }, 200)
+
+      setTimeout(() => {
+        clearInterval(tick)
+        setExportProgress(100)
+        if (recorder.state !== 'inactive') recorder.stop()
+      }, totalMs + 800)
+
+    } catch (err: unknown) {
+      const e = err as Error
+      if (e?.name !== 'NotAllowedError') console.error('Export error:', err)
+      setExportState('idle')
+      setExportProgress(0)
+    }
+  }
+
+  function cancelExport() {
+    if (exportRecorderRef.current?.state !== 'inactive') exportRecorderRef.current?.stop()
+    setExportState('idle')
+    setExportProgress(0)
+  }
 
   // ── Clip mutations ────────────────────────────────────────────────────────────
 
@@ -1269,6 +1361,7 @@ export default function VideoStudioPage() {
                 style={{ width: '100%', height: '100%' }}
                 controls
                 initialFrame={12}
+                numberOfSharedAudioTags={5}
               />
             </div>
             {selectedClip && (
@@ -1327,11 +1420,7 @@ export default function VideoStudioPage() {
           </button>
 
           <button
-            onClick={() => {
-              const a = document.createElement('a')
-              a.href = '#'
-              a.textContent = 'Export not available in preview mode'
-            }}
+            onClick={() => setShowExportModal(true)}
             className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-all"
           >
             <Download className="w-3.5 h-3.5" />Export
@@ -1466,6 +1555,119 @@ export default function VideoStudioPage() {
           </div>
         </div>
       </div>
+
+      {/* ── EXPORT MODAL ───────────────────────────────────────────────────────── */}
+      {showExportModal && exportState === 'idle' && (
+        <div className="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-6" onClick={() => setShowExportModal(false)}>
+          <div
+            className="bg-[#0d1526] border border-white/10 rounded-2xl w-full max-w-sm p-6 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Download className="w-4 h-4 text-emerald-400" />
+                Export Video
+              </h2>
+              <button onClick={() => setShowExportModal(false)} className="text-gray-500 hover:text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Quality */}
+              <div>
+                <p className="text-xs text-gray-400 mb-2">Export Quality</p>
+                <div className="flex gap-2">
+                  {(['1080p', '4k'] as const).map(q => (
+                    <button
+                      key={q}
+                      onClick={() => setExportQuality(q)}
+                      className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-all ${
+                        exportQuality === q
+                          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                          : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'
+                      }`}
+                    >
+                      {q === '4k' ? '4K Ultra HD' : '1080p HD'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Info */}
+              <div className="bg-white/5 rounded-xl p-4 space-y-2 text-xs">
+                <p className="text-gray-300">
+                  Duration: <span className="text-white font-medium">{(Math.max(duration, 120) / FPS).toFixed(1)}s</span>
+                  &nbsp;·&nbsp;
+                  Format: <span className="text-white font-medium">WebM / MP4</span>
+                </p>
+                <p className="text-amber-400/90 leading-relaxed">
+                  A browser share dialog will appear. Select <strong className="text-amber-300">&quot;This Tab&quot;</strong> and enable <strong className="text-amber-300">&quot;Share audio&quot;</strong> for sound to be included.
+                </p>
+              </div>
+
+              <button
+                onClick={startExport}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Start Export
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── CINEMA MODE (recording overlay) ────────────────────────────────────── */}
+      {exportState === 'recording' && (
+        <div className="fixed inset-0 z-[9999] bg-black flex items-center justify-center">
+          {/* Full-resolution player — this is what gets recorded */}
+          <div
+            style={{
+              width: '100vw',
+              height: aspectRatio === '16:9' ? '56.25vw' : '177.78vw',
+              maxHeight: '100vh',
+              maxWidth: aspectRatio === '16:9' ? '177.78vh' : '56.25vh',
+            }}
+          >
+            <RemotionPlayer
+              ref={exportPlayerRef}
+              component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
+              inputProps={{ clips: clips.length > 0 ? clips : PLACEHOLDER_CLIPS, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
+              durationInFrames={Math.max(duration, 120)}
+              compositionWidth={dims.width}
+              compositionHeight={dims.height}
+              fps={FPS}
+              style={{ width: '100%', height: '100%' }}
+              numberOfSharedAudioTags={5}
+            />
+          </div>
+
+          {/* Recording badge */}
+          <div className="fixed top-5 right-5 flex items-center gap-2 bg-red-600/90 backdrop-blur-sm rounded-full px-4 py-2 z-[10000] shadow-lg">
+            <span className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
+            <span className="text-white text-xs font-bold tracking-wider">
+              REC {Math.round(exportProgress)}%
+            </span>
+          </div>
+
+          {/* Progress bar */}
+          <div className="fixed bottom-0 left-0 right-0 h-1 bg-white/10 z-[10000]">
+            <div
+              className="h-full bg-emerald-500 transition-all duration-200"
+              style={{ width: `${exportProgress}%` }}
+            />
+          </div>
+
+          {/* Cancel */}
+          <button
+            onClick={cancelExport}
+            className="fixed bottom-5 right-5 bg-black/60 hover:bg-black/80 backdrop-blur-sm border border-white/20 text-white px-4 py-2 rounded-xl text-xs font-semibold z-[10000] transition-all"
+          >
+            Cancel Export
+          </button>
+        </div>
+      )}
 
       {/* ── LIBRARY MODAL ──────────────────────────────────────────────────────── */}
       {showLibrary && (
