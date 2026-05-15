@@ -1011,8 +1011,6 @@ export default function VideoStudioPage() {
               fps={FPS}
               style={{ width: '100%', height: '100%' }}
               controls
-              loop
-              clickToPlay
               initialFrame={12}
             />
           </div>
