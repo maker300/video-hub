@@ -753,8 +753,8 @@ export default function VideoStudioPage() {
   const timelineRef        = useRef<HTMLDivElement>(null)
   const previewContainerRef = useRef<HTMLDivElement>(null)
   const playIntervalRef    = useRef<ReturnType<typeof setInterval> | null>(null)
-  const exportPlayerRef    = useRef<PlayerRef | null>(null)
   const exportRecorderRef  = useRef<MediaRecorder | null>(null)
+  const exportCancelledRef = useRef(false)
 
   const dims     = aspectDims(aspectRatio)
   const duration = totalDurationFrames(clips)
@@ -821,26 +821,67 @@ export default function VideoStudioPage() {
   // ── Export ───────────────────────────────────────────────────────────────────
 
   async function startExport() {
+    if (!previewContainerRef.current || !playerRef.current) return
     setShowExportModal(false)
     setExportState('recording')
     setExportProgress(0)
-    // Wait for cinema-mode player to mount
-    await new Promise(r => setTimeout(r, 300))
+    exportCancelledRef.current = false
 
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+      // Capture the browser tab
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 30, displaySurface: 'browser' },
         audio: true,
-        // Chrome 107+ — auto-selects the current tab
         selfBrowserSurface: 'include',
         preferCurrentTab: true,
-        systemAudio: 'include',
       } as MediaStreamConstraints)
 
-      const mimeType = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+      // Off-screen canvas at export resolution — crops the mini player from the tab capture
+      const exportW = exportQuality === '4k' ? 3840 : 1920
+      const exportH = exportQuality === '4k'
+        ? (aspectRatio === '16:9' ? 2160 : 3840)
+        : (aspectRatio === '16:9' ? 1080 : 1920)
+
+      const canvas = document.createElement('canvas')
+      canvas.width  = exportW
+      canvas.height = exportH
+      const ctx = canvas.getContext('2d')!
+
+      // Feed the display stream into a video element so we can drawImage from it
+      const captureVid = document.createElement('video')
+      captureVid.autoplay = true
+      captureVid.muted    = true
+      captureVid.playsInline = true
+      captureVid.srcObject = displayStream
+      await new Promise<void>(r => {
+        captureVid.onloadedmetadata = () => { captureVid.play().then(() => r()) }
+      })
+
+      // Derive the scale from the actual capture resolution vs viewport
+      let rafId: number
+      const drawFrame = () => {
+        if (!previewContainerRef.current) return
+        const rect  = previewContainerRef.current.getBoundingClientRect()
+        const scaleX = captureVid.videoWidth  / window.innerWidth
+        const scaleY = captureVid.videoHeight / window.innerHeight
+        ctx.drawImage(
+          captureVid,
+          rect.left   * scaleX, rect.top    * scaleY,
+          rect.width  * scaleX, rect.height * scaleY,
+          0, 0, exportW, exportH
+        )
+        rafId = requestAnimationFrame(drawFrame)
+      }
+      rafId = requestAnimationFrame(drawFrame)
+
+      // Record the canvas + audio from the tab capture
+      const canvasStream = canvas.captureStream(30)
+      displayStream.getAudioTracks().forEach(t => canvasStream.addTrack(t))
+
+      const mimeType = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
         .find(t => MediaRecorder.isTypeSupported(t)) ?? 'video/webm'
 
-      const recorder = new MediaRecorder(stream, {
+      const recorder = new MediaRecorder(canvasStream, {
         mimeType,
         videoBitsPerSecond: exportQuality === '4k' ? 25_000_000 : 8_000_000,
       })
@@ -850,36 +891,43 @@ export default function VideoStudioPage() {
       recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
 
       recorder.onstop = () => {
-        stream.getTracks().forEach(t => t.stop())
+        cancelAnimationFrame(rafId)
+        displayStream.getTracks().forEach(t => t.stop())
+        captureVid.srcObject = null
+
+        setExportState('idle')
+        setExportProgress(0)
+
+        if (exportCancelledRef.current) return   // user cancelled — skip download
+
         const blob = new Blob(chunks, { type: mimeType })
         const url  = URL.createObjectURL(blob)
         const a    = document.createElement('a')
         a.href     = url
-        a.download = `${videoTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`
+        a.download = `${videoTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`
         document.body.appendChild(a)
         a.click()
         setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 1000)
-        setExportState('idle')
-        setExportProgress(0)
       }
 
-      // If user stops screen sharing manually
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+      // If user stops screen-sharing manually, cancel cleanly
+      displayStream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        exportCancelledRef.current = true
         if (recorder.state !== 'inactive') recorder.stop()
       })
 
       recorder.start(100)
 
-      // Seek to beginning and play
-      exportPlayerRef.current?.seekTo(0)
-      exportPlayerRef.current?.play()
+      // Play the mini player from frame 0
+      playerRef.current.seekTo(0)
+      setCurrentFrame(0)
+      playerRef.current.play()
 
-      // Track progress and auto-stop
+      // Progress tracking + auto-stop when video duration elapses
       const totalMs   = (Math.max(duration, 120) / FPS) * 1000
       const startTime = Date.now()
       const tick = setInterval(() => {
-        const pct = Math.min(99, ((Date.now() - startTime) / totalMs) * 100)
-        setExportProgress(pct)
+        setExportProgress(Math.min(99, ((Date.now() - startTime) / totalMs) * 100))
       }, 200)
 
       setTimeout(() => {
@@ -897,6 +945,7 @@ export default function VideoStudioPage() {
   }
 
   function cancelExport() {
+    exportCancelledRef.current = true
     if (exportRecorderRef.current?.state !== 'inactive') exportRecorderRef.current?.stop()
     setExportState('idle')
     setExportProgress(0)
@@ -1364,7 +1413,7 @@ export default function VideoStudioPage() {
                 numberOfSharedAudioTags={5}
               />
             </div>
-            {selectedClip && (
+            {selectedClip && exportState === 'idle' && (
               <PreviewOverlay
                 clip={selectedClip}
                 onUpdate={updateClip}
@@ -1372,6 +1421,25 @@ export default function VideoStudioPage() {
                 activeObjId={activeObjId}
                 setActiveObjId={setActiveObjId}
               />
+            )}
+
+            {/* Recording indicator — shown over the mini player during export */}
+            {exportState === 'recording' && (
+              <div className="absolute inset-0 z-20 pointer-events-none rounded-xl overflow-hidden">
+                <div className="absolute inset-0 border-2 border-red-500/60 rounded-xl" />
+                <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-red-600/90 backdrop-blur-sm rounded-full px-2.5 py-1">
+                  <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                  <span className="text-white text-[10px] font-bold tracking-wide">
+                    REC {Math.round(exportProgress)}%
+                  </span>
+                </div>
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-black/30">
+                  <div
+                    className="h-full bg-red-500 transition-all duration-200"
+                    style={{ width: `${exportProgress}%` }}
+                  />
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -1419,12 +1487,21 @@ export default function VideoStudioPage() {
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
 
-          <button
-            onClick={() => setShowExportModal(true)}
-            className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-all"
-          >
-            <Download className="w-3.5 h-3.5" />Export
-          </button>
+          {exportState === 'recording' ? (
+            <button
+              onClick={cancelExport}
+              className="flex items-center gap-1.5 text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg transition-all animate-pulse"
+            >
+              <X className="w-3.5 h-3.5" />Stop
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowExportModal(true)}
+              className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />Export
+            </button>
+          )}
         </div>
 
         {/* Scrollable ruler + tracks */}
@@ -1599,11 +1676,14 @@ export default function VideoStudioPage() {
                 <p className="text-gray-300">
                   Duration: <span className="text-white font-medium">{(Math.max(duration, 120) / FPS).toFixed(1)}s</span>
                   &nbsp;·&nbsp;
-                  Format: <span className="text-white font-medium">WebM / MP4</span>
+                  Format: <span className="text-white font-medium">MP4</span>
                 </p>
-                <p className="text-amber-400/90 leading-relaxed">
-                  A browser share dialog will appear. Select <strong className="text-amber-300">&quot;This Tab&quot;</strong> and enable <strong className="text-amber-300">&quot;Share audio&quot;</strong> for sound to be included.
-                </p>
+                <div className="space-y-1 text-gray-400 leading-relaxed">
+                  <p>1. Click <strong className="text-white">Start Export</strong> — a share dialog appears.</p>
+                  <p>2. Select <strong className="text-amber-300">&quot;This Tab&quot;</strong> and check <strong className="text-amber-300">&quot;Share audio&quot;</strong>.</p>
+                  <p>3. The mini player renders through from start to finish.</p>
+                  <p>4. Your <strong className="text-white">MP4 file downloads automatically</strong> when done.</p>
+                </div>
               </div>
 
               <button
@@ -1615,57 +1695,6 @@ export default function VideoStudioPage() {
               </button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ── CINEMA MODE (recording overlay) ────────────────────────────────────── */}
-      {exportState === 'recording' && (
-        <div className="fixed inset-0 z-[9999] bg-black flex items-center justify-center">
-          {/* Full-resolution player — this is what gets recorded */}
-          <div
-            style={{
-              width: '100vw',
-              height: aspectRatio === '16:9' ? '56.25vw' : '177.78vw',
-              maxHeight: '100vh',
-              maxWidth: aspectRatio === '16:9' ? '177.78vh' : '56.25vh',
-            }}
-          >
-            <RemotionPlayer
-              ref={exportPlayerRef}
-              component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
-              inputProps={{ clips: clips.length > 0 ? clips : PLACEHOLDER_CLIPS, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
-              durationInFrames={Math.max(duration, 120)}
-              compositionWidth={dims.width}
-              compositionHeight={dims.height}
-              fps={FPS}
-              style={{ width: '100%', height: '100%' }}
-              numberOfSharedAudioTags={5}
-            />
-          </div>
-
-          {/* Recording badge */}
-          <div className="fixed top-5 right-5 flex items-center gap-2 bg-red-600/90 backdrop-blur-sm rounded-full px-4 py-2 z-[10000] shadow-lg">
-            <span className="w-2.5 h-2.5 bg-white rounded-full animate-pulse" />
-            <span className="text-white text-xs font-bold tracking-wider">
-              REC {Math.round(exportProgress)}%
-            </span>
-          </div>
-
-          {/* Progress bar */}
-          <div className="fixed bottom-0 left-0 right-0 h-1 bg-white/10 z-[10000]">
-            <div
-              className="h-full bg-emerald-500 transition-all duration-200"
-              style={{ width: `${exportProgress}%` }}
-            />
-          </div>
-
-          {/* Cancel */}
-          <button
-            onClick={cancelExport}
-            className="fixed bottom-5 right-5 bg-black/60 hover:bg-black/80 backdrop-blur-sm border border-white/20 text-white px-4 py-2 rounded-xl text-xs font-semibold z-[10000] transition-all"
-          >
-            Cancel Export
-          </button>
         </div>
       )}
 
