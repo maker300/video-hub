@@ -1,16 +1,16 @@
 'use client'
-
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
+import type { PlayerRef } from '@remotion/player'
 import {
-  LogOut, Download, Save, Loader2, Play, Trash2,
-  Plus, ChevronDown, ChevronUp, Film, RotateCcw,
-  Video, FolderOpen, X, Check, AlertCircle, Monitor, Clapperboard,
+  LogOut, Save, Download, Play, Pause, ZoomIn, ZoomOut,
+  Upload, Plus, X, Trash2, Film, Layers, Music, Image as ImageIcon,
+  Loader2, Check, AlertCircle, FolderOpen,
 } from 'lucide-react'
 import type {
-  PromoScene, PromoVideoProps, SceneType,
-  VideoObject, ObjectShape, EntranceAnim, MotionAnim, ExitAnim,
+  PromoVideoProps, TimelineClip, MediaFile, SceneType, ObjectShape,
+  VideoObject, EntranceAnim, MotionAnim, ExitAnim,
 } from '@/remotion/compositions/PromoVideo'
 
 // ── Dynamic imports ───────────────────────────────────────────────────────────
@@ -20,191 +20,81 @@ const RemotionPlayer = dynamic(
   { ssr: false }
 )
 
-// Lazy-load the Remotion composition to avoid SSR issues
 const PromoVideoComp = dynamic(
   () => import('@/remotion/compositions/PromoVideo').then(m => m.PromoVideo),
   { ssr: false }
 )
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const FPS = 30
+const LABEL_WIDTH = 56
+const TRACK_HEIGHTS: Record<string, number> = { main: 48, overlay: 38, audio: 38 }
+const SCENE_TYPES: SceneType[] = [
+  'hook','problem','solution','stat','feature','cta',
+  'typewriter','reveal','quote','announcement',
+  'bullet','question','glitch','split','countdown','testimonial',
+]
+const SHAPE_LABELS: Record<string, string> = {
+  circle:'● Circle', rect:'■ Rect', line:'— Line', triangle:'▲ Triangle',
+  pentagon:'⬠ Pentagon', star:'★ Star', arrow:'➤ Arrow',
+  hexagon:'⬡ Hexagon', diamond:'◆ Diamond', ring:'○ Ring',
+}
+const SHAPES = Object.keys(SHAPE_LABELS) as ObjectShape[]
+const CLIP_COLORS: Record<string, string> = {
+  scene:'bg-emerald-700/90', image:'bg-blue-700/90', video:'bg-violet-700/90',
+  shape:'bg-pink-700/90', audio:'bg-amber-700/90',
+}
+const SCENE_EMOJIS: Partial<Record<SceneType, string>> = {
+  hook:'🎣', problem:'⚠️', solution:'✅', stat:'📊', feature:'⚡',
+  cta:'🚀', typewriter:'⌨️', reveal:'🎬', quote:'💬', announcement:'📢',
+  bullet:'📋', question:'❓', glitch:'⚡', split:'◧', countdown:'⏱️', testimonial:'⭐',
+}
+
+const ENTRANCE_LABELS: Record<EntranceAnim, string> = {
+  none:'None', fade:'Fade In', slideLeft:'Slide from Left', slideRight:'Slide from Right',
+  slideUp:'Slide from Top', slideDown:'Slide from Bottom', scaleIn:'Scale In', spinIn:'Spin In', bounceIn:'Bounce In',
+}
+const ENTRANCES: EntranceAnim[] = ['none','fade','slideLeft','slideRight','slideUp','slideDown','scaleIn','spinIn','bounceIn']
+
+const MOTION_LABELS: Record<MotionAnim, string> = {
+  none:'None', float:'Float', pulse:'Pulse', spin:'Continuous Spin', shake:'Shake', breathe:'Breathe',
+}
+const MOTIONS: MotionAnim[] = ['none','float','pulse','spin','shake','breathe']
+
+const EXIT_LABELS: Record<ExitAnim, string> = {
+  none:'None', fade:'Fade Out', slideLeft:'Slide Left', slideRight:'Slide Right', scaleOut:'Scale Out',
+}
+const EXITS: ExitAnim[] = ['none','fade','slideLeft','slideRight','scaleOut']
+
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+type SideTab = 'media' | 'scenes' | 'objects' | 'audio'
+
+type DragPayload =
+  | { kind: 'scene'; sceneType: SceneType }
+  | { kind: 'shape'; shape: ObjectShape }
+  | { kind: 'media'; mediaId: string }
+  | { kind: 'audio'; mediaId: string }
 
 interface VideoProject {
   id:          string
   title:       string
   aspectRatio: '16:9' | '9:16'
-  scenes:      PromoScene[]
+  clips:       TimelineClip[]
   createdAt:   string
 }
 
-const SCENE_TYPE_LABELS: Record<SceneType, string> = {
-  hook:         '🎣 Hook',
-  problem:      '⚠️ Problem',
-  solution:     '✅ Solution',
-  stat:         '📊 Stat',
-  feature:      '⚡ Feature',
-  cta:          '🚀 CTA',
-  typewriter:   '⌨️ Typewriter',
-  reveal:       '🎬 Reveal',
-  quote:        '💬 Quote',
-  announcement: '📢 Announcement',
-  bullet:       '📋 Bullet List',
-  question:     '❓ Question',
-  glitch:       '⚡ Glitch',
-  split:        '◧ Split Panel',
-  countdown:    '⏱️ Countdown',
-  testimonial:  '⭐ Testimonial',
-}
-
-const SCENE_TYPES: SceneType[] = [
-  'hook', 'problem', 'solution', 'stat', 'feature', 'cta',
-  'typewriter', 'reveal', 'quote', 'announcement',
-  'bullet', 'question', 'glitch', 'split', 'countdown', 'testimonial',
-]
-
-const DEFAULT_SCENES: PromoScene[] = [
-  {
-    id: '1', type: 'hook',
-    headline: 'Stop Guessing. Start Trading.',
-    subtext: 'AI-powered signals for every market.',
-    duration: 4,
-  },
-  {
-    id: '2', type: 'problem',
-    headline: 'Most traders lose because of emotion.',
-    subtext: 'Fear and FOMO destroy good setups.',
-    duration: 4,
-  },
-  {
-    id: '3', type: 'solution',
-    headline: 'FM Trader reads the chart — you just trade.',
-    subtext: 'Real-time signals. Calculated entries. Clear targets.',
-    duration: 5,
-  },
-  {
-    id: '4', type: 'stat',
-    value: '78%', label: 'Average Confidence',
-    headline: 'Only high-conviction setups make the cut.',
-    duration: 4,
-  },
-  {
-    id: '5', type: 'cta',
-    headline: 'Join Forex Mastery Today.',
-    subtext: 'forexmastery.org',
-    duration: 5,
-  },
-]
-
-const FPS = 30
-
-function totalFrames(scenes: PromoScene[]) {
-  return scenes.reduce((s, sc) => s + Math.round(sc.duration * FPS), 0) || 300
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function aspectDims(ar: '16:9' | '9:16') {
   return ar === '9:16' ? { width: 1080, height: 1920 } : { width: 1280, height: 720 }
 }
 
-// ── Script → scenes parser (pure client-side, no API) ────────────────────────
-
-function detectType(text: string, index: number, total: number): SceneType {
-  if (index === 0) return 'hook'
-  if (index === total - 1) return 'cta'
-  const l = text.toLowerCase()
-  // Stat: contains a standalone number with unit (%, $, k, m, b, x)
-  if (/\b\d+(?:\.\d+)?[%kKmMbBtTxX]|\$[\d,.]+|\d{4,}/.test(text) && text.length < 160) return 'stat'
-  if (/problem|struggle|fail|los(ing|t)|wrong|mistake|hard |confus|fear|fomo|emotion|gut|guess/.test(l)) return 'problem'
-  if (/solution|answer|fix|solve|introduc|fm trader|forex mastery|that.s where|here.s how|meet |using |with /.test(l)) return 'solution'
-  if (/feature|signal|alert|scan|detect|identify|analys|notify|report|track/.test(l)) return 'feature'
-  return 'feature'
+function totalDurationFrames(clips: TimelineClip[]): number {
+  if (clips.length === 0) return 300
+  return Math.max(...clips.map(c => c.startFrame + c.durationFrames))
 }
-
-function splitSentences(text: string): string[] {
-  return text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean)
-}
-
-function parseScriptToScenes(script: string): { scenes: PromoScene[]; title: string } {
-  // 1. Split into blocks by blank lines; fallback to single newlines; fallback to sentences
-  let blocks = script.split(/\n\s*\n/).map(b => b.replace(/\n/g, ' ').trim()).filter(Boolean)
-  if (blocks.length < 2) {
-    blocks = script.split(/\n/).map(b => b.trim()).filter(Boolean)
-  }
-  if (blocks.length < 2) {
-    // Single unbroken paragraph — split every 2 sentences
-    const sentences = splitSentences(script)
-    blocks = []
-    for (let i = 0; i < sentences.length; i += 2) {
-      blocks.push(sentences.slice(i, i + 2).join(' '))
-    }
-  }
-  if (blocks.length === 0) return { scenes: DEFAULT_SCENES, title: 'FM Trader Promo' }
-
-  const scenes: PromoScene[] = blocks.map((block, i) => {
-    const type = detectType(block, i, blocks.length)
-
-    // Extract headline: first sentence, max 80 chars
-    const sentences = splitSentences(block)
-    let headline = (sentences[0] ?? block).slice(0, 80).trim()
-    // Strip trailing punctuation for cleaner display
-    headline = headline.replace(/[.,:;]+$/, '').trim()
-
-    // Subtext: remainder joined, max 100 chars
-    const rest = sentences.slice(1).join(' ').trim()
-    const subtext = rest.length > 0 ? rest.slice(0, 100).replace(/[.,:;]+$/, '').trim() : undefined
-
-    // Stat: pull out the numeric value and use the rest as label
-    let value: string | undefined
-    let label: string | undefined
-    if (type === 'stat') {
-      const m = block.match(/(\$[\d,.]+[kKmMbBtT]*|\b\d+(?:\.\d+)?[%kKmMbBtTxX+]*\b)/)
-      if (m) {
-        value = m[1]
-        label = headline.replace(m[1], '').replace(/^\W+|\W+$/g, '').trim().slice(0, 50) || undefined
-      }
-    }
-
-    // Duration: short text = 3s, medium = 4s, long = 5s
-    const duration = block.length < 60 ? 3 : block.length < 130 ? 4 : 5
-
-    return { id: String(i + 1), type, headline, subtext, value, label, duration }
-  })
-
-  // Derive title from first block's headline
-  const title = scenes[0]?.headline?.slice(0, 50) ?? 'FM Trader Promo'
-
-  return { scenes, title }
-}
-
-// ── Object system constants ───────────────────────────────────────────────────
-
-const SHAPE_LABELS: Record<ObjectShape, string> = {
-  circle:   '● Circle',
-  rect:     '■ Rectangle',
-  line:     '— Line',
-  triangle: '▲ Triangle',
-  pentagon: '⬠ Pentagon',
-  star:     '★ Star',
-  arrow:    '➤ Arrow',
-  hexagon:  '⬡ Hexagon',
-  diamond:  '◆ Diamond',
-  ring:     '○ Ring',
-}
-const SHAPES: ObjectShape[] = ['circle','rect','line','triangle','pentagon','star','arrow','hexagon','diamond','ring']
-
-const ENTRANCE_LABELS: Record<EntranceAnim, string> = {
-  none: 'None', fade: 'Fade In', slideLeft: 'Slide from Left', slideRight: 'Slide from Right',
-  slideUp: 'Slide from Top', slideDown: 'Slide from Bottom', scaleIn: 'Scale In', spinIn: 'Spin In', bounceIn: 'Bounce In',
-}
-const ENTRANCES: EntranceAnim[] = ['none','fade','slideLeft','slideRight','slideUp','slideDown','scaleIn','spinIn','bounceIn']
-
-const MOTION_LABELS: Record<MotionAnim, string> = {
-  none: 'None', float: 'Float', pulse: 'Pulse', spin: 'Continuous Spin', shake: 'Shake', breathe: 'Breathe',
-}
-const MOTIONS: MotionAnim[] = ['none','float','pulse','spin','shake','breathe']
-
-const EXIT_LABELS: Record<ExitAnim, string> = {
-  none: 'None', fade: 'Fade Out', slideLeft: 'Slide Left', slideRight: 'Slide Right', scaleOut: 'Scale Out',
-}
-const EXITS: ExitAnim[] = ['none','fade','slideLeft','slideRight','scaleOut']
 
 function makeObject(): VideoObject {
   return {
@@ -220,6 +110,57 @@ function makeObject(): VideoObject {
   }
 }
 
+function newSceneClip(sceneType: SceneType, startFrame: number): TimelineClip {
+  return {
+    id: String(Date.now() + Math.random()),
+    track: 'main',
+    startFrame,
+    durationFrames: 4 * FPS,
+    clipType: 'scene',
+    scene: {
+      id: String(Date.now() + Math.random()),
+      type: sceneType,
+      headline: sceneType.charAt(0).toUpperCase() + sceneType.slice(1) + ' Scene',
+      duration: 4,
+    },
+  }
+}
+
+function newShapeClip(shape: ObjectShape, startFrame: number): TimelineClip {
+  return {
+    id: String(Date.now() + Math.random()),
+    track: 'overlay',
+    startFrame,
+    durationFrames: 3 * FPS,
+    clipType: 'shape',
+    shape: { ...makeObject(), shape },
+  }
+}
+
+function newMediaClip(media: MediaFile, startFrame: number): TimelineClip {
+  return {
+    id: String(Date.now() + Math.random()),
+    track: 'main',
+    startFrame,
+    durationFrames: media.type === 'image' ? 5 * FPS : 5 * FPS,
+    clipType: media.type === 'image' ? 'image' : 'video',
+    media,
+  }
+}
+
+function newAudioClip(media: MediaFile, startFrame: number): TimelineClip {
+  return {
+    id: String(Date.now() + Math.random()),
+    track: 'audio',
+    startFrame,
+    durationFrames: 10 * FPS,
+    clipType: 'audio',
+    media,
+  }
+}
+
+// ── ObjectEditor component ────────────────────────────────────────────────────
+
 function ObjectEditor({ obj, onChange, onDelete }: {
   obj:      VideoObject
   onChange: (o: VideoObject) => void
@@ -232,7 +173,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
 
   return (
     <div className="border border-white/8 rounded-xl p-3 space-y-3 bg-black/20">
-      {/* Header */}
       <div className="flex items-center gap-2">
         <span className="text-xs font-semibold text-emerald-400">{SHAPE_LABELS[obj.shape]}</span>
         <div className="flex-1" />
@@ -241,7 +181,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </button>
       </div>
 
-      {/* Shape picker */}
       <div>
         <label className={labelCls}>Shape</label>
         <div className="grid grid-cols-5 gap-1">
@@ -262,7 +201,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </div>
       </div>
 
-      {/* Position & Size */}
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1.5">
           <label className={labelCls}>Position X%</label>
@@ -290,7 +228,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </div>
       </div>
 
-      {/* Colors */}
       <div className="grid grid-cols-3 gap-2">
         <div className="space-y-1">
           <label className={labelCls}>Fill</label>
@@ -308,7 +245,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </div>
       </div>
 
-      {/* Entrance */}
       <div className="grid grid-cols-2 gap-2">
         <div className="col-span-2 space-y-1">
           <label className={labelCls}>Entrance Animation</label>
@@ -326,7 +262,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </div>
       </div>
 
-      {/* Continuous motion */}
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <label className={labelCls}>Motion Effect</label>
@@ -341,7 +276,6 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </div>
       </div>
 
-      {/* Exit */}
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <label className={labelCls}>Exit Animation</label>
@@ -358,214 +292,200 @@ function ObjectEditor({ obj, onChange, onDelete }: {
   )
 }
 
-// ── Scene editor row ──────────────────────────────────────────────────────────
+// ── Properties panel ──────────────────────────────────────────────────────────
 
-function SceneRow({
-  scene, index, total,
-  onChange, onDelete, onMove,
+function PropertiesPanel({
+  clip,
+  onUpdate,
+  onClose,
 }: {
-  scene:    PromoScene
-  index:    number
-  total:    number
-  onChange: (s: PromoScene) => void
-  onDelete: () => void
-  onMove:   (dir: -1 | 1) => void
+  clip: TimelineClip
+  onUpdate: (c: TimelineClip) => void
+  onClose: () => void
 }) {
-  const [expanded, setExpanded] = useState(index === 0)
-  const set = (patch: Partial<PromoScene>) => onChange({ ...scene, ...patch })
+  const inputCls = 'w-full bg-[#070d1a] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/50'
+  const labelCls = 'text-[10px] text-gray-500 font-medium mb-0.5 block'
+
+  function setClip(patch: Partial<TimelineClip>) {
+    onUpdate({ ...clip, ...patch })
+  }
+  function setScene(patch: Partial<NonNullable<TimelineClip['scene']>>) {
+    if (!clip.scene) return
+    setClip({ scene: { ...clip.scene, ...patch } })
+  }
+
+  const durationSec = Math.round(clip.durationFrames / FPS * 10) / 10
 
   return (
-    <div className="border border-white/10 rounded-xl overflow-hidden bg-white/3">
-      <div
-        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-white/5 transition-colors"
-        onClick={() => setExpanded(e => !e)}
-      >
-        <span className="text-xs font-mono text-gray-500 w-4 shrink-0">{index + 1}</span>
-        <span className="text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full whitespace-nowrap">
-          {SCENE_TYPE_LABELS[scene.type]}
-        </span>
-        <span className="flex-1 text-sm text-gray-300 truncate">{scene.headline || '(empty)'}</span>
-        <span className="text-xs text-gray-600">{scene.duration}s</span>
-        <div className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
-          <button
-            onClick={() => onMove(-1)} disabled={index === 0}
-            className="p-1 text-gray-600 hover:text-gray-300 disabled:opacity-30 transition-colors"
-          >
-            <ChevronUp className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => onMove(1)} disabled={index === total - 1}
-            className="p-1 text-gray-600 hover:text-gray-300 disabled:opacity-30 transition-colors"
-          >
-            <ChevronDown className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-1 text-gray-600 hover:text-red-400 transition-colors ml-1"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-500" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-500" />}
+    <div className="w-[280px] shrink-0 bg-[#0a1020] border-l border-white/8 flex flex-col overflow-y-auto">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 shrink-0">
+        <span className="text-xs font-bold text-white">Properties</span>
+        <button onClick={onClose} className="text-gray-600 hover:text-white transition-colors">
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
-      {expanded && (
-        <div className="px-4 pb-4 space-y-3 border-t border-white/5 pt-3">
-          {/* Type */}
-          <div>
-            <label className="text-xs text-gray-500 font-medium mb-1 block">Scene Type</label>
-            <select
-              value={scene.type}
-              onChange={e => set({ type: e.target.value as SceneType })}
-              className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
-            >
-              {SCENE_TYPES.map(t => (
-                <option key={t} value={t}>{SCENE_TYPE_LABELS[t]}</option>
-              ))}
-            </select>
-          </div>
+      <div className="p-4 space-y-4 flex-1 overflow-y-auto">
 
-          {/* Section title (label override) */}
-          <div>
-            <label className="text-xs text-gray-500 font-medium mb-1 block">
-              Section Title <span className="text-gray-600 font-normal">(header label shown above headline)</span>
-            </label>
-            <input
-              type="text"
-              value={scene.sectionTitle ?? ''}
-              onChange={e => set({ sectionTitle: e.target.value || undefined })}
-              placeholder={
-                scene.type === 'feature' ? 'e.g. Key Feature, Header 1, Why Us…' :
-                scene.type === 'problem' ? 'e.g. The Problem, Challenge…' :
-                scene.type === 'solution' ? 'e.g. The Solution, Our Answer…' :
-                scene.type === 'typewriter' ? 'e.g. Live Feed, Incoming…' :
-                scene.type === 'reveal' ? 'e.g. Revealed, Spotlight…' :
-                scene.type === 'bullet' ? 'e.g. Key Points, Benefits…' :
-                scene.type === 'glitch' ? 'e.g. Breaking, Alert…' :
-                'Custom label (optional)'
-              }
-              className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
-            />
-          </div>
-
-          {/* Headline */}
-          <div>
-            <label className="text-xs text-gray-500 font-medium mb-1 block">
-              Headline
-              {scene.type === 'bullet' && (
-                <span className="text-gray-600 font-normal ml-1">— separate bullets with <code className="bg-white/5 px-1 rounded">|</code></span>
-              )}
-            </label>
-            <textarea
-              value={scene.headline}
-              onChange={e => set({ headline: e.target.value })}
-              rows={2}
-              placeholder={scene.type === 'bullet' ? 'Fast signals | Clear targets | No emotion' : undefined}
-              className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50 resize-none"
-            />
-          </div>
-
-          {/* Subtext */}
-          <div>
-            <label className="text-xs text-gray-500 font-medium mb-1 block">Subtext (optional)</label>
-            <input
-              type="text"
-              value={scene.subtext ?? ''}
-              onChange={e => set({ subtext: e.target.value || undefined })}
-              placeholder="Supporting line"
-              className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
-            />
-          </div>
-
-          {/* Stat / Split value + label */}
-          {(scene.type === 'stat' || scene.type === 'split') && (
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-500 font-medium mb-1 block">
-                  {scene.type === 'split' ? 'Left Panel Text' : 'Value (e.g. 78%)'}
-                </label>
-                <input
-                  type="text"
-                  value={scene.value ?? ''}
-                  onChange={e => set({ value: e.target.value || undefined })}
-                  placeholder={scene.type === 'split' ? '◆ or #1 or $4T' : '78%'}
-                  className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 font-medium mb-1 block">
-                  {scene.type === 'split' ? 'Attribution' : 'Label'}
-                </label>
-                <input
-                  type="text"
-                  value={scene.label ?? ''}
-                  onChange={e => set({ label: e.target.value || undefined })}
-                  placeholder={scene.type === 'split' ? 'Optional name' : 'Avg. Confidence'}
-                  className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
-                />
-              </div>
-            </div>
-          )}
-          {/* Testimonial attribution */}
-          {scene.type === 'testimonial' && (
+        {/* Scene clip */}
+        {clip.clipType === 'scene' && clip.scene && (
+          <>
             <div>
-              <label className="text-xs text-gray-500 font-medium mb-1 block">Attribution (name shown below quote)</label>
+              <label className={labelCls}>Scene Type</label>
+              <select
+                value={clip.scene.type}
+                onChange={e => setScene({ type: e.target.value as SceneType })}
+                className={inputCls}
+              >
+                {SCENE_TYPES.map(t => (
+                  <option key={t} value={t}>{SCENE_EMOJIS[t] ?? ''} {t.charAt(0).toUpperCase() + t.slice(1)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Section Title</label>
               <input
                 type="text"
-                value={scene.label ?? ''}
-                onChange={e => set({ label: e.target.value || undefined })}
-                placeholder="— John D., Pro Trader"
-                className="w-full bg-[#0d1526] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+                value={clip.scene.sectionTitle ?? ''}
+                onChange={e => setScene({ sectionTitle: e.target.value || undefined })}
+                placeholder="Optional header label"
+                className={inputCls}
               />
             </div>
-          )}
+            <div>
+              <label className={labelCls}>Headline</label>
+              <textarea
+                value={clip.scene.headline}
+                onChange={e => setScene({ headline: e.target.value })}
+                rows={2}
+                className={inputCls + ' resize-none'}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Subtext</label>
+              <input
+                type="text"
+                value={clip.scene.subtext ?? ''}
+                onChange={e => setScene({ subtext: e.target.value || undefined })}
+                placeholder="Supporting line"
+                className={inputCls}
+              />
+            </div>
+            {(clip.scene.type === 'stat' || clip.scene.type === 'split') && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className={labelCls}>Value</label>
+                  <input type="text" value={clip.scene.value ?? ''} onChange={e => setScene({ value: e.target.value || undefined })} className={inputCls} />
+                </div>
+                <div>
+                  <label className={labelCls}>Label</label>
+                  <input type="text" value={clip.scene.label ?? ''} onChange={e => setScene({ label: e.target.value || undefined })} className={inputCls} />
+                </div>
+              </div>
+            )}
+            <div>
+              <label className={labelCls}>Duration: <span className="text-white">{durationSec}s</span></label>
+              <input
+                type="range" min={2} max={12} step={0.5}
+                value={durationSec}
+                onChange={e => {
+                  const s = parseFloat(e.target.value)
+                  setClip({ durationFrames: Math.round(s * FPS), scene: { ...clip.scene!, duration: s } })
+                }}
+                className="w-full accent-emerald-500"
+              />
+            </div>
+            {/* Objects */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className={labelCls}>Shape Objects ({(clip.scene.objects ?? []).length})</label>
+                <button
+                  onClick={() => setScene({ objects: [...(clip.scene!.objects ?? []), makeObject()] })}
+                  className="text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 px-2 py-1 rounded-lg flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3" />Add
+                </button>
+              </div>
+              <div className="space-y-2">
+                {(clip.scene.objects ?? []).map((obj, oi) => (
+                  <ObjectEditor
+                    key={obj.id}
+                    obj={obj}
+                    onChange={updated => {
+                      const objs = [...(clip.scene!.objects ?? [])]
+                      objs[oi] = updated
+                      setScene({ objects: objs })
+                    }}
+                    onDelete={() => {
+                      const objs = (clip.scene!.objects ?? []).filter((_, j) => j !== oi)
+                      setScene({ objects: objs })
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
-          {/* Duration */}
-          <div>
-            <label className="text-xs text-gray-500 font-medium mb-1 block">
-              Duration: <span className="text-white">{scene.duration}s</span>
-            </label>
-            <input
-              type="range" min={2} max={10} step={0.5}
-              value={scene.duration}
-              onChange={e => set({ duration: parseFloat(e.target.value) })}
-              className="w-full accent-emerald-500"
+        {/* Shape clip */}
+        {clip.clipType === 'shape' && clip.shape && (
+          <>
+            <div>
+              <label className={labelCls}>Duration: <span className="text-white">{durationSec}s</span></label>
+              <input
+                type="range" min={1} max={12} step={0.5}
+                value={durationSec}
+                onChange={e => setClip({ durationFrames: Math.round(parseFloat(e.target.value) * FPS) })}
+                className="w-full accent-emerald-500"
+              />
+            </div>
+            <ObjectEditor
+              obj={clip.shape}
+              onChange={updated => setClip({ shape: updated })}
+              onDelete={() => {}}
             />
-          </div>
+          </>
+        )}
 
-          {/* Objects */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs text-gray-500 font-medium">
-                Shape Objects <span className="text-gray-700 font-normal">({(scene.objects ?? []).length})</span>
-              </label>
-              <button
-                onClick={() => set({ objects: [...(scene.objects ?? []), makeObject()] })}
-                className="flex items-center gap-1 text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-2 py-1 rounded-lg transition-all"
-              >
-                <Plus className="w-3 h-3" />Add Object
-              </button>
+        {/* Image / Video clip */}
+        {(clip.clipType === 'image' || clip.clipType === 'video') && clip.media && (
+          <>
+            <div>
+              <label className={labelCls}>File</label>
+              <p className="text-xs text-gray-400 truncate">{clip.media.name}</p>
             </div>
-            <div className="space-y-2">
-              {(scene.objects ?? []).map((obj, oi) => (
-                <ObjectEditor
-                  key={obj.id}
-                  obj={obj}
-                  onChange={updated => {
-                    const objs = [...(scene.objects ?? [])]
-                    objs[oi] = updated
-                    set({ objects: objs })
-                  }}
-                  onDelete={() => {
-                    const objs = (scene.objects ?? []).filter((_, j) => j !== oi)
-                    set({ objects: objs })
-                  }}
-                />
-              ))}
+            <div>
+              <label className={labelCls}>Duration: <span className="text-white">{durationSec}s</span></label>
+              <input
+                type="range" min={1} max={30} step={0.5}
+                value={durationSec}
+                onChange={e => setClip({ durationFrames: Math.round(parseFloat(e.target.value) * FPS) })}
+                className="w-full accent-emerald-500"
+              />
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+
+        {/* Audio clip */}
+        {clip.clipType === 'audio' && clip.media && (
+          <>
+            <div>
+              <label className={labelCls}>File</label>
+              <p className="text-xs text-gray-400 truncate">{clip.media.name}</p>
+            </div>
+            <div>
+              <label className={labelCls}>Duration: <span className="text-white">{durationSec}s</span></label>
+              <input
+                type="range" min={1} max={60} step={1}
+                value={durationSec}
+                onChange={e => setClip({ durationFrames: Math.round(parseFloat(e.target.value) * FPS) })}
+                className="w-full accent-emerald-500"
+              />
+            </div>
+          </>
+        )}
+
+      </div>
     </div>
   )
 }
@@ -574,552 +494,748 @@ function SceneRow({
 
 export default function VideoStudioPage() {
   const router = useRouter()
-  const [tab, setTab]                 = useState<'create' | 'library'>('create')
-  const [script, setScript]           = useState('')
-  const [scenes, setScenes]           = useState<PromoScene[]>(DEFAULT_SCENES)
-  const [videoTitle, setVideoTitle]   = useState('FM Trader Promo')
+
+  // Core state
+  const [clips, setClips]             = useState<TimelineClip[]>([])
+  const [videoTitle, setVideoTitle]   = useState('Untitled Project')
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9')
-  const [saving, setSaving]           = useState(false)
-  const [saveMsg, setSaveMsg]         = useState('')
-  const [recording, setRecording]       = useState(false)
-  const [recordProgress, setRecordProgress] = useState(0) // 0–100
-  const [recordError, setRecordError]   = useState('')
-  const [autoPlayKey, setAutoPlayKey]   = useState<number | null>(null) // non-null = auto-play mode
+  const [mediaFiles, setMediaFiles]   = useState<MediaFile[]>([])
+
+  // UI state
+  const [sideTab, setSideTab]           = useState<SideTab>('scenes')
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
+  const [currentFrame, setCurrentFrame] = useState(0)
+  const [isPlaying, setIsPlaying]       = useState(false)
+  const [zoom, setZoom]                 = useState(4) // px per frame
+
+  // Save / load
+  const [saving, setSaving]             = useState(false)
+  const [saveMsg, setSaveMsg]           = useState('')
   const [projects, setProjects]         = useState<VideoProject[]>([])
+  const [showLibrary, setShowLibrary]   = useState(false)
   const [loadingProjects, setLoadingProjects] = useState(false)
-  const [playerKey, setPlayerKey]       = useState(0)
 
-  const mediaRef    = useRef<MediaRecorder | null>(null)
-  const timerRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Refs
+  const playerRef     = useRef<PlayerRef | null>(null)
+  const timelineRef   = useRef<HTMLDivElement>(null)
+  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load projects when on library tab
+  const dims     = aspectDims(aspectRatio)
+  const duration = totalDurationFrames(clips)
+
+  const selectedClip = clips.find(c => c.id === selectedClipId) ?? null
+
+  // ── Player sync ─────────────────────────────────────────────────────────────
+
   useEffect(() => {
-    if (tab !== 'library') return
-    setLoadingProjects(true)
-    fetch('/api/projects')
-      .then(r => r.json())
-      .then(data => setProjects(Array.isArray(data) ? data : []))
-      .catch(() => {})
-      .finally(() => setLoadingProjects(false))
-  }, [tab])
+    playerRef.current?.seekTo(currentFrame)
+  }, [currentFrame])
 
-  const dims = aspectDims(aspectRatio)
-  const duration = totalFrames(scenes)
+  // ── Playback ─────────────────────────────────────────────────────────────────
 
-  // ── Parse script into scenes (pure client-side) ─────────────────────────────
-
-  function handleMakeVideo() {
-    if (!script.trim()) return
-    const { scenes: parsed, title } = parseScriptToScenes(script)
-    setScenes(parsed)
-    setVideoTitle(title)
-    setPlayerKey(k => k + 1)
-  }
-
-  // ── Scene mutations ──────────────────────────────────────────────────────────
-
-  function updateScene(index: number, scene: PromoScene) {
-    setScenes(prev => prev.map((s, i) => i === index ? scene : s))
-    setPlayerKey(k => k + 1)
-  }
-
-  function deleteScene(index: number) {
-    setScenes(prev => prev.filter((_, i) => i !== index))
-    setPlayerKey(k => k + 1)
-  }
-
-  function moveScene(index: number, dir: -1 | 1) {
-    setScenes(prev => {
-      const next = [...prev]
-      const swap = index + dir
-      if (swap < 0 || swap >= next.length) return prev
-      ;[next[index], next[swap]] = [next[swap], next[index]]
-      return next
-    })
-    setPlayerKey(k => k + 1)
-  }
-
-  function addScene() {
-    setScenes(prev => [
-      ...prev,
-      {
-        id:       String(Date.now()),
-        type:     'feature',
-        headline: 'New Scene',
-        duration: 4,
-      },
-    ])
-  }
-
-  // ── Save project ─────────────────────────────────────────────────────────────
-
-  async function handleSave() {
-    setSaving(true)
-    setSaveMsg('')
-    try {
-      const res = await fetch('/api/projects', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ title: videoTitle, aspectRatio, scenes }),
-      })
-      if (res.ok) {
-        setSaveMsg('Saved!')
-        setTimeout(() => setSaveMsg(''), 3000)
-      } else {
-        setSaveMsg('Save failed.')
-      }
-    } catch {
-      setSaveMsg('Network error.')
-    } finally {
-      setSaving(false)
+  function togglePlay() {
+    if (isPlaying) {
+      if (playIntervalRef.current) clearInterval(playIntervalRef.current)
+      setIsPlaying(false)
+    } else {
+      setIsPlaying(true)
+      playIntervalRef.current = setInterval(() => {
+        setCurrentFrame(f => {
+          const next = f + 1
+          if (next >= duration) {
+            clearInterval(playIntervalRef.current!)
+            setIsPlaying(false)
+            return 0
+          }
+          return next
+        })
+      }, 1000 / FPS)
     }
   }
 
-  // ── Delete project ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => { if (playIntervalRef.current) clearInterval(playIntervalRef.current) }
+  }, [])
+
+  // ── Clip mutations ────────────────────────────────────────────────────────────
+
+  function updateClip(updated: TimelineClip) {
+    setClips(prev => prev.map(c => c.id === updated.id ? updated : c))
+  }
+
+  function deleteClip(id: string) {
+    setClips(prev => prev.filter(c => c.id !== id))
+    if (selectedClipId === id) setSelectedClipId(null)
+  }
+
+  // ── Media upload ──────────────────────────────────────────────────────────────
+
+  function handleMediaUpload(e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'video' | 'audio') {
+    const files = e.target.files
+    if (!files) return
+    Array.from(files).forEach(file => {
+      const url = URL.createObjectURL(file)
+      const media: MediaFile = {
+        id: String(Date.now() + Math.random()),
+        url,
+        type,
+        name: file.name,
+      }
+      setMediaFiles(prev => [...prev, media])
+    })
+    e.target.value = ''
+  }
+
+  // ── Drop handler ──────────────────────────────────────────────────────────────
+
+  const handleDrop = useCallback((
+    e: React.DragEvent<HTMLDivElement>,
+    track: 'main' | 'overlay' | 'audio'
+  ) => {
+    e.preventDefault()
+    const raw = e.dataTransfer.getData('application/json')
+    if (!raw) return
+    let payload: DragPayload
+    try { payload = JSON.parse(raw) as DragPayload } catch { return }
+
+    const rect = e.currentTarget.getBoundingClientRect()
+    const scrollLeft = (timelineRef.current?.scrollLeft ?? 0)
+    const dropX = e.clientX - rect.left
+    const startFrame = Math.max(0, Math.round((dropX + scrollLeft - LABEL_WIDTH) / zoom))
+
+    let newClip: TimelineClip | null = null
+
+    if (payload.kind === 'scene') {
+      newClip = newSceneClip(payload.sceneType, startFrame)
+      newClip = { ...newClip, track: 'main' }
+    } else if (payload.kind === 'shape') {
+      newClip = newShapeClip(payload.shape, startFrame)
+      newClip = { ...newClip, track: 'overlay' }
+    } else if (payload.kind === 'media') {
+      const media = mediaFiles.find(m => m.id === payload.mediaId)
+      if (!media) return
+      newClip = newMediaClip(media, startFrame)
+      newClip = { ...newClip, track }
+    } else if (payload.kind === 'audio') {
+      const media = mediaFiles.find(m => m.id === payload.mediaId)
+      if (!media) return
+      newClip = newAudioClip(media, startFrame)
+      newClip = { ...newClip, track: 'audio' }
+    }
+
+    if (newClip) setClips(prev => [...prev, newClip!])
+  }, [zoom, mediaFiles])
+
+  // ── Clip dragging (horizontal reposition) ────────────────────────────────────
+
+  function startClipDrag(e: React.MouseEvent, clipId: string) {
+    e.stopPropagation()
+    const clip = clips.find(c => c.id === clipId)
+    if (!clip) return
+    const startX = e.clientX
+    const origStart = clip.startFrame
+
+    function onMove(mv: MouseEvent) {
+      const dx = mv.clientX - startX
+      const newStart = Math.max(0, origStart + Math.round(dx / zoom))
+      setClips(prev => prev.map(c => c.id === clipId ? { ...c, startFrame: newStart } : c))
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // ── Ruler click / playhead drag ──────────────────────────────────────────────
+
+  function handleRulerClick(e: React.MouseEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const scrollLeft = timelineRef.current?.scrollLeft ?? 0
+    const x = e.clientX - rect.left + scrollLeft - LABEL_WIDTH
+    const frame = Math.max(0, Math.round(x / zoom))
+    setCurrentFrame(Math.min(frame, duration))
+  }
+
+  // ── Save / load ───────────────────────────────────────────────────────────────
+
+  async function handleSave() {
+    setSaving(true); setSaveMsg('')
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: videoTitle, aspectRatio, clips }),
+      })
+      setSaveMsg(res.ok ? 'Saved!' : 'Save failed.')
+      setTimeout(() => setSaveMsg(''), 3000)
+    } catch { setSaveMsg('Network error.') }
+    finally { setSaving(false) }
+  }
+
+  async function loadProjects() {
+    setLoadingProjects(true)
+    try {
+      const res = await fetch('/api/projects')
+      const data = await res.json()
+      setProjects(Array.isArray(data) ? (data as VideoProject[]) : [])
+    } catch { /* ignore */ }
+    finally { setLoadingProjects(false) }
+  }
+
+  function handleLoad(project: VideoProject) {
+    setClips(project.clips ?? [])
+    setVideoTitle(project.title)
+    setAspectRatio(project.aspectRatio)
+    setShowLibrary(false)
+  }
 
   async function handleDelete(id: string) {
     await fetch('/api/projects', {
-      method:  'DELETE',
+      method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ id }),
+      body: JSON.stringify({ id }),
     })
     setProjects(prev => prev.filter(p => p.id !== id))
   }
 
-  // ── Load project into editor ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (showLibrary) loadProjects()
+  }, [showLibrary])
 
-  function handleLoad(project: VideoProject) {
-    setScenes(project.scenes)
-    setVideoTitle(project.title)
-    setAspectRatio(project.aspectRatio)
-    setPlayerKey(k => k + 1)
-    setTab('create')
+  // ── Time formatting ───────────────────────────────────────────────────────────
+
+  function formatTime(frame: number) {
+    const s = Math.floor(frame / FPS)
+    const f = frame % FPS
+    return `${String(Math.floor(s / 60)).padStart(2,'0')}:${String(s % 60).padStart(2,'0')}:${String(f).padStart(2,'0')}`
   }
 
-  // ── Download video (screen-capture with auto-play) ────────────────────────────
+  // ── Timeline width ────────────────────────────────────────────────────────────
 
-  async function handleDownload() {
-    if (recording) {
-      // Cancel
-      if (timerRef.current) clearInterval(timerRef.current)
-      mediaRef.current?.stop()
-      setRecording(false)
-      setAutoPlayKey(null)
-      setRecordProgress(0)
-      return
-    }
+  const timelineContentWidth = Math.max(duration * zoom + 200, 800)
 
-    setRecordError('')
-    const durationMs  = (duration / FPS) * 1000
-    const bufferMs    = 800
+  // ── Ruler marks ──────────────────────────────────────────────────────────────
 
-    let stream: MediaStream
-    try {
-      // preferCurrentTab skips the screen picker on Chrome 107+ (auto-selects this tab)
-      stream = await (navigator.mediaDevices as MediaDevices & {
-        getDisplayMedia: (c?: object) => Promise<MediaStream>
-      }).getDisplayMedia({
-        video: { frameRate: 30, width: dims.width, height: dims.height },
-        audio: false,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        preferCurrentTab: true as any,
-        selfBrowserSurface: 'include',
-      })
-    } catch {
-      setRecordError('Screen capture was cancelled or blocked by the browser.')
-      return
-    }
+  const rulerMarks: number[] = []
+  const totalSecs = Math.ceil(duration / FPS) + 5
+  for (let s = 0; s <= totalSecs; s++) rulerMarks.push(s)
 
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-      ? 'video/webm;codecs=vp9'
-      : 'video/webm'
+  // ── Add to end shortcuts ──────────────────────────────────────────────────────
 
-    const chunks: Blob[] = []
-    const rec = new MediaRecorder(stream, { mimeType })
-    mediaRef.current = rec
-
-    rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data) }
-    rec.onstop = () => {
-      stream.getTracks().forEach(t => t.stop())
-      if (timerRef.current) clearInterval(timerRef.current)
-      const blob = new Blob(chunks, { type: 'video/webm' })
-      const url  = URL.createObjectURL(blob)
-      const a    = document.createElement('a')
-      a.href     = url
-      a.download = `${videoTitle.replace(/[^a-z0-9]/gi, '_')}.webm`
-      a.click()
-      URL.revokeObjectURL(url)
-      setRecording(false)
-      setAutoPlayKey(null)
-      setRecordProgress(0)
-    }
-
-    rec.start()
-
-    // Remount the player with autoPlay so it starts from frame 0 immediately
-    setAutoPlayKey(Date.now())
-    setRecording(true)
-    setRecordProgress(0)
-
-    // Progress ticker
-    const startTs = Date.now()
-    timerRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTs
-      setRecordProgress(Math.min(100, (elapsed / durationMs) * 100))
-    }, 200)
-
-    // Auto-stop
-    setTimeout(() => rec.state === 'recording' && rec.stop(), durationMs + bufferMs)
+  function addSceneToEnd(sceneType: SceneType) {
+    const endFrame = totalDurationFrames(clips.filter(c => c.track === 'main'))
+    const realEnd = clips.filter(c => c.track === 'main').length === 0 ? 0 : endFrame
+    setClips(prev => [...prev, newSceneClip(sceneType, realEnd)])
   }
+
+  function addShapeAtCurrent(shape: ObjectShape) {
+    setClips(prev => [...prev, newShapeClip(shape, currentFrame)])
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+
+  const mediaImages  = mediaFiles.filter(m => m.type === 'image' || m.type === 'video')
+  const mediaAudio   = mediaFiles.filter(m => m.type === 'audio')
 
   return (
-    <div className="min-h-screen bg-[#070d1a] text-white">
+    <div className="flex flex-col bg-[#070d1a] text-white" style={{ height: '100vh', overflow: 'hidden' }}>
 
-      {/* Header */}
-      <div className="border-b border-white/8 bg-[#0a1020]/80 backdrop-blur sticky top-0 z-40">
-        <div className="max-w-screen-xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <Video className="w-4 h-4 text-emerald-400" />
-            <span className="text-sm font-bold text-white">Video Hub</span>
-          </div>
-          <div className="flex-1" />
-          {/* Tab switcher */}
-          <div className="flex gap-1 bg-white/5 p-1 rounded-lg">
-            <button
-              onClick={() => setTab('create')}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${tab === 'create' ? 'bg-emerald-500/20 text-emerald-300' : 'text-gray-500 hover:text-white'}`}
-            >
-              <Film className="w-3.5 h-3.5 inline mr-1.5" />Create
-            </button>
-            <button
-              onClick={() => setTab('library')}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-all ${tab === 'library' ? 'bg-emerald-500/20 text-emerald-300' : 'text-gray-500 hover:text-white'}`}
-            >
-              <FolderOpen className="w-3.5 h-3.5 inline mr-1.5" />Library
-            </button>
-          </div>
-          <button
-            onClick={async () => {
-              await fetch('/api/auth', { method: 'DELETE' })
-              router.push('/')
-            }}
-            title="Log out"
-            className="p-2 text-gray-600 hover:text-white transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
+      {/* ── HEADER ─────────────────────────────────────────────────────────────── */}
+      <div className="shrink-0 flex items-center gap-3 px-4 h-12 border-b border-white/8 bg-[#0a1020]">
+        <div className="flex items-center gap-2 mr-2">
+          <Film className="w-4 h-4 text-emerald-400" />
+          <span className="text-sm font-bold text-white">Video Hub</span>
         </div>
+
+        <input
+          type="text"
+          value={videoTitle}
+          onChange={e => setVideoTitle(e.target.value)}
+          className="flex-1 max-w-xs bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+        />
+
+        <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg ml-2">
+          {(['16:9', '9:16'] as const).map(ar => (
+            <button
+              key={ar}
+              onClick={() => setAspectRatio(ar)}
+              className={`px-2 py-1 rounded text-[11px] font-medium transition-all ${
+                aspectRatio === ar ? 'bg-emerald-500/20 text-emerald-300' : 'text-gray-500 hover:text-white'
+              }`}
+            >
+              {ar}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        <button
+          onClick={() => setShowLibrary(v => !v)}
+          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white border border-white/10 px-3 py-1.5 rounded-lg transition-all"
+        >
+          <FolderOpen className="w-3.5 h-3.5" />Library
+        </button>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-1.5 text-xs bg-white/8 hover:bg-white/12 border border-white/10 text-white px-3 py-1.5 rounded-lg transition-all disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+
+        {saveMsg && (
+          <span className={`text-xs flex items-center gap-1 ${saveMsg === 'Saved!' ? 'text-emerald-400' : 'text-red-400'}`}>
+            {saveMsg === 'Saved!' ? <Check className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+            {saveMsg}
+          </span>
+        )}
+
+        <button
+          onClick={async () => {
+            await fetch('/api/auth', { method: 'DELETE' })
+            router.push('/')
+          }}
+          title="Log out"
+          className="p-1.5 text-gray-600 hover:text-white transition-colors"
+        >
+          <LogOut className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* ── CREATE TAB ─────────────────────────────────────────────────────────── */}
-      {tab === 'create' && (
-        <div className="max-w-screen-xl mx-auto px-4 sm:px-6 py-6">
-          <div className="flex flex-col xl:flex-row gap-6">
+      {/* ── MIDDLE ROW ─────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 min-h-0">
 
-            {/* LEFT: Script + Scene editor */}
-            <div className="flex-1 min-w-0 space-y-5">
+        {/* Sidebar (48px icons) */}
+        <div className="shrink-0 w-12 bg-[#070d1a] border-r border-white/8 flex flex-col items-center py-2 gap-1">
+          {([ ['media', ImageIcon, 'Media'],
+              ['scenes', Film, 'Scenes'],
+              ['objects', Layers, 'Objects'],
+              ['audio', Music, 'Audio'],
+          ] as [SideTab, React.ComponentType<{className?: string}>, string][]).map(([tab, Icon, label]) => (
+            <button
+              key={tab}
+              onClick={() => setSideTab(tab)}
+              title={label}
+              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${
+                sideTab === tab
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : 'text-gray-600 hover:text-gray-300'
+              }`}
+            >
+              <Icon className="w-5 h-5" />
+            </button>
+          ))}
+        </div>
 
-              {/* Script input */}
-              <div className="bg-[#0d1526] rounded-2xl border border-white/8 p-5">
-                <div className="flex items-center gap-2 mb-3">
-                  <Clapperboard className="w-4 h-4 text-emerald-400" />
-                  <h2 className="text-sm font-bold text-white">Video Script</h2>
-                </div>
-                <textarea
-                  value={script}
-                  onChange={e => setScript(e.target.value)}
-                  rows={6}
-                  placeholder="Type or paste your full video script here. Separate each scene idea with a blank line, or just write it all out and we'll split it automatically."
-                  className="w-full bg-[#070d1a] border border-white/8 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500/50 resize-none"
-                />
-                <p className="mt-2 text-xs text-gray-600">
-                  Separate scenes with blank lines, or write one block — we'll split by sentence automatically.
-                </p>
-                <div className="flex items-center gap-3 mt-3">
-                  <button
-                    onClick={handleMakeVideo}
-                    disabled={!script.trim()}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                  >
-                    <Clapperboard className="w-4 h-4" />
-                    Make Video
-                  </button>
-                  <button
-                    onClick={() => { setScenes(DEFAULT_SCENES); setVideoTitle('FM Trader Promo'); setPlayerKey(k => k + 1) }}
-                    className="flex items-center gap-1.5 text-gray-500 hover:text-white text-xs transition-colors"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />Reset
-                  </button>
-                </div>
-              </div>
+        {/* Panel */}
+        <div className="shrink-0 w-[260px] bg-[#0d1526] border-r border-white/8 flex flex-col overflow-hidden">
+          <div className="px-3 py-2 border-b border-white/8 shrink-0">
+            <span className="text-xs font-bold text-gray-300 uppercase tracking-widest">
+              {sideTab === 'media' ? 'Media' : sideTab === 'scenes' ? 'Scenes' : sideTab === 'objects' ? 'Objects' : 'Audio'}
+            </span>
+          </div>
 
-              {/* Title + aspect ratio */}
-              <div className="bg-[#0d1526] rounded-2xl border border-white/8 p-5 space-y-4">
-                <div>
-                  <label className="text-xs text-gray-500 font-medium mb-1.5 block">Video Title</label>
-                  <input
-                    type="text"
-                    value={videoTitle}
-                    onChange={e => setVideoTitle(e.target.value)}
-                    className="w-full bg-[#070d1a] border border-white/8 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 font-medium mb-1.5 block">Format</label>
-                  <div className="flex gap-2">
-                    {(['16:9', '9:16'] as const).map(ar => (
-                      <button
-                        key={ar}
-                        onClick={() => { setAspectRatio(ar); setPlayerKey(k => k + 1) }}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
-                          aspectRatio === ar
-                            ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                            : 'border-white/10 text-gray-400 hover:text-white hover:border-white/20'
-                        }`}
-                      >
-                        {ar === '16:9' ? '16:9 — YouTube' : '9:16 — Shorts / Reels'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
+          <div className="flex-1 overflow-y-auto p-2">
 
-              {/* Scene list */}
-              <div className="bg-[#0d1526] rounded-2xl border border-white/8 p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <Film className="w-4 h-4 text-gray-400" />
-                    <h2 className="text-sm font-bold text-white">Scenes</h2>
-                    <span className="text-xs text-gray-600 bg-white/5 px-2 py-0.5 rounded-full">
-                      {scenes.length} scenes · {(duration / FPS).toFixed(0)}s
-                    </span>
-                  </div>
-                  <button
-                    onClick={addScene}
-                    className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/40 px-3 py-1.5 rounded-lg transition-all"
-                  >
-                    <Plus className="w-3.5 h-3.5" />Add Scene
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {scenes.map((scene, i) => (
-                    <SceneRow
-                      key={scene.id}
-                      scene={scene}
-                      index={i}
-                      total={scenes.length}
-                      onChange={s => updateScene(i, s)}
-                      onDelete={() => deleteScene(i)}
-                      onMove={dir => moveScene(i, dir)}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* RIGHT: Preview + controls */}
-            <div className="xl:w-[580px] shrink-0 space-y-5">
-
-              {/* Player */}
-              <div className="bg-[#0d1526] rounded-2xl border border-white/8 overflow-hidden">
-                <div className="flex items-center justify-between px-5 py-3 border-b border-white/8">
-                  <div className="flex items-center gap-2">
-                    <Monitor className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm font-bold text-white">Preview</span>
-                  </div>
-                  <span className="text-xs text-gray-600">{dims.width}×{dims.height} · {(duration / FPS).toFixed(1)}s</span>
-                </div>
-
-                <div className="p-4 relative">
-                  <div className="rounded-xl overflow-hidden bg-black border border-white/5">
-                    {autoPlayKey !== null ? (
-                      <RemotionPlayer
-                        key={autoPlayKey}
-                        component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
-                        inputProps={{ scenes, title: videoTitle, aspectRatio } as PromoVideoProps}
-                        durationInFrames={duration}
-                        compositionWidth={dims.width}
-                        compositionHeight={dims.height}
-                        fps={FPS}
-                        style={{ width: '100%' }}
-                        controls={false}
-                        loop={false}
-                        autoPlay
-                      />
-                    ) : (
-                      <RemotionPlayer
-                        key={playerKey}
-                        component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
-                        inputProps={{ scenes, title: videoTitle, aspectRatio } as PromoVideoProps}
-                        durationInFrames={duration}
-                        compositionWidth={dims.width}
-                        compositionHeight={dims.height}
-                        fps={FPS}
-                        style={{ width: '100%' }}
-                        controls
-                        loop={false}
-                        clickToPlay
-                      />
-                    )}
-                  </div>
-
-                  {/* Recording progress overlay */}
-                  {recording && (
-                    <div className="absolute inset-4 rounded-xl pointer-events-none border-2 border-red-500/60 flex flex-col items-end justify-end p-3">
-                      <div className="bg-black/70 backdrop-blur rounded-lg px-3 py-1.5 flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                        <span className="text-xs text-red-400 font-semibold">Recording</span>
-                        <span className="text-xs text-gray-400">{Math.round(recordProgress)}%</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Progress bar */}
-                {recording && (
-                  <div className="mx-4 mb-3 h-1 bg-white/5 rounded-full overflow-hidden">
+            {/* SCENES panel */}
+            {sideTab === 'scenes' && (
+              <div className="grid grid-cols-2 gap-1.5">
+                {SCENE_TYPES.map(st => {
+                  const payload: DragPayload = { kind: 'scene', sceneType: st }
+                  return (
                     <div
-                      className="h-full bg-red-500 rounded-full transition-all duration-200"
-                      style={{ width: `${recordProgress}%` }}
-                    />
-                  </div>
+                      key={st}
+                      draggable
+                      onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                      onClick={() => addSceneToEnd(st)}
+                      className="bg-[#070d1a] border border-white/8 hover:border-emerald-500/30 rounded-lg p-2 cursor-grab active:cursor-grabbing flex flex-col items-center gap-1 transition-all hover:bg-emerald-500/5"
+                    >
+                      <span className="text-xl">{SCENE_EMOJIS[st] ?? '🎬'}</span>
+                      <span className="text-[10px] text-gray-400 text-center capitalize">{st}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* OBJECTS panel */}
+            {sideTab === 'objects' && (
+              <div className="grid grid-cols-2 gap-1.5">
+                {SHAPES.map(shape => {
+                  const payload: DragPayload = { kind: 'shape', shape }
+                  return (
+                    <div
+                      key={shape}
+                      draggable
+                      onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                      onClick={() => addShapeAtCurrent(shape)}
+                      className="bg-[#070d1a] border border-white/8 hover:border-pink-500/30 rounded-lg p-2 cursor-grab active:cursor-grabbing flex flex-col items-center gap-1 transition-all hover:bg-pink-500/5"
+                    >
+                      <span className="text-xl">{SHAPE_LABELS[shape].split(' ')[0]}</span>
+                      <span className="text-[10px] text-gray-400 text-center">{SHAPE_LABELS[shape].split(' ')[1]}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* MEDIA panel */}
+            {sideTab === 'media' && (
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 w-full bg-[#070d1a] hover:bg-white/5 border border-white/8 rounded-lg px-3 py-2 cursor-pointer transition-all">
+                  <Upload className="w-4 h-4 text-gray-400" />
+                  <span className="text-xs text-gray-400">Upload Image / Video</span>
+                  <input
+                    type="file" accept="image/*,video/*" multiple className="hidden"
+                    onChange={e => {
+                      const files = e.target.files
+                      if (!files) return
+                      Array.from(files).forEach(file => {
+                        const t = file.type.startsWith('video') ? 'video' : 'image'
+                        const url = URL.createObjectURL(file)
+                        setMediaFiles(prev => [...prev, { id: String(Date.now() + Math.random()), url, type: t, name: file.name }])
+                      })
+                      e.target.value = ''
+                    }}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {mediaImages.map(m => {
+                    const payload: DragPayload = { kind: 'media', mediaId: m.id }
+                    return (
+                      <div
+                        key={m.id}
+                        draggable
+                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                        className="bg-[#070d1a] border border-white/8 hover:border-blue-500/30 rounded-lg overflow-hidden cursor-grab active:cursor-grabbing group relative"
+                      >
+                        {m.type === 'image' ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={m.url} alt={m.name} className="w-full h-16 object-cover" />
+                        ) : (
+                          <video src={m.url} className="w-full h-16 object-cover" muted />
+                        )}
+                        <div className="p-1">
+                          <p className="text-[9px] text-gray-500 truncate">{m.name}</p>
+                        </div>
+                        <span className="absolute top-1 right-1 bg-black/70 text-[9px] text-white px-1 rounded">
+                          {m.type === 'video' ? 'VID' : 'IMG'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {mediaImages.length === 0 && (
+                  <p className="text-[11px] text-gray-600 text-center py-4">No media uploaded yet.</p>
                 )}
-
-                {/* Download button */}
-                <div className="px-5 pb-5">
-                  {recordError && (
-                    <p className="mb-3 text-xs text-red-400 flex items-center gap-1.5">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />{recordError}
-                    </p>
-                  )}
-                  <button
-                    onClick={handleDownload}
-                    className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all ${
-                      recording
-                        ? 'bg-red-500/15 border border-red-500/40 text-red-400 hover:bg-red-500/25'
-                        : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                    }`}
-                  >
-                    {recording
-                      ? <><div className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />Cancel</>
-                      : <><Download className="w-4 h-4" />Download Video</>
-                    }
-                  </button>
-                  {!recording && (
-                    <p className="mt-2 text-xs text-gray-600 text-center">
-                      Confirm &ldquo;Share tab&rdquo; when prompted — video plays and downloads automatically.
-                    </p>
-                  )}
-                </div>
               </div>
+            )}
 
-              {/* Save project */}
-              <div className="bg-[#0d1526] rounded-2xl border border-white/8 p-5">
-                <div className="flex items-center gap-2 mb-4">
-                  <Save className="w-4 h-4 text-gray-400" />
-                  <h2 className="text-sm font-bold text-white">Save Project</h2>
+            {/* AUDIO panel */}
+            {sideTab === 'audio' && (
+              <div className="space-y-3">
+                <label className="flex items-center gap-2 w-full bg-[#070d1a] hover:bg-white/5 border border-white/8 rounded-lg px-3 py-2 cursor-pointer transition-all">
+                  <Upload className="w-4 h-4 text-gray-400" />
+                  <span className="text-xs text-gray-400">Upload Audio</span>
+                  <input
+                    type="file" accept="audio/*" multiple className="hidden"
+                    onChange={e => handleMediaUpload(e, 'audio')}
+                  />
+                </label>
+                <div className="space-y-1.5">
+                  {mediaAudio.map(m => {
+                    const payload: DragPayload = { kind: 'audio', mediaId: m.id }
+                    return (
+                      <div
+                        key={m.id}
+                        draggable
+                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                        className="bg-[#070d1a] border border-white/8 hover:border-amber-500/30 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing flex items-center gap-2 transition-all"
+                      >
+                        <Music className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <p className="text-[11px] text-gray-400 truncate flex-1">{m.name}</p>
+                      </div>
+                    )
+                  })}
                 </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    className="flex items-center gap-2 bg-white/8 border border-white/10 hover:bg-white/12 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-50"
-                  >
-                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                    {saving ? 'Saving…' : 'Save to Library'}
-                  </button>
-                  {saveMsg && (
-                    <span className={`text-sm flex items-center gap-1.5 ${saveMsg === 'Saved!' ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {saveMsg === 'Saved!' ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                      {saveMsg}
-                    </span>
-                  )}
-                </div>
+                {mediaAudio.length === 0 && (
+                  <p className="text-[11px] text-gray-600 text-center py-4">No audio uploaded yet.</p>
+                )}
               </div>
-            </div>
+            )}
 
           </div>
         </div>
-      )}
 
-      {/* ── LIBRARY TAB ────────────────────────────────────────────────────────── */}
-      {tab === 'library' && (
-        <div className="max-w-screen-xl mx-auto px-4 sm:px-6 py-6">
-          <div className="mb-6">
-            <h2 className="text-xl font-black text-white">Saved Projects</h2>
-            <p className="text-sm text-gray-500 mt-1">Load a project to edit, or delete to remove.</p>
-          </div>
-
-          {loadingProjects && (
-            <div className="flex items-center gap-2 text-gray-500 py-12 justify-center">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span className="text-sm">Loading…</span>
+        {/* Preview area (flex-1) */}
+        <div className="flex-1 min-w-0 bg-[#0a1020] flex flex-col items-center justify-center p-4 overflow-hidden">
+          {clips.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 text-center">
+              <Film className="w-10 h-10 text-gray-700" />
+              <p className="text-gray-600 text-sm max-w-xs">
+                Drag scenes, media, or objects to the timeline below to get started
+              </p>
+            </div>
+          ) : (
+            <div
+              className="rounded-xl overflow-hidden bg-black border border-white/5"
+              style={{ maxWidth: '100%', maxHeight: '100%' }}
+            >
+              <RemotionPlayer
+                ref={playerRef}
+                component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
+                inputProps={{ clips, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
+                durationInFrames={Math.max(duration, 1)}
+                compositionWidth={dims.width}
+                compositionHeight={dims.height}
+                fps={FPS}
+                style={{ width: '100%', maxHeight: 'calc(100vh - 400px)' }}
+                controls={false}
+                loop={false}
+              />
             </div>
           )}
+        </div>
 
-          {!loadingProjects && projects.length === 0 && (
-            <div className="text-center py-24">
-              <Video className="w-10 h-10 text-gray-700 mx-auto mb-3" />
-              <p className="text-gray-500 text-sm">No saved projects yet.</p>
-              <button
-                onClick={() => setTab('create')}
-                className="mt-4 text-emerald-400 text-sm hover:text-emerald-300 transition-colors"
+        {/* Properties panel (only when clip selected) */}
+        {selectedClip && (
+          <PropertiesPanel
+            clip={selectedClip}
+            onUpdate={updateClip}
+            onClose={() => setSelectedClipId(null)}
+          />
+        )}
+      </div>
+
+      {/* ── TIMELINE ───────────────────────────────────────────────────────────── */}
+      <div className="shrink-0 bg-[#070d1a] border-t border-white/8" style={{ height: 220 }}>
+
+        {/* Transport bar */}
+        <div className="flex items-center gap-3 px-3 py-1.5 border-b border-white/8">
+          <button
+            onClick={togglePlay}
+            className="w-7 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-500 flex items-center justify-center transition-all"
+          >
+            {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          </button>
+
+          <span className="text-xs text-gray-400 font-mono w-20">{formatTime(currentFrame)}</span>
+          <span className="text-xs text-gray-600 font-mono">/ {formatTime(duration)}</span>
+
+          <div className="flex-1" />
+
+          <button
+            onClick={() => setZoom(z => Math.max(1, z - 1))}
+            className="p-1.5 text-gray-500 hover:text-white border border-white/8 rounded-lg transition-all"
+            title="Zoom out"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <span className="text-xs text-gray-600 w-8 text-center">{zoom}px</span>
+          <button
+            onClick={() => setZoom(z => Math.min(20, z + 1))}
+            className="p-1.5 text-gray-500 hover:text-white border border-white/8 rounded-lg transition-all"
+            title="Zoom in"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => {
+              const a = document.createElement('a')
+              a.href = '#'
+              a.textContent = 'Export not available in preview mode'
+            }}
+            className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg transition-all"
+          >
+            <Download className="w-3.5 h-3.5" />Export
+          </button>
+        </div>
+
+        {/* Scrollable ruler + tracks */}
+        <div
+          ref={timelineRef}
+          className="overflow-x-auto overflow-y-hidden"
+          style={{ height: 'calc(100% - 38px)' }}
+        >
+          <div style={{ width: timelineContentWidth, minWidth: '100%', position: 'relative' }}>
+
+            {/* Time ruler */}
+            <div
+              className="relative flex items-end bg-[#0a1020] border-b border-white/8 cursor-pointer select-none"
+              style={{ height: 28, paddingLeft: LABEL_WIDTH }}
+              onClick={handleRulerClick}
+            >
+              {rulerMarks.map(s => (
+                <div
+                  key={s}
+                  style={{
+                    position: 'absolute',
+                    left: LABEL_WIDTH + s * FPS * zoom,
+                    bottom: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                  }}
+                >
+                  <div className="w-px h-3 bg-white/20" />
+                  <span className="text-[9px] text-gray-600 ml-0.5">{s}s</span>
+                </div>
+              ))}
+
+              {/* Playhead on ruler */}
+              <div
+                style={{
+                  position: 'absolute',
+                  left: LABEL_WIDTH + currentFrame * zoom,
+                  top: 0,
+                  bottom: 0,
+                  width: 2,
+                  background: '#ef4444',
+                  zIndex: 20,
+                  pointerEvents: 'none',
+                }}
+              />
+            </div>
+
+            {/* Track rows */}
+            {([ ['main', 'MAIN'], ['overlay', 'OVERLAY'], ['audio', 'AUDIO'] ] as ['main'|'overlay'|'audio', string][]).map(([trackId, trackLabel]) => (
+              <div
+                key={trackId}
+                className="relative flex items-stretch border-b border-white/5"
+                style={{ height: TRACK_HEIGHTS[trackId] }}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => handleDrop(e, trackId)}
               >
-                Create your first video →
-              </button>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {projects.map(project => (
-              <div key={project.id} className="bg-[#0d1526] border border-white/8 rounded-2xl overflow-hidden hover:border-white/15 transition-all group">
-                {/* Thumbnail placeholder */}
-                <div className="aspect-video bg-gradient-to-br from-[#070d1a] to-[#0d1526] flex items-center justify-center relative overflow-hidden">
-                  <div className="absolute inset-0 opacity-5">
-                    <svg width="100%" height="100%">
-                      <defs>
-                        <pattern id={`g-${project.id}`} width="40" height="40" patternUnits="userSpaceOnUse">
-                          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#059669" strokeWidth="0.5" />
-                        </pattern>
-                      </defs>
-                      <rect width="100%" height="100%" fill={`url(#g-${project.id})`} />
-                    </svg>
-                  </div>
-                  <div className="text-center z-10">
-                    <div className="text-3xl font-black text-emerald-500/30">FM</div>
-                    <div className="text-xs text-gray-700 mt-1">{project.scenes.length} scenes · {project.aspectRatio}</div>
-                  </div>
-                  <span className="absolute top-2 right-2 text-[10px] font-bold bg-white/5 text-gray-500 px-2 py-1 rounded-full border border-white/5">
-                    {project.aspectRatio}
-                  </span>
+                {/* Label */}
+                <div
+                  className="shrink-0 flex items-center justify-center bg-[#0a1020] border-r border-white/8 text-[9px] font-bold tracking-widest"
+                  style={{ width: LABEL_WIDTH, color: '#4b5563' }}
+                >
+                  {trackLabel}
                 </div>
 
-                <div className="p-4">
-                  <h3 className="text-sm font-bold text-white truncate">{project.title}</h3>
-                  <p className="text-xs text-gray-600 mt-0.5">
-                    {new Date(project.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                    &nbsp;·&nbsp;{project.scenes.length} scenes
-                  </p>
-                  <div className="flex items-center gap-2 mt-3">
-                    <button
-                      onClick={() => handleLoad(project)}
-                      className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25 text-xs font-semibold py-2 rounded-lg transition-all"
-                    >
-                      <Play className="w-3.5 h-3.5" />Load & Edit
-                    </button>
-                    <button
-                      onClick={() => handleDelete(project.id)}
-                      className="p-2 text-gray-600 hover:text-red-400 border border-white/8 hover:border-red-500/30 rounded-lg transition-all"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                {/* Drop zone */}
+                <div className="flex-1 relative">
+                  {/* Clips */}
+                  {clips.filter(c => c.track === trackId).map(clip => {
+                    const left = clip.startFrame * zoom
+                    const width = Math.max(40, clip.durationFrames * zoom)
+                    const colorClass = CLIP_COLORS[clip.clipType] ?? 'bg-gray-700/90'
+                    const label =
+                      clip.clipType === 'scene' ? (clip.scene?.headline ?? clip.clipType) :
+                      clip.clipType === 'shape' ? (clip.shape ? SHAPE_LABELS[clip.shape.shape] ?? clip.clipType : clip.clipType) :
+                      clip.media?.name ?? clip.clipType
+
+                    return (
+                      <div
+                        key={clip.id}
+                        className={`absolute top-1 rounded-md px-2 flex items-center cursor-pointer select-none group border ${
+                          selectedClipId === clip.id ? 'border-white/60' : 'border-white/20'
+                        } ${colorClass}`}
+                        style={{
+                          left,
+                          width,
+                          height: TRACK_HEIGHTS[trackId] - 8,
+                          overflow: 'hidden',
+                        }}
+                        onClick={e => { e.stopPropagation(); setSelectedClipId(clip.id) }}
+                        onMouseDown={e => startClipDrag(e, clip.id)}
+                        onContextMenu={e => { e.preventDefault(); deleteClip(clip.id) }}
+                      >
+                        <span className="text-[10px] text-white/90 truncate flex-1 pointer-events-none">{label}</span>
+                        <button
+                          className="shrink-0 hidden group-hover:flex ml-1 text-white/60 hover:text-white transition-colors"
+                          onClick={e => { e.stopPropagation(); deleteClip(clip.id) }}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )
+                  })}
+
+                  {/* Playhead line */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: currentFrame * zoom,
+                      top: 0,
+                      bottom: 0,
+                      width: 2,
+                      background: '#ef4444',
+                      zIndex: 10,
+                      pointerEvents: 'none',
+                    }}
+                  />
                 </div>
               </div>
             ))}
+
+          </div>
+        </div>
+      </div>
+
+      {/* ── LIBRARY MODAL ──────────────────────────────────────────────────────── */}
+      {showLibrary && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-6" onClick={() => setShowLibrary(false)}>
+          <div
+            className="bg-[#0d1526] border border-white/10 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+              <h2 className="text-sm font-bold text-white">Saved Projects</h2>
+              <button onClick={() => setShowLibrary(false)} className="text-gray-600 hover:text-white transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {loadingProjects && (
+                <div className="flex items-center gap-2 justify-center py-12 text-gray-500">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span className="text-sm">Loading…</span>
+                </div>
+              )}
+              {!loadingProjects && projects.length === 0 && (
+                <div className="text-center py-16">
+                  <Film className="w-8 h-8 text-gray-700 mx-auto mb-2" />
+                  <p className="text-gray-500 text-sm">No saved projects yet.</p>
+                </div>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {projects.map(project => (
+                  <div key={project.id} className="bg-[#070d1a] border border-white/8 rounded-xl p-4 hover:border-white/15 transition-all">
+                    <h3 className="text-sm font-bold text-white truncate">{project.title}</h3>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      {new Date(project.createdAt).toLocaleDateString()} · {project.aspectRatio}
+                    </p>
+                    <div className="flex items-center gap-2 mt-3">
+                      <button
+                        onClick={() => handleLoad(project)}
+                        className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25 text-xs font-semibold py-1.5 rounded-lg transition-all"
+                      >
+                        <Play className="w-3.5 h-3.5" />Load
+                      </button>
+                      <button
+                        onClick={() => handleDelete(project.id)}
+                        className="p-1.5 text-gray-600 hover:text-red-400 border border-white/8 hover:border-red-500/30 rounded-lg transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
+
     </div>
   )
 }

@@ -75,9 +75,29 @@ export interface PromoScene {
   objects?:     VideoObject[]
 }
 
+export interface MediaFile {
+  id:   string
+  url:  string
+  type: 'image' | 'video' | 'audio'
+  name: string
+}
+
+export type ClipType = 'scene' | 'image' | 'video' | 'shape' | 'audio'
+
+export interface TimelineClip {
+  id:             string
+  track:          'main' | 'overlay' | 'audio'
+  startFrame:     number
+  durationFrames: number
+  clipType:       ClipType
+  scene?:         PromoScene
+  media?:         MediaFile
+  shape?:         VideoObject
+}
+
 export interface PromoVideoProps {
-  scenes:      PromoScene[]
-  title:       string
+  clips:        TimelineClip[]
+  title:        string
   aspectRatio?: '16:9' | '9:16'
 }
 
@@ -847,28 +867,62 @@ function SceneContent({ scene, totalFrames }: { scene: PromoScene; totalFrames: 
   }
 }
 
+// ── Media clip renderers ─────────────────────────────────────────────────────
+
+function ImageClipRenderer({ media, totalFrames: tf }: { media: MediaFile; totalFrames: number }) {
+  const frame = useCurrentFrame()
+  const fadeIn  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: 'clamp' })
+  const fadeOut = interpolate(frame, [Math.max(tf - 12, tf - 1), tf], [1, 0], { extrapolateLeft: 'clamp' })
+  return (
+    <AbsoluteFill style={{ opacity: Math.min(fadeIn, fadeOut), background: DARK, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={media.url} alt={media.name} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+    </AbsoluteFill>
+  )
+}
+
+function VideoClipRenderer({ media, totalFrames: tf }: { media: MediaFile; totalFrames: number }) {
+  const frame = useCurrentFrame()
+  const fadeIn  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: 'clamp' })
+  const fadeOut = interpolate(frame, [Math.max(tf - 12, tf - 1), tf], [1, 0], { extrapolateLeft: 'clamp' })
+  return (
+    <AbsoluteFill style={{ opacity: Math.min(fadeIn, fadeOut), background: DARK, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <video src={media.url} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} autoPlay muted loop />
+    </AbsoluteFill>
+  )
+}
+
 // ── Main composition ─────────────────────────────────────────────────────────
 
-export const PromoVideo: React.FC<PromoVideoProps> = ({ scenes }) => {
-  const { fps } = useVideoConfig()
-  let elapsed = 0
+export const PromoVideo: React.FC<PromoVideoProps> = ({ clips }) => {
+  const mainClips    = [...clips.filter(c => c.track === 'main')].sort((a, b) => a.startFrame - b.startFrame)
+  const overlayClips = clips.filter(c => c.track === 'overlay')
+
   return (
     <AbsoluteFill>
-      {scenes.map(scene => {
-        const sceneDuration = Math.round(scene.duration * fps)
-        const from = elapsed
-        elapsed += sceneDuration
-        return (
-          <Sequence key={scene.id} from={from} durationInFrames={sceneDuration}>
-            <>
-              <SceneContent scene={scene} totalFrames={sceneDuration} />
-              {scene.objects?.map(obj => (
-                <ObjectRenderer key={obj.id} obj={obj} sceneDuration={sceneDuration} />
-              ))}
-            </>
-          </Sequence>
-        )
-      })}
+      {mainClips.map(clip => (
+        <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
+          <>
+            {clip.clipType === 'scene' && clip.scene ? (
+              <>
+                <SceneContent scene={clip.scene} totalFrames={clip.durationFrames} />
+                {(clip.scene.objects ?? []).map(obj => (
+                  <ObjectRenderer key={obj.id} obj={obj} sceneDuration={clip.durationFrames} />
+                ))}
+              </>
+            ) : clip.clipType === 'image' && clip.media ? (
+              <ImageClipRenderer media={clip.media} totalFrames={clip.durationFrames} />
+            ) : clip.clipType === 'video' && clip.media ? (
+              <VideoClipRenderer media={clip.media} totalFrames={clip.durationFrames} />
+            ) : null}
+          </>
+        </Sequence>
+      ))}
+      {overlayClips.map(clip => clip.shape ? (
+        <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
+          <ObjectRenderer obj={clip.shape} sceneDuration={clip.durationFrames} />
+        </Sequence>
+      ) : null)}
     </AbsoluteFill>
   )
 }
