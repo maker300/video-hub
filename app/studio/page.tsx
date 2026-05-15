@@ -75,9 +75,10 @@ const ENTRANCE_LABELS: Record<EntranceAnim, string> = {
 const ENTRANCES: EntranceAnim[] = ['none','fade','slideLeft','slideRight','slideUp','slideDown','scaleIn','spinIn','bounceIn']
 
 const MOTION_LABELS: Record<MotionAnim, string> = {
-  none:'None', float:'Float', pulse:'Pulse', spin:'Continuous Spin', shake:'Shake', breathe:'Breathe',
+  none:'None', float:'Float', pulse:'Pulse', spin:'Spin', shake:'Shake', breathe:'Breathe',
+  wave:'Wave', bounce:'Bounce', swing:'Swing', orbit:'Orbit', flicker:'Flicker', zoom:'Zoom',
 }
-const MOTIONS: MotionAnim[] = ['none','float','pulse','spin','shake','breathe']
+const MOTIONS: MotionAnim[] = ['none','float','pulse','spin','shake','breathe','wave','bounce','swing','orbit','flicker','zoom']
 
 const EXIT_LABELS: Record<ExitAnim, string> = {
   none:'None', fade:'Fade Out', slideLeft:'Slide Left', slideRight:'Slide Right', scaleOut:'Scale Out',
@@ -290,20 +291,26 @@ function ObjectEditor({ obj, onChange, onDelete }: {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <label className={labelCls}>Fill</label>
           <input type="color" value={obj.fill} onChange={e => set({ fill: e.target.value })}
             className="w-full h-8 rounded-lg cursor-pointer border border-white/10 bg-transparent" />
         </div>
         <div className="space-y-1">
-          <label className={labelCls}>Stroke</label>
+          <label className={labelCls}>Stroke Color</label>
           <input type="color" value={obj.stroke} onChange={e => set({ stroke: e.target.value })}
             className="w-full h-8 rounded-lg cursor-pointer border border-white/10 bg-transparent" />
         </div>
         <div className="space-y-1">
-          <label className={labelCls}>Stroke W</label>
-          <input type="number" min={0} max={12} value={obj.strokeWidth} onChange={e => set({ strokeWidth: +e.target.value })} className={numCls} />
+          <label className={labelCls}>Stroke Width</label>
+          <input type="number" min={0} max={20} value={obj.strokeWidth} onChange={e => set({ strokeWidth: +e.target.value })} className={numCls} />
+        </div>
+        <div className="space-y-1">
+          <label className={labelCls}>Stroke Dash <span className="text-white">{obj.strokeDash ?? 0}</span></label>
+          <input type="range" min={0} max={30} step={1} value={obj.strokeDash ?? 0}
+            onChange={e => set({ strokeDash: +e.target.value })}
+            className="w-full accent-emerald-500 mt-1" />
         </div>
       </div>
 

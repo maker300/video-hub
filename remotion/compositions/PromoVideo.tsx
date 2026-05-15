@@ -9,6 +9,7 @@ import {
   spring,
   Easing,
   Sequence,
+  Audio,
 } from 'remotion'
 
 // ── Brand tokens ────────────────────────────────────────────────────────────
@@ -38,7 +39,9 @@ export type EntranceAnim =
   | 'none' | 'fade' | 'slideLeft' | 'slideRight' | 'slideUp'
   | 'slideDown' | 'scaleIn' | 'spinIn' | 'bounceIn'
 
-export type MotionAnim = 'none' | 'float' | 'pulse' | 'spin' | 'shake' | 'breathe'
+export type MotionAnim =
+  | 'none' | 'float' | 'pulse' | 'spin' | 'shake' | 'breathe'
+  | 'wave' | 'bounce' | 'swing' | 'orbit' | 'flicker' | 'zoom'
 
 export type ExitAnim = 'none' | 'fade' | 'slideLeft' | 'slideRight' | 'scaleOut'
 
@@ -53,6 +56,7 @@ export interface VideoObject {
   fill:            string
   stroke:          string
   strokeWidth:     number
+  strokeDash?:     number   // dasharray gap (0 = solid)
   opacity:         number   // 0–1
   entrance:        EntranceAnim
   entranceDelay:   number   // frames
@@ -202,18 +206,19 @@ function SectionLabel({ text, opacity = 1 }: { text: string; opacity?: number })
 
 // ── Object system ────────────────────────────────────────────────────────────
 
-function renderShape(shape: ObjectShape, fill: string, stroke: string, sw: number): React.ReactNode {
-  const props = { fill, stroke, strokeWidth: sw }
+function renderShape(shape: ObjectShape, fill: string, stroke: string, sw: number, dash = 0): React.ReactNode {
+  const da = dash > 0 ? `${dash} ${dash}` : undefined
+  const props = { fill, stroke, strokeWidth: sw, strokeDasharray: da }
   switch (shape) {
     case 'circle':   return <circle cx="50" cy="50" r="47" {...props} />
     case 'rect':     return <rect x="3" y="3" width="94" height="94" {...props} />
-    case 'line':     return <line x1="5" y1="50" x2="95" y2="50" stroke={stroke} strokeWidth={sw * 2 + 4} strokeLinecap="round" fill="none" />
+    case 'line':     return <line x1="5" y1="50" x2="95" y2="50" stroke={stroke} strokeWidth={sw * 2 + 4} strokeLinecap="round" strokeDasharray={da} fill="none" />
     case 'triangle': return <polygon points="50,4 96,93 4,93" {...props} />
     case 'pentagon': return <polygon points="50,3 94.69,35.47 77.63,88.04 22.37,88.04 5.31,35.47" {...props} />
     case 'star':     return <polygon points="50,3 61.76,33.82 94.69,35.47 69.02,56.18 77.63,88.04 50,70 22.37,88.04 30.98,56.18 5.31,35.47 38.24,33.82" {...props} />
     case 'hexagon':  return <polygon points="97,50 73.5,90.7 26.5,90.7 3,50 26.5,9.3 73.5,9.3" {...props} />
     case 'diamond':  return <polygon points="50,3 97,50 50,97 3,50" {...props} />
-    case 'ring':     return <circle cx="50" cy="50" r="42" fill="none" stroke={stroke} strokeWidth={sw * 3 + 6} />
+    case 'ring':     return <circle cx="50" cy="50" r="42" fill="none" stroke={stroke} strokeWidth={sw * 3 + 6} strokeDasharray={da} />
     case 'arrow':    return <path d="M 5,33 L 55,33 L 55,13 L 95,50 L 55,87 L 55,67 L 5,67 Z" {...props} />
     default:         return <circle cx="50" cy="50" r="47" {...props} />
   }
@@ -262,6 +267,12 @@ function ObjectRenderer({ obj, sceneDuration }: { obj: VideoObject; sceneDuratio
       case 'spin':    rot += frame * obj.motionSpeed * 2; break
       case 'shake':   tx  += Math.sin(t * 1.8) * 5; break
       case 'breathe': sc  *= 0.88 + Math.sin(t / 50) * 0.12; break
+      case 'wave':    tx  += Math.sin(t / 30) * 15; ty += Math.cos(t / 50) * 8; break
+      case 'bounce':  ty  -= Math.abs(Math.sin(t / 25)) * 20; break
+      case 'swing':   rot += Math.sin(t / 35) * 20; break
+      case 'orbit':   tx  += Math.cos(t / 45) * 18; ty += Math.sin(t / 45) * 18; break
+      case 'flicker': opacity *= 0.4 + Math.abs(Math.sin(t * 2.7)) * 0.6; break
+      case 'zoom':    sc  *= 0.85 + Math.abs(Math.sin(t / 40)) * 0.3; break
     }
   }
 
@@ -315,7 +326,7 @@ function ObjectRenderer({ obj, sceneDuration }: { obj: VideoObject; sceneDuratio
   return (
     <div style={commonStyle}>
       <svg viewBox="0 0 100 100" width="100%" height="100%" overflow="visible">
-        {renderShape(obj.shape, obj.fill, obj.stroke, obj.strokeWidth)}
+        {renderShape(obj.shape, obj.fill, obj.stroke, obj.strokeWidth, obj.strokeDash ?? 0)}
       </svg>
     </div>
   )
@@ -972,12 +983,18 @@ export const PromoVideo: React.FC<PromoVideoProps> = ({ clips }) => {
 
   // Render order: main → overlay2 (behind) → overlay (in front)
   const ordered = [...sort('main'), ...sort('overlay2'), ...sort('overlay')]
+  const audioClips = clips.filter(c => c.track === 'audio' && c.media)
 
   return (
     <AbsoluteFill>
       {ordered.map(clip => (
         <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
           {renderClip(clip)}
+        </Sequence>
+      ))}
+      {audioClips.map(clip => (
+        <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
+          <Audio src={clip.media!.url} />
         </Sequence>
       ))}
     </AbsoluteFill>
