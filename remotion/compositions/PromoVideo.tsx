@@ -98,6 +98,10 @@ export interface TimelineClip {
   scene?:         PromoScene
   media?:         MediaFile
   shape?:         VideoObject
+  mediaX?:        number   // center %, default 50
+  mediaY?:        number   // center %, default 50
+  mediaW?:        number   // width %,  default 100
+  mediaH?:        number   // height %, default 100
 }
 
 export interface PromoVideoProps {
@@ -898,25 +902,41 @@ function SceneContent({ scene, totalFrames }: { scene: PromoScene; totalFrames: 
 
 // ── Media clip renderers ─────────────────────────────────────────────────────
 
-function ImageClipRenderer({ media, totalFrames: tf }: { media: MediaFile; totalFrames: number }) {
+function ImageClipRenderer({ media, totalFrames: tf, mediaX = 50, mediaY = 50, mediaW = 100, mediaH = 100 }: {
+  media: MediaFile; totalFrames: number
+  mediaX?: number; mediaY?: number; mediaW?: number; mediaH?: number
+}) {
   const frame = useCurrentFrame()
   const fadeIn  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: 'clamp' })
   const fadeOut = interpolate(frame, [Math.max(tf - 12, tf - 1), tf], [1, 0], { extrapolateLeft: 'clamp' })
   return (
-    <AbsoluteFill style={{ opacity: Math.min(fadeIn, fadeOut), background: DARK, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <AbsoluteFill style={{ opacity: Math.min(fadeIn, fadeOut), background: DARK }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={media.url} alt={media.name} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+      <img src={media.url} alt={media.name} style={{
+        position: 'absolute',
+        left: `${mediaX - mediaW / 2}%`, top: `${mediaY - mediaH / 2}%`,
+        width: `${mediaW}%`, height: `${mediaH}%`,
+        objectFit: 'cover',
+      }} />
     </AbsoluteFill>
   )
 }
 
-function VideoClipRenderer({ media, totalFrames: tf }: { media: MediaFile; totalFrames: number }) {
+function VideoClipRenderer({ media, totalFrames: tf, mediaX = 50, mediaY = 50, mediaW = 100, mediaH = 100 }: {
+  media: MediaFile; totalFrames: number
+  mediaX?: number; mediaY?: number; mediaW?: number; mediaH?: number
+}) {
   const frame = useCurrentFrame()
   const fadeIn  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: 'clamp' })
   const fadeOut = interpolate(frame, [Math.max(tf - 12, tf - 1), tf], [1, 0], { extrapolateLeft: 'clamp' })
   return (
-    <AbsoluteFill style={{ opacity: Math.min(fadeIn, fadeOut), background: DARK, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <video src={media.url} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} autoPlay muted loop />
+    <AbsoluteFill style={{ opacity: Math.min(fadeIn, fadeOut), background: DARK }}>
+      <video src={media.url} style={{
+        position: 'absolute',
+        left: `${mediaX - mediaW / 2}%`, top: `${mediaY - mediaH / 2}%`,
+        width: `${mediaW}%`, height: `${mediaH}%`,
+        objectFit: 'cover',
+      }} autoPlay muted loop />
     </AbsoluteFill>
   )
 }
@@ -940,9 +960,9 @@ export const PromoVideo: React.FC<PromoVideoProps> = ({ clips }) => {
                 ))}
               </AbsoluteFill>
             ) : clip.clipType === 'image' && clip.media ? (
-              <ImageClipRenderer media={clip.media} totalFrames={clip.durationFrames} />
+              <ImageClipRenderer media={clip.media} totalFrames={clip.durationFrames} mediaX={clip.mediaX} mediaY={clip.mediaY} mediaW={clip.mediaW} mediaH={clip.mediaH} />
             ) : clip.clipType === 'video' && clip.media ? (
-              <VideoClipRenderer media={clip.media} totalFrames={clip.durationFrames} />
+              <VideoClipRenderer media={clip.media} totalFrames={clip.durationFrames} mediaX={clip.mediaX} mediaY={clip.mediaY} mediaW={clip.mediaW} mediaH={clip.mediaH} />
             ) : null}
           </>
         </Sequence>

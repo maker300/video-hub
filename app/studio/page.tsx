@@ -561,6 +561,149 @@ function PropertiesPanel({
   )
 }
 
+// ── SelectionBox ─────────────────────────────────────────────────────────────
+
+type HandleDir = 'nw'|'n'|'ne'|'e'|'se'|'s'|'sw'|'w'|'move'
+const HS = 8  // handle size px
+
+function SelectionBox({ box, onBoxChange, containerRef, color = '#10b981', active = true, onActivate }: {
+  box:          { x: number; y: number; w: number; h: number }
+  onBoxChange:  (b: { x: number; y: number; w: number; h: number }) => void
+  containerRef: React.RefObject<HTMLDivElement | null>
+  color?:       string
+  active?:      boolean
+  onActivate?:  () => void
+}) {
+  const dragRef = useRef<{ dir: HandleDir; mx0: number; my0: number; x0: number; y0: number; w0: number; h0: number } | null>(null)
+  const { x, y, w, h } = box
+  const L = x - w / 2, R = x + w / 2, T = y - h / 2, B = y + h / 2
+
+  function startDrag(e: React.MouseEvent, dir: HandleDir) {
+    e.preventDefault(); e.stopPropagation()
+    dragRef.current = { dir, mx0: e.clientX, my0: e.clientY, x0: x, y0: y, w0: w, h0: h }
+
+    function onMove(ev: MouseEvent) {
+      if (!dragRef.current || !containerRef.current) return
+      const rect = containerRef.current.getBoundingClientRect()
+      const dx = (ev.clientX - dragRef.current.mx0) / rect.width  * 100
+      const dy = (ev.clientY - dragRef.current.my0) / rect.height * 100
+      const { x0: ox, y0: oy, w0: ow, h0: oh, dir: d } = dragRef.current
+      const l0 = ox-ow/2, r0 = ox+ow/2, t0 = oy-oh/2, b0 = oy+oh/2
+      let nL=l0, nR=r0, nT=t0, nB=b0
+      if (d === 'move') { nL=l0+dx; nR=r0+dx; nT=t0+dy; nB=b0+dy }
+      else {
+        if (d==='w'||d==='nw'||d==='sw') nL = l0+dx
+        if (d==='e'||d==='ne'||d==='se') nR = r0+dx
+        if (d==='n'||d==='nw'||d==='ne') nT = t0+dy
+        if (d==='s'||d==='sw'||d==='se') nB = b0+dy
+      }
+      const nW = Math.max(2, nR-nL), nH = Math.max(2, nB-nT)
+      onBoxChange({ x: (nL+nR)/2, y: (nT+nB)/2, w: nW, h: nH })
+    }
+    function onUp() { dragRef.current = null; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const handles: { id: HandleDir; lp: number; tp: number; cur: string }[] = active ? [
+    { id:'nw', lp:L,       tp:T,       cur:'nwse-resize' },
+    { id:'n',  lp:(L+R)/2, tp:T,       cur:'ns-resize'   },
+    { id:'ne', lp:R,       tp:T,       cur:'nesw-resize' },
+    { id:'e',  lp:R,       tp:(T+B)/2, cur:'ew-resize'   },
+    { id:'se', lp:R,       tp:B,       cur:'nwse-resize' },
+    { id:'s',  lp:(L+R)/2, tp:B,       cur:'ns-resize'   },
+    { id:'sw', lp:L,       tp:B,       cur:'nesw-resize' },
+    { id:'w',  lp:L,       tp:(T+B)/2, cur:'ew-resize'   },
+  ] : []
+
+  return (
+    <>
+      <div
+        onMouseDown={e => active ? startDrag(e, 'move') : (e.preventDefault(), e.stopPropagation(), onActivate?.())}
+        style={{
+          position:'absolute', left:`${L}%`, top:`${T}%`, width:`${w}%`, height:`${h}%`,
+          border:`2px ${active?'solid':'dashed'} ${color}`,
+          cursor: active ? 'move' : 'pointer',
+          pointerEvents:'all', boxSizing:'border-box',
+          background: active ? 'transparent' : 'rgba(255,255,255,0.03)',
+        }}
+      />
+      {handles.map(hd => (
+        <div key={hd.id} onMouseDown={e => startDrag(e, hd.id)} style={{
+          position:'absolute',
+          left:`calc(${hd.lp}% - ${HS/2}px)`, top:`calc(${hd.tp}% - ${HS/2}px)`,
+          width:HS, height:HS,
+          background:'#fff', border:`2px solid ${color}`, borderRadius:2,
+          cursor:hd.cur, pointerEvents:'all',
+        }} />
+      ))}
+    </>
+  )
+}
+
+// ── PreviewOverlay ────────────────────────────────────────────────────────────
+
+function PreviewOverlay({ clip, onUpdate, containerRef, activeObjId, setActiveObjId }: {
+  clip:           TimelineClip
+  onUpdate:       (c: TimelineClip) => void
+  containerRef:   React.RefObject<HTMLDivElement | null>
+  activeObjId:    string | null
+  setActiveObjId: (id: string | null) => void
+}) {
+  const wrap: React.CSSProperties = { position:'absolute', inset:0, pointerEvents:'none', zIndex:20 }
+
+  if (clip.clipType === 'shape' && clip.shape) {
+    const s = clip.shape
+    return (
+      <div style={wrap}>
+        <SelectionBox
+          box={{ x:s.x, y:s.y, w:s.w, h:s.h }}
+          onBoxChange={b => onUpdate({ ...clip, shape: { ...s, ...b } })}
+          containerRef={containerRef}
+        />
+      </div>
+    )
+  }
+
+  if ((clip.clipType === 'image' || clip.clipType === 'video') && clip.media) {
+    return (
+      <div style={wrap}>
+        <SelectionBox
+          box={{ x: clip.mediaX??50, y: clip.mediaY??50, w: clip.mediaW??100, h: clip.mediaH??100 }}
+          onBoxChange={b => onUpdate({ ...clip, mediaX:b.x, mediaY:b.y, mediaW:b.w, mediaH:b.h })}
+          containerRef={containerRef}
+          color="#3b82f6"
+        />
+      </div>
+    )
+  }
+
+  if (clip.clipType === 'scene' && clip.scene) {
+    const objs = clip.scene.objects ?? []
+    if (objs.length === 0) return null
+    return (
+      <div style={wrap}>
+        {objs.map((obj, i) => (
+          <SelectionBox
+            key={obj.id}
+            box={{ x:obj.x, y:obj.y, w:obj.w, h:obj.h }}
+            onBoxChange={b => {
+              const newObjs = objs.map((o, j) => j===i ? { ...o, ...b } : o)
+              onUpdate({ ...clip, scene: { ...clip.scene!, objects: newObjs } })
+            }}
+            containerRef={containerRef}
+            active={obj.id === activeObjId}
+            onActivate={() => setActiveObjId(obj.id)}
+            color={obj.id === activeObjId ? '#10b981' : '#6b7280'}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  return null
+}
+
 // ── Main studio page ──────────────────────────────────────────────────────────
 
 export default function VideoStudioPage() {
@@ -586,10 +729,14 @@ export default function VideoStudioPage() {
   const [showLibrary, setShowLibrary]   = useState(false)
   const [loadingProjects, setLoadingProjects] = useState(false)
 
+  // Overlay / selection
+  const [activeObjId, setActiveObjId] = useState<string | null>(null)
+
   // Refs
-  const playerRef     = useRef<PlayerRef | null>(null)
-  const timelineRef   = useRef<HTMLDivElement>(null)
-  const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const playerRef          = useRef<PlayerRef | null>(null)
+  const timelineRef        = useRef<HTMLDivElement>(null)
+  const previewContainerRef = useRef<HTMLDivElement>(null)
+  const playIntervalRef    = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const dims     = aspectDims(aspectRatio)
   const duration = totalDurationFrames(clips)
@@ -611,6 +758,8 @@ export default function VideoStudioPage() {
       if (loaded.length > 0) setMediaFiles(loaded)
     }).catch(() => {})
   }, [])
+
+  useEffect(() => { setActiveObjId(null) }, [selectedClipId])
 
   async function deleteMediaFile(id: string) {
     setMediaFiles(prev => {
@@ -1090,21 +1239,33 @@ export default function VideoStudioPage() {
             </div>
           )}
           <div
-            className="rounded-xl overflow-hidden bg-black border border-white/8 w-full"
+            ref={previewContainerRef}
+            className="relative w-full"
             style={{ maxHeight: 'calc(100vh - 330px)', aspectRatio: aspectRatio === '16:9' ? '16/9' : '9/16', maxWidth: '100%' }}
           >
-            <RemotionPlayer
-              ref={playerRef}
-              component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
-              inputProps={{ clips: clips.length > 0 ? clips : PLACEHOLDER_CLIPS, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
-              durationInFrames={Math.max(duration, 120)}
-              compositionWidth={dims.width}
-              compositionHeight={dims.height}
-              fps={FPS}
-              style={{ width: '100%', height: '100%' }}
-              controls
-              initialFrame={12}
-            />
+            <div className="rounded-xl overflow-hidden bg-black border border-white/8 absolute inset-0">
+              <RemotionPlayer
+                ref={playerRef}
+                component={PromoVideoComp as unknown as React.ComponentType<Record<string, unknown>>}
+                inputProps={{ clips: clips.length > 0 ? clips : PLACEHOLDER_CLIPS, title: videoTitle, aspectRatio } as unknown as Record<string, unknown>}
+                durationInFrames={Math.max(duration, 120)}
+                compositionWidth={dims.width}
+                compositionHeight={dims.height}
+                fps={FPS}
+                style={{ width: '100%', height: '100%' }}
+                controls
+                initialFrame={12}
+              />
+            </div>
+            {selectedClip && (
+              <PreviewOverlay
+                clip={selectedClip}
+                onUpdate={updateClip}
+                containerRef={previewContainerRef}
+                activeObjId={activeObjId}
+                setActiveObjId={setActiveObjId}
+              />
+            )}
           </div>
         </div>
 
