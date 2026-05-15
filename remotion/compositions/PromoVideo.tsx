@@ -65,6 +65,9 @@ export interface VideoObject {
   motionSpeed:     number
   exit:            ExitAnim
   exitDelay:       number   // frames from scene end
+  // media fill (image or video clipped to the shape)
+  mediaFill?:     string
+  mediaFillType?: 'image' | 'video'
   // text-only fields
   text?:           string
   fontSize?:       number
@@ -206,6 +209,22 @@ function SectionLabel({ text, opacity = 1 }: { text: string; opacity?: number })
 
 // ── Object system ────────────────────────────────────────────────────────────
 
+function getShapeClipPath(shape: ObjectShape): string {
+  switch (shape) {
+    case 'circle':   return 'circle(47% at 50% 50%)'
+    case 'rect':     return 'inset(3% 3% 3% 3%)'
+    case 'line':     return 'inset(38% 0% 38% 0%)'
+    case 'triangle': return 'polygon(50% 4%, 96% 93%, 4% 93%)'
+    case 'pentagon': return 'polygon(50% 3%, 94.7% 35.5%, 77.6% 88.1%, 22.4% 88.1%, 5.3% 35.5%)'
+    case 'star':     return 'polygon(50% 3%, 61.8% 33.8%, 94.7% 35.5%, 69% 56.2%, 77.6% 88.1%, 50% 70%, 22.4% 88.1%, 31% 56.2%, 5.3% 35.5%, 38.2% 33.8%)'
+    case 'hexagon':  return 'polygon(97% 50%, 73.5% 90.7%, 26.5% 90.7%, 3% 50%, 26.5% 9.3%, 73.5% 9.3%)'
+    case 'diamond':  return 'polygon(50% 3%, 97% 50%, 50% 97%, 3% 50%)'
+    case 'ring':     return 'circle(47% at 50% 50%)'
+    case 'arrow':    return 'polygon(5% 33%, 55% 33%, 55% 13%, 95% 50%, 55% 87%, 55% 67%, 5% 67%)'
+    default:         return 'circle(47% at 50% 50%)'
+  }
+}
+
 function renderShape(shape: ObjectShape, fill: string, stroke: string, sw: number, dash = 0): React.ReactNode {
   const da = dash > 0 ? `${dash} ${dash}` : undefined
   const props = { fill, stroke, strokeWidth: sw, strokeDasharray: da }
@@ -299,6 +318,33 @@ function ObjectRenderer({ obj, sceneDuration }: { obj: VideoObject; sceneDuratio
     opacity,
     pointerEvents: 'none',
     zIndex: 10,
+  }
+
+  // Media fill: clip image/video to the shape outline
+  if (obj.mediaFill && obj.shape !== 'text') {
+    const clipPath = getShapeClipPath(obj.shape)
+    return (
+      <div style={commonStyle}>
+        <div style={{ position: 'absolute', inset: 0, clipPath, overflow: 'hidden' }}>
+          {obj.mediaFillType === 'video' ? (
+            <video
+              src={obj.mediaFill}
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              autoPlay muted loop playsInline
+            />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={obj.mediaFill} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          )}
+        </div>
+        {obj.strokeWidth > 0 && (
+          <svg viewBox="0 0 100 100" width="100%" height="100%"
+            style={{ position: 'absolute', inset: 0 }} overflow="visible">
+            {renderShape(obj.shape, 'none', obj.stroke, obj.strokeWidth, obj.strokeDash ?? 0)}
+          </svg>
+        )}
+      </div>
+    )
   }
 
   if (obj.shape === 'text') {

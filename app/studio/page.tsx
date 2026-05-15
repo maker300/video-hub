@@ -192,10 +192,11 @@ function newAudioClip(media: MediaFile, startFrame: number): TimelineClip {
 
 // ── ObjectEditor component ────────────────────────────────────────────────────
 
-function ObjectEditor({ obj, onChange, onDelete }: {
-  obj:      VideoObject
-  onChange: (o: VideoObject) => void
-  onDelete: () => void
+function ObjectEditor({ obj, onChange, onDelete, mediaFiles }: {
+  obj:        VideoObject
+  onChange:   (o: VideoObject) => void
+  onDelete:   () => void
+  mediaFiles?: MediaFile[]
 }) {
   const set = (patch: Partial<VideoObject>) => onChange({ ...obj, ...patch })
   const labelCls = 'text-[10px] text-gray-500 font-medium mb-0.5 block'
@@ -357,6 +358,66 @@ function ObjectEditor({ obj, onChange, onDelete }: {
           <input type="number" min={0} max={120} value={obj.exitDelay} onChange={e => set({ exitDelay: +e.target.value })} className={numCls} />
         </div>
       </div>
+
+      {/* ── Media Fill ────────────────────────────────────────────────────────── */}
+      {obj.shape !== 'text' && (
+        <div className="space-y-2 border-t border-white/8 pt-3">
+          <div className="flex items-center justify-between">
+            <label className={labelCls + ' mb-0'}>Media Fill</label>
+            {obj.mediaFill && (
+              <button
+                onClick={() => set({ mediaFill: undefined, mediaFillType: undefined })}
+                className="text-[10px] text-red-400 hover:text-red-300 transition-colors flex items-center gap-0.5"
+              >
+                <X className="w-2.5 h-2.5" />Remove
+              </button>
+            )}
+          </div>
+
+          {obj.mediaFill && (
+            <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/25 rounded-lg p-2">
+              <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 bg-black border border-white/10">
+                {obj.mediaFillType === 'video'
+                  ? <video src={obj.mediaFill} className="w-full h-full object-cover" muted />
+                  : <img src={obj.mediaFill} alt="" className="w-full h-full object-cover" />}
+              </div>
+              <p className="text-[10px] text-emerald-400 font-medium">
+                {obj.mediaFillType === 'video' ? '▶ Video fill active' : '🖼 Image fill active'}
+              </p>
+            </div>
+          )}
+
+          {(mediaFiles ?? []).filter(m => m.type !== 'audio').length > 0 ? (
+            <div className="grid grid-cols-3 gap-1.5 max-h-36 overflow-y-auto pr-0.5">
+              {(mediaFiles ?? []).filter(m => m.type !== 'audio').map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => set({ mediaFill: m.url, mediaFillType: m.type as 'image' | 'video' })}
+                  title={m.name}
+                  className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all ${
+                    obj.mediaFill === m.url
+                      ? 'border-emerald-500 ring-1 ring-emerald-500/40'
+                      : 'border-white/10 hover:border-emerald-500/40'
+                  }`}
+                >
+                  {m.type === 'video'
+                    ? <video src={m.url} className="w-full h-full object-cover" muted />
+                    : <img src={m.url} alt={m.name} className="w-full h-full object-cover" />}
+                  {m.type === 'video' && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="w-4 h-4 bg-black/60 rounded-full flex items-center justify-center">
+                        <Play className="w-2 h-2 text-white" />
+                      </div>
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[10px] text-gray-600 italic">Upload images or videos in the Media panel to use as fill.</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -367,10 +428,12 @@ function PropertiesPanel({
   clip,
   onUpdate,
   onClose,
+  mediaFiles,
 }: {
-  clip: TimelineClip
-  onUpdate: (c: TimelineClip) => void
-  onClose: () => void
+  clip:       TimelineClip
+  onUpdate:   (c: TimelineClip) => void
+  onClose:    () => void
+  mediaFiles?: MediaFile[]
 }) {
   const inputCls = 'w-full bg-[#070d1a] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/50'
   const labelCls = 'text-[10px] text-gray-500 font-medium mb-0.5 block'
@@ -491,6 +554,7 @@ function PropertiesPanel({
                   <ObjectEditor
                     key={obj.id}
                     obj={obj}
+                    mediaFiles={mediaFiles}
                     onChange={updated => {
                       const objs = [...(clip.scene!.objects ?? [])]
                       objs[oi] = updated
@@ -523,6 +587,7 @@ function PropertiesPanel({
               obj={clip.shape}
               onChange={updated => setClip({ shape: updated })}
               onDelete={() => {}}
+              mediaFiles={mediaFiles}
             />
           </>
         )}
@@ -1484,6 +1549,7 @@ export default function VideoStudioPage() {
             clip={selectedClip}
             onUpdate={updateClip}
             onClose={() => setSelectedClipId(null)}
+            mediaFiles={mediaFiles}
           />
         )}
       </div>
