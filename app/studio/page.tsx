@@ -1130,24 +1130,52 @@ export default function VideoStudioPage() {
   const mediaImages  = mediaFiles.filter(m => m.type === 'image' || m.type === 'video')
   const mediaAudio   = mediaFiles.filter(m => m.type === 'audio')
 
-  return (
-    <div className="flex flex-col bg-[#070d1a] text-white" style={{ height: '100vh', overflow: 'hidden' }}>
+  function scrollTo(id: string) {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' })
+  }
 
-      {/* ── HEADER ─────────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-2 px-3 min-h-[48px] flex-wrap border-b border-white/8 bg-[#0a1020]">
-        <div className="flex items-center gap-2 mr-2">
+  return (
+    <div className="flex flex-col bg-[#070d1a] text-white" style={{ minHeight: '100vh' }}>
+
+      {/* ── STICKY NAVBAR ──────────────────────────────────────────────────────── */}
+      <nav className="sticky top-0 z-40 shrink-0 flex items-center gap-2 px-3 border-b border-white/8 bg-[#0a1020]/95 backdrop-blur-md" style={{ minHeight: 48 }}>
+
+        {/* Brand */}
+        <div className="flex items-center gap-2 mr-1">
           <Film className="w-4 h-4 text-emerald-400" />
-          <span className="text-sm font-bold text-white">Video Hub</span>
+          <span className="text-sm font-bold text-white hidden sm:inline">Video Hub</span>
         </div>
 
+        {/* Section nav */}
+        <div className="flex gap-0.5 bg-white/5 rounded-lg p-0.5">
+          <button
+            onClick={() => scrollTo('editor')}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-gray-400 hover:text-white hover:bg-white/8 transition-all"
+          >
+            <Film className="w-3 h-3" />
+            <span className="hidden md:inline">Preview</span>
+          </button>
+          <button
+            onClick={() => scrollTo('timeline')}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-gray-400 hover:text-white hover:bg-white/8 transition-all"
+          >
+            <Layers className="w-3 h-3" />
+            <span className="hidden md:inline">Timeline</span>
+          </button>
+        </div>
+
+        <div className="w-px h-4 bg-white/10 mx-1" />
+
+        {/* Project title */}
         <input
           type="text"
           value={videoTitle}
           onChange={e => setVideoTitle(e.target.value)}
-          className="flex-1 min-w-0 max-w-[160px] md:max-w-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs md:text-sm text-white focus:outline-none focus:border-emerald-500/50"
+          className="flex-1 min-w-0 max-w-[120px] md:max-w-[200px] bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500/50"
         />
 
-        <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg ml-2">
+        {/* Aspect ratio */}
+        <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg">
           {(['16:9', '9:16'] as const).map(ar => (
             <button
               key={ar}
@@ -1163,11 +1191,12 @@ export default function VideoStudioPage() {
 
         <div className="flex-1" />
 
+        {/* Actions */}
         <button
           onClick={() => setShowLibrary(v => !v)}
           className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white border border-white/10 px-3 py-1.5 rounded-lg transition-all"
         >
-          <FolderOpen className="w-3.5 h-3.5" />Library
+          <FolderOpen className="w-3.5 h-3.5" /><span className="hidden sm:inline">Library</span>
         </button>
 
         <button
@@ -1176,11 +1205,11 @@ export default function VideoStudioPage() {
           className="flex items-center gap-1.5 text-xs bg-white/8 hover:bg-white/12 border border-white/10 text-white px-3 py-1.5 rounded-lg transition-all disabled:opacity-50"
         >
           {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-          {saving ? 'Saving…' : 'Save'}
+          <span className="hidden sm:inline">{saving ? 'Saving…' : 'Save'}</span>
         </button>
 
         {saveMsg && (
-          <span className={`text-xs flex items-center gap-1 ${saveMsg === 'Saved!' ? 'text-emerald-400' : 'text-red-400'}`}>
+          <span className={`text-xs hidden sm:flex items-center gap-1 ${saveMsg === 'Saved!' ? 'text-emerald-400' : 'text-red-400'}`}>
             {saveMsg === 'Saved!' ? <Check className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
             {saveMsg}
           </span>
@@ -1196,7 +1225,12 @@ export default function VideoStudioPage() {
         >
           <LogOut className="w-4 h-4" />
         </button>
-      </div>
+      </nav>
+
+      {/* ── EDITOR SECTION ─────────────────────────────────────────────────────── */}
+      {/* Fixed viewport height minus navbar so editor fills the first screen */}
+      <section id="editor" className="shrink-0 flex overflow-hidden" style={{ height: 'calc(100vh - 48px)' }}>
+        <div className="flex flex-col w-full overflow-hidden">
 
       {/* ── MIDDLE ROW ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -1453,9 +1487,27 @@ export default function VideoStudioPage() {
           />
         )}
       </div>
+        </div>{/* closes flex flex-col w-full */}
+      </section>{/* closes #editor */}
 
-      {/* ── TIMELINE ───────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 bg-[#070d1a] border-t border-white/8" style={{ height: 'clamp(220px, 28vh, 260px)' }}>
+      {/* ── TIMELINE SECTION ────────────────────────────────────────────────────── */}
+      <section id="timeline" className="bg-[#070d1a] border-t-2 border-emerald-500/30">
+
+        {/* Section header */}
+        <div className="flex items-center justify-between px-4 py-2 bg-[#0a1020] border-b border-white/8">
+          <div className="flex items-center gap-2">
+            <Layers className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-xs font-semibold text-gray-300 tracking-wide uppercase">Timeline</span>
+          </div>
+          <button
+            onClick={() => scrollTo('editor')}
+            className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-white transition-colors"
+          >
+            <span>↑ Back to Preview</span>
+          </button>
+        </div>
+
+        <div style={{ height: 'clamp(240px, 30vh, 300px)' }}>
 
         {/* Transport bar */}
         <div className="flex items-center gap-3 px-3 py-1.5 border-b border-white/8">
@@ -1631,7 +1683,8 @@ export default function VideoStudioPage() {
 
           </div>
         </div>
-      </div>
+      </div>{/* closes clamp height div */}
+      </section>{/* closes #timeline */}
 
       {/* ── EXPORT MODAL ───────────────────────────────────────────────────────── */}
       {showExportModal && exportState === 'idle' && (
