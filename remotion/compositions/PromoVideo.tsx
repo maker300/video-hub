@@ -32,7 +32,7 @@ export type SceneType =
 
 export type ObjectShape =
   | 'circle' | 'rect' | 'line' | 'triangle' | 'pentagon'
-  | 'star' | 'arrow' | 'hexagon' | 'diamond' | 'ring'
+  | 'star' | 'arrow' | 'hexagon' | 'diamond' | 'ring' | 'text'
 
 export type EntranceAnim =
   | 'none' | 'fade' | 'slideLeft' | 'slideRight' | 'slideUp'
@@ -61,6 +61,10 @@ export interface VideoObject {
   motionSpeed:     number
   exit:            ExitAnim
   exitDelay:       number   // frames from scene end
+  // text-only fields
+  text?:           string
+  fontSize?:       number
+  fontWeight?:     number
 }
 
 export interface PromoScene {
@@ -72,6 +76,7 @@ export interface PromoScene {
   label?:       string   // stat label / testimonial attribution
   sectionTitle?: string  // overrides the small header label shown above headline
   duration:     number   // seconds
+  opacity?:     number   // 0–1, default 1
   objects?:     VideoObject[]
 }
 
@@ -269,18 +274,42 @@ function ObjectRenderer({ obj, sceneDuration }: { obj: VideoObject; sceneDuratio
   const pxW = width  * obj.w / 100
   const pxH = height * obj.h / 100
 
+  const commonStyle: React.CSSProperties = {
+    position: 'absolute',
+    left:     `${obj.x}%`,
+    top:      `${obj.y}%`,
+    width:    pxW,
+    height:   pxH,
+    transform: `translate(-50%,-50%) translate(${tx}px,${ty}px) rotate(${rot}deg) scale(${sc})`,
+    opacity,
+    pointerEvents: 'none',
+    zIndex: 10,
+  }
+
+  if (obj.shape === 'text') {
+    return (
+      <div style={{
+        ...commonStyle,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: obj.fill,
+        fontSize: obj.fontSize ?? 80,
+        fontWeight: obj.fontWeight ?? 700,
+        fontFamily: 'Inter, sans-serif',
+        textAlign: 'center',
+        lineHeight: 1.2,
+        WebkitTextStroke: obj.strokeWidth > 0 ? `${obj.strokeWidth}px ${obj.stroke}` : undefined,
+        wordBreak: 'break-word',
+        overflow: 'hidden',
+      }}>
+        {obj.text ?? 'Text'}
+      </div>
+    )
+  }
+
   return (
-    <div style={{
-      position: 'absolute',
-      left:     `${obj.x}%`,
-      top:      `${obj.y}%`,
-      width:    pxW,
-      height:   pxH,
-      transform: `translate(-50%,-50%) translate(${tx}px,${ty}px) rotate(${rot}deg) scale(${sc})`,
-      opacity,
-      pointerEvents: 'none',
-      zIndex: 10,
-    }}>
+    <div style={commonStyle}>
       <svg viewBox="0 0 100 100" width="100%" height="100%" overflow="visible">
         {renderShape(obj.shape, obj.fill, obj.stroke, obj.strokeWidth)}
       </svg>
@@ -904,12 +933,12 @@ export const PromoVideo: React.FC<PromoVideoProps> = ({ clips }) => {
         <Sequence key={clip.id} from={clip.startFrame} durationInFrames={clip.durationFrames}>
           <>
             {clip.clipType === 'scene' && clip.scene ? (
-              <>
+              <AbsoluteFill style={{ opacity: clip.scene.opacity ?? 1 }}>
                 <SceneContent scene={clip.scene} totalFrames={clip.durationFrames} />
                 {(clip.scene.objects ?? []).map(obj => (
                   <ObjectRenderer key={obj.id} obj={obj} sceneDuration={clip.durationFrames} />
                 ))}
-              </>
+              </AbsoluteFill>
             ) : clip.clipType === 'image' && clip.media ? (
               <ImageClipRenderer media={clip.media} totalFrames={clip.durationFrames} />
             ) : clip.clipType === 'video' && clip.media ? (

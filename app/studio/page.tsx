@@ -54,6 +54,7 @@ const SHAPE_LABELS: Record<string, string> = {
   circle:'● Circle', rect:'■ Rect', line:'— Line', triangle:'▲ Triangle',
   pentagon:'⬠ Pentagon', star:'★ Star', arrow:'➤ Arrow',
   hexagon:'⬡ Hexagon', diamond:'◆ Diamond', ring:'○ Ring',
+  text:'T Text',
 }
 const SHAPES = Object.keys(SHAPE_LABELS) as ObjectShape[]
 const CLIP_COLORS: Record<string, string> = {
@@ -142,13 +143,24 @@ function newSceneClip(sceneType: SceneType, startFrame: number): TimelineClip {
 }
 
 function newShapeClip(shape: ObjectShape, startFrame: number): TimelineClip {
+  const base = { ...makeObject(), shape }
+  if (shape === 'text') {
+    base.text = 'Your Text'
+    base.fontSize = 80
+    base.fontWeight = 700
+    base.fill = '#ffffff'
+    base.stroke = '#000000'
+    base.strokeWidth = 0
+    base.w = 50
+    base.h = 12
+  }
   return {
     id: String(Date.now() + Math.random()),
     track: 'overlay',
     startFrame,
     durationFrames: 3 * FPS,
     clipType: 'shape',
-    shape: { ...makeObject(), shape },
+    shape: base,
   }
 }
 
@@ -215,6 +227,38 @@ function ObjectEditor({ obj, onChange, onDelete }: {
           ))}
         </div>
       </div>
+
+      {obj.shape === 'text' && (
+        <div className="space-y-2">
+          <div>
+            <label className={labelCls}>Text Content</label>
+            <textarea
+              rows={2}
+              value={obj.text ?? ''}
+              onChange={e => set({ text: e.target.value })}
+              placeholder="Enter text…"
+              className={inputCls + ' resize-none'}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className={labelCls}>Font Size (px)</label>
+              <input type="number" min={10} max={400} value={obj.fontSize ?? 80} onChange={e => set({ fontSize: +e.target.value })} className={numCls} />
+            </div>
+            <div className="space-y-1">
+              <label className={labelCls}>Font Weight</label>
+              <select value={obj.fontWeight ?? 700} onChange={e => set({ fontWeight: +e.target.value })} className={inputCls}>
+                <option value={300}>Light (300)</option>
+                <option value={400}>Regular (400)</option>
+                <option value={600}>Semi-Bold (600)</option>
+                <option value={700}>Bold (700)</option>
+                <option value={800}>Extra-Bold (800)</option>
+                <option value={900}>Black (900)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1.5">
@@ -398,6 +442,17 @@ function PropertiesPanel({
                 </div>
               </div>
             )}
+            <div>
+              <label className={labelCls}>
+                Opacity: <span className="text-white">{Math.round((clip.scene.opacity ?? 1) * 100)}%</span>
+              </label>
+              <input
+                type="range" min={0} max={1} step={0.05}
+                value={clip.scene.opacity ?? 1}
+                onChange={e => setScene({ opacity: parseFloat(e.target.value) })}
+                className="w-full accent-emerald-500"
+              />
+            </div>
             <div>
               <label className={labelCls}>Duration: <span className="text-white">{durationSec}s</span></label>
               <input
