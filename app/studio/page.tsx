@@ -6,7 +6,7 @@ import type { PlayerRef } from '@remotion/player'
 import {
   LogOut, Save, Download, Play, Pause, ZoomIn, ZoomOut,
   Upload, Plus, X, Trash2, Film, Layers, Music, Image as ImageIcon,
-  Loader2, Check, AlertCircle, FolderOpen,
+  Loader2, Check, AlertCircle, FolderOpen, ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import type {
   PromoVideoProps, TimelineClip, MediaFile, SceneType, ObjectShape,
@@ -386,7 +386,7 @@ function PropertiesPanel({
   const durationSec = Math.round(clip.durationFrames / FPS * 10) / 10
 
   return (
-    <div className="w-[280px] shrink-0 bg-[#0a1020] border-l border-white/8 flex flex-col overflow-y-auto">
+    <div className="w-[220px] md:w-[250px] xl:w-[280px] shrink-0 bg-[#0a1020] border-l border-white/8 flex flex-col overflow-y-auto">
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 shrink-0">
         <span className="text-xs font-bold text-white">Properties</span>
         <button onClick={onClose} className="text-gray-600 hover:text-white transition-colors">
@@ -726,6 +726,7 @@ export default function VideoStudioPage() {
 
   // UI state
   const [sideTab, setSideTab]           = useState<SideTab>('scenes')
+  const [panelOpen, setPanelOpen]       = useState(true)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [currentFrame, setCurrentFrame] = useState(0)
   const [isPlaying, setIsPlaying]       = useState(false)
@@ -992,7 +993,7 @@ export default function VideoStudioPage() {
     <div className="flex flex-col bg-[#070d1a] text-white" style={{ height: '100vh', overflow: 'hidden' }}>
 
       {/* ── HEADER ─────────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-3 px-4 h-12 border-b border-white/8 bg-[#0a1020]">
+      <div className="shrink-0 flex items-center gap-2 px-3 min-h-[48px] flex-wrap border-b border-white/8 bg-[#0a1020]">
         <div className="flex items-center gap-2 mr-2">
           <Film className="w-4 h-4 text-emerald-400" />
           <span className="text-sm font-bold text-white">Video Hub</span>
@@ -1002,7 +1003,7 @@ export default function VideoStudioPage() {
           type="text"
           value={videoTitle}
           onChange={e => setVideoTitle(e.target.value)}
-          className="flex-1 max-w-xs bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500/50"
+          className="flex-1 min-w-0 max-w-[160px] md:max-w-xs bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs md:text-sm text-white focus:outline-none focus:border-emerald-500/50"
         />
 
         <div className="flex gap-1 bg-white/5 p-0.5 rounded-lg ml-2">
@@ -1057,39 +1058,34 @@ export default function VideoStudioPage() {
       </div>
 
       {/* ── MIDDLE ROW ─────────────────────────────────────────────────────────── */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
 
-        {/* Sidebar (48px icons) */}
-        <div className="shrink-0 w-12 bg-[#070d1a] border-r border-white/8 flex flex-col items-center py-2 gap-1">
-          {([ ['media', ImageIcon, 'Media'],
-              ['scenes', Film, 'Scenes'],
-              ['objects', Layers, 'Objects'],
-              ['audio', Music, 'Audio'],
-          ] as [SideTab, React.ComponentType<{className?: string}>, string][]).map(([tab, Icon, label]) => (
-            <button
-              key={tab}
-              onClick={() => setSideTab(tab)}
-              title={label}
-              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-all ${
-                sideTab === tab
-                  ? 'bg-emerald-500/20 text-emerald-400'
-                  : 'text-gray-600 hover:text-gray-300'
-              }`}
-            >
-              <Icon className="w-5 h-5" />
-            </button>
-          ))}
-        </div>
-
-        {/* Panel */}
-        <div className="shrink-0 w-[260px] bg-[#0d1526] border-r border-white/8 flex flex-col overflow-hidden">
-          <div className="px-3 py-2 border-b border-white/8 shrink-0">
-            <span className="text-xs font-bold text-gray-300 uppercase tracking-widest">
-              {sideTab === 'media' ? 'Media' : sideTab === 'scenes' ? 'Scenes' : sideTab === 'objects' ? 'Objects' : 'Audio'}
-            </span>
+        {/* Collapsible left panel with nav tab bar */}
+        <div className={`shrink-0 flex flex-col bg-[#0d1526] border-r border-white/8 overflow-hidden transition-all duration-200 ${panelOpen ? 'w-[220px] lg:w-[250px] xl:w-[260px]' : 'w-0'}`}>
+          {/* Nav tab bar */}
+          <div className="flex shrink-0 bg-[#070d1a] border-b border-white/8">
+            {([
+              ['media',   ImageIcon, 'Media'],
+              ['scenes',  Film,      'Scenes'],
+              ['objects', Layers,    'Objects'],
+              ['audio',   Music,     'Audio'],
+            ] as [SideTab, React.ComponentType<{className?: string}>, string][]).map(([tab, Icon, label]) => (
+              <button
+                key={tab}
+                onClick={() => setSideTab(tab)}
+                className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 border-b-2 transition-all ${
+                  sideTab === tab
+                    ? 'text-emerald-400 border-emerald-400 bg-emerald-500/5'
+                    : 'text-gray-600 border-transparent hover:text-gray-300 hover:bg-white/3'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span className="text-[9px] font-semibold tracking-wide whitespace-nowrap">{label}</span>
+              </button>
+            ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2">
+          <div className="flex-1 overflow-y-auto p-2" style={{ minWidth: 180 }}>
 
             {/* SCENES panel */}
             {sideTab === 'scenes' && (
@@ -1237,6 +1233,15 @@ export default function VideoStudioPage() {
           </div>
         </div>
 
+        {/* Panel collapse toggle */}
+        <button
+          onClick={() => setPanelOpen(v => !v)}
+          className="shrink-0 w-5 bg-[#070d1a] border-r border-white/8 flex items-center justify-center hover:bg-white/5 text-gray-600 hover:text-white transition-colors z-10"
+          title={panelOpen ? 'Hide panel' : 'Show panel'}
+        >
+          {panelOpen ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        </button>
+
         {/* Preview area (flex-1) */}
         <div className="flex-1 min-w-0 bg-[#0a1020] flex flex-col items-center justify-center p-3 overflow-hidden relative">
           {clips.length === 0 && (
@@ -1250,7 +1255,7 @@ export default function VideoStudioPage() {
           <div
             ref={previewContainerRef}
             className="relative w-full"
-            style={{ maxHeight: 'calc(100vh - 330px)', aspectRatio: aspectRatio === '16:9' ? '16/9' : '9/16', maxWidth: '100%' }}
+            style={{ maxHeight: 'calc(100vh - 300px)', aspectRatio: aspectRatio === '16:9' ? '16/9' : '9/16', maxWidth: '100%' }}
           >
             <div className="rounded-xl overflow-hidden bg-black border border-white/8 absolute inset-0">
               <RemotionPlayer
@@ -1289,7 +1294,7 @@ export default function VideoStudioPage() {
       </div>
 
       {/* ── TIMELINE ───────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 bg-[#070d1a] border-t border-white/8" style={{ height: 220 }}>
+      <div className="shrink-0 bg-[#070d1a] border-t border-white/8" style={{ height: 'clamp(220px, 28vh, 260px)' }}>
 
         {/* Transport bar */}
         <div className="flex items-center gap-3 px-3 py-1.5 border-b border-white/8">
@@ -1336,7 +1341,7 @@ export default function VideoStudioPage() {
         {/* Scrollable ruler + tracks */}
         <div
           ref={timelineRef}
-          className="overflow-x-auto overflow-y-hidden"
+          className="overflow-x-auto overflow-y-auto"
           style={{ height: 'calc(100% - 38px)' }}
         >
           <div style={{ width: timelineContentWidth, minWidth: '100%', position: 'relative' }}>
