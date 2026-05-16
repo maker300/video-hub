@@ -7,10 +7,11 @@ import {
   LogOut, Save, Download, Play, Pause, ZoomIn, ZoomOut,
   Upload, Plus, X, Trash2, Film, Layers, Music, Image as ImageIcon,
   Loader2, Check, AlertCircle, FolderOpen, ChevronLeft, ChevronRight,
+  Sparkles, BarChart2, Send,
 } from 'lucide-react'
 import type {
   PromoVideoProps, TimelineClip, MediaFile, SceneType, ObjectShape,
-  VideoObject, EntranceAnim, MotionAnim, ExitAnim,
+  VideoObject, EntranceAnim, MotionAnim, ExitAnim, ForexChartConfig,
 } from '@/remotion/compositions/PromoVideo'
 import { dbSaveMedia, dbLoadAllMedia, dbDeleteMedia } from '@/lib/mediaDB'
 
@@ -60,8 +61,161 @@ const SHAPE_LABELS: Record<string, string> = {
 const SHAPES = Object.keys(SHAPE_LABELS) as ObjectShape[]
 const CLIP_COLORS: Record<string, string> = {
   scene:'bg-emerald-700/90', image:'bg-blue-700/90', video:'bg-violet-700/90',
-  shape:'bg-pink-700/90', audio:'bg-amber-700/90',
+  shape:'bg-pink-700/90', audio:'bg-amber-700/90', forex:'bg-cyan-700/90',
 }
+
+const PRESET_FOREX_SAMPLES: ForexChartConfig[] = [
+  {
+    pair:'EURUSD', setup:'Bullish Breakout', timeframe:'H4', trend:'bullish',
+    candles:[
+      {o:1.08520,h:1.08680,l:1.08380,c:1.08620},{o:1.08620,h:1.08750,l:1.08500,c:1.08580},
+      {o:1.08580,h:1.08820,l:1.08440,c:1.08750},{o:1.08750,h:1.08900,l:1.08620,c:1.08700},
+      {o:1.08700,h:1.08780,l:1.08520,c:1.08620},{o:1.08620,h:1.08860,l:1.08580,c:1.08820},
+      {o:1.08820,h:1.08960,l:1.08720,c:1.08880},{o:1.08880,h:1.09020,l:1.08800,c:1.08940},
+      {o:1.08940,h:1.09080,l:1.08820,c:1.09010},{o:1.09010,h:1.09180,l:1.08920,c:1.09150},
+      {o:1.09150,h:1.09350,l:1.09050,c:1.09310},{o:1.09310,h:1.09520,l:1.09200,c:1.09480},
+      {o:1.09480,h:1.09680,l:1.09380,c:1.09620},{o:1.09620,h:1.09820,l:1.09520,c:1.09780},
+      {o:1.09780,h:1.09980,l:1.09680,c:1.09920},{o:1.09920,h:1.10120,l:1.09820,c:1.10080},
+      {o:1.10080,h:1.10280,l:1.09980,c:1.10150},{o:1.10150,h:1.10350,l:1.10050,c:1.10280},
+      {o:1.10280,h:1.10480,l:1.10180,c:1.10350},{o:1.10350,h:1.10550,l:1.10250,c:1.10480},
+    ],
+    ema20:[1.08600,1.08620,1.08660,1.08710,1.08740,1.08790,1.08860,1.08940,1.09030,1.09150,1.09290,1.09430,1.09560,1.09680,1.09800,1.09910,1.10010,1.10110,1.10200,1.10280],
+    ema50:[1.08700,1.08710,1.08720,1.08740,1.08750,1.08760,1.08780,1.08810,1.08850,1.08900,1.08960,1.09030,1.09110,1.09200,1.09300,1.09400,1.09500,1.09590,1.09680,1.09750],
+    annotations:[
+      {type:'support',   price:1.08800, label:'Support Zone'},
+      {type:'resistance',price:1.09100, label:'Key Resistance'},
+      {type:'entry',     price:1.09165, label:'Entry Buy'},
+      {type:'target',    price:1.10500, label:'Target'},
+      {type:'stop',      price:1.08720, label:'Stop Loss'},
+    ],
+    description:'Price broke above key resistance after tight consolidation.',
+  },
+  {
+    pair:'GBPUSD', setup:'Bearish Rejection', timeframe:'H1', trend:'bearish',
+    candles:[
+      {o:1.26500,h:1.26680,l:1.26380,c:1.26620},{o:1.26620,h:1.26820,l:1.26500,c:1.26760},
+      {o:1.26760,h:1.26980,l:1.26680,c:1.26920},{o:1.26920,h:1.27180,l:1.26840,c:1.27080},
+      {o:1.27080,h:1.27380,l:1.27000,c:1.27320},{o:1.27320,h:1.27620,l:1.27240,c:1.27560},
+      {o:1.27560,h:1.27820,l:1.27480,c:1.27780},{o:1.27780,h:1.27900,l:1.27560,c:1.27620},
+      {o:1.27620,h:1.27720,l:1.27360,c:1.27380},{o:1.27380,h:1.27500,l:1.27080,c:1.27120},
+      {o:1.27120,h:1.27220,l:1.26820,c:1.26860},{o:1.26860,h:1.26980,l:1.26560,c:1.26620},
+      {o:1.26620,h:1.26740,l:1.26320,c:1.26380},{o:1.26380,h:1.26500,l:1.26080,c:1.26140},
+      {o:1.26140,h:1.26260,l:1.25840,c:1.25900},{o:1.25900,h:1.26020,l:1.25600,c:1.25660},
+      {o:1.25660,h:1.25780,l:1.25360,c:1.25420},{o:1.25420,h:1.25540,l:1.25120,c:1.25180},
+      {o:1.25180,h:1.25300,l:1.24880,c:1.24940},{o:1.24940,h:1.25060,l:1.24640,c:1.24700},
+    ],
+    ema20:[1.26700,1.26800,1.26920,1.27060,1.27220,1.27400,1.27560,1.27560,1.27440,1.27260,1.27040,1.26800,1.26540,1.26280,1.26000,1.25720,1.25440,1.25180,1.24920,1.24680],
+    ema50:[1.26900,1.26940,1.26980,1.27040,1.27120,1.27220,1.27340,1.27380,1.27340,1.27260,1.27140,1.27000,1.26840,1.26660,1.26460,1.26260,1.26040,1.25820,1.25600,1.25380],
+    annotations:[
+      {type:'resistance',price:1.27820, label:'Resistance Zone'},
+      {type:'entry',     price:1.27580, label:'Entry Sell'},
+      {type:'support',   price:1.25400, label:'Target Support'},
+      {type:'target',    price:1.25000, label:'Target'},
+      {type:'stop',      price:1.27950, label:'Stop Loss'},
+    ],
+    description:'Strong rejection candle at major resistance — price reversed hard.',
+  },
+  {
+    pair:'XAUUSD', setup:'Support Bounce', timeframe:'H4', trend:'bullish',
+    candles:[
+      {o:2018.50,h:2025.20,l:2015.80,c:2016.40},{o:2016.40,h:2020.00,l:2008.60,c:2010.80},
+      {o:2010.80,h:2015.40,l:2002.20,c:2005.60},{o:2005.60,h:2009.80,l:1996.40,c:1998.20},
+      {o:1998.20,h:2002.60,l:1988.80,c:1990.40},{o:1990.40,h:1995.20,l:1982.60,c:1984.80},
+      {o:1984.80,h:1988.40,l:1978.20,c:1980.60},{o:1980.60,h:1992.40,l:1978.80,c:1990.20},
+      {o:1990.20,h:2002.80,l:1988.40,c:2000.60},{o:2000.60,h:2012.40,l:1998.20,c:2010.80},
+      {o:2010.80,h:2022.60,l:2008.40,c:2020.20},{o:2020.20,h:2032.40,l:2018.00,c:2030.60},
+      {o:2030.60,h:2042.80,l:2028.40,c:2040.20},{o:2040.20,h:2052.60,l:2038.00,c:2050.80},
+      {o:2050.80,h:2062.40,l:2048.20,c:2058.60},{o:2058.60,h:2068.20,l:2055.80,c:2064.40},
+      {o:2064.40,h:2074.60,l:2062.00,c:2072.20},{o:2072.20,h:2082.40,l:2069.60,c:2080.00},
+      {o:2080.00,h:2090.20,l:2077.40,c:2086.60},{o:2086.60,h:2096.80,l:2083.80,c:2092.40},
+    ],
+    ema20:[2015.00,2010.00,2004.00,1998.00,1993.00,1988.00,1984.00,1985.00,1990.00,1998.00,2006.00,2015.00,2024.00,2033.00,2042.00,2050.00,2058.00,2065.00,2072.00,2079.00],
+    ema50:[2020.00,2017.00,2013.00,2009.00,2005.00,2001.00,1998.00,1997.00,1998.00,2001.00,2005.00,2010.00,2016.00,2023.00,2030.00,2037.00,2044.00,2051.00,2057.00,2063.00],
+    annotations:[
+      {type:'support',   price:1980.00, label:'Support Zone'},
+      {type:'entry',     price:1985.00, label:'Entry Buy'},
+      {type:'resistance',price:2050.00, label:'Resistance'},
+      {type:'target',    price:2092.00, label:'Target'},
+      {type:'stop',      price:1970.00, label:'Stop Loss'},
+    ],
+    description:'Gold bounced cleanly off key demand zone — buyers stepped in.',
+  },
+  {
+    pair:'USDJPY', setup:'Downtrend Continuation', timeframe:'D1', trend:'bearish',
+    candles:[
+      {o:151.500,h:152.100,l:151.200,c:151.350},{o:151.350,h:151.800,l:150.800,c:150.920},
+      {o:150.920,h:151.450,l:150.400,c:150.520},{o:150.520,h:151.050,l:149.900,c:150.080},
+      {o:150.080,h:150.620,l:149.400,c:149.560},{o:149.560,h:150.100,l:149.000,c:149.120},
+      {o:149.120,h:149.680,l:148.500,c:148.620},{o:148.620,h:149.200,l:148.050,c:148.180},
+      {o:148.180,h:148.740,l:147.550,c:147.680},{o:147.680,h:148.250,l:147.100,c:147.220},
+      {o:147.220,h:147.780,l:146.620,c:146.780},{o:146.780,h:147.340,l:146.180,c:146.320},
+      {o:146.320,h:146.880,l:145.720,c:145.880},{o:145.880,h:146.440,l:145.280,c:145.420},
+      {o:145.420,h:145.980,l:144.820,c:144.980},{o:144.980,h:145.540,l:144.380,c:144.520},
+      {o:144.520,h:145.100,l:143.940,c:144.080},{o:144.080,h:144.640,l:143.480,c:143.620},
+      {o:143.620,h:144.200,l:143.020,c:143.180},{o:143.180,h:143.740,l:142.580,c:142.720},
+    ],
+    ema20:[151.400,151.000,150.600,150.200,149.800,149.400,149.000,148.600,148.200,147.800,147.400,147.000,146.600,146.200,145.800,145.400,145.000,144.600,144.200,143.800],
+    ema50:[151.800,151.600,151.300,151.000,150.700,150.400,150.100,149.800,149.500,149.200,148.900,148.600,148.300,148.000,147.700,147.400,147.100,146.800,146.500,146.200],
+    annotations:[
+      {type:'resistance',price:151.000, label:'Resistance'},
+      {type:'entry',     price:149.000, label:'Entry Sell'},
+      {type:'support',   price:143.500, label:'Support'},
+      {type:'target',    price:142.800, label:'Target'},
+      {type:'stop',      price:151.500, label:'Stop Loss'},
+    ],
+    description:'USDJPY in confirmed downtrend — EMA20 well below EMA50.',
+  },
+  {
+    pair:'EURUSD', setup:'Double Bottom', timeframe:'H4', trend:'bullish',
+    candles:[
+      {o:1.07500,h:1.07680,l:1.07280,c:1.07340},{o:1.07340,h:1.07520,l:1.07000,c:1.07080},
+      {o:1.07080,h:1.07260,l:1.06820,c:1.06880},{o:1.06880,h:1.07060,l:1.06620,c:1.06700},
+      {o:1.06700,h:1.07100,l:1.06620,c:1.07020},{o:1.07020,h:1.07380,l:1.06920,c:1.07280},
+      {o:1.07280,h:1.07580,l:1.07180,c:1.07440},{o:1.07440,h:1.07580,l:1.07100,c:1.07160},
+      {o:1.07160,h:1.07300,l:1.06820,c:1.06900},{o:1.06900,h:1.07040,l:1.06680,c:1.06760},
+      {o:1.06760,h:1.07260,l:1.06680,c:1.07180},{o:1.07180,h:1.07680,l:1.07080,c:1.07600},
+      {o:1.07600,h:1.08100,l:1.07500,c:1.08020},{o:1.08020,h:1.08520,l:1.07920,c:1.08440},
+      {o:1.08440,h:1.08940,l:1.08340,c:1.08860},{o:1.08860,h:1.09360,l:1.08760,c:1.09280},
+      {o:1.09280,h:1.09780,l:1.09180,c:1.09700},{o:1.09700,h:1.10200,l:1.09600,c:1.10120},
+      {o:1.10120,h:1.10620,l:1.10020,c:1.10540},{o:1.10540,h:1.11040,l:1.10440,c:1.10960},
+    ],
+    ema20:[1.07500,1.07340,1.07180,1.06980,1.06920,1.07000,1.07100,1.07120,1.07060,1.06960,1.07040,1.07200,1.07440,1.07760,1.08100,1.08460,1.08820,1.09180,1.09540,1.09880],
+    ema50:[1.07700,1.07620,1.07520,1.07380,1.07280,1.07240,1.07240,1.07220,1.07180,1.07100,1.07060,1.07100,1.07220,1.07400,1.07620,1.07860,1.08120,1.08380,1.08640,1.08900],
+    annotations:[
+      {type:'support',   price:1.06720, label:'Double Bottom'},
+      {type:'resistance',price:1.07480, label:'Neckline'},
+      {type:'entry',     price:1.07520, label:'Entry Buy'},
+      {type:'target',    price:1.10800, label:'Target'},
+      {type:'stop',      price:1.06600, label:'Stop Loss'},
+    ],
+    description:'Classic double bottom with neckline breakout — high probability reversal.',
+  },
+  {
+    pair:'GBPJPY', setup:'Bullish Flag', timeframe:'H1', trend:'bullish',
+    candles:[
+      {o:188.500,h:189.100,l:188.200,c:188.920},{o:188.920,h:189.680,l:188.780,c:189.560},
+      {o:189.560,h:190.320,l:189.400,c:190.180},{o:190.180,h:190.980,l:190.020,c:190.840},
+      {o:190.840,h:191.620,l:190.680,c:191.500},{o:191.500,h:192.280,l:191.340,c:192.160},
+      {o:192.160,h:192.400,l:191.680,c:191.780},{o:191.780,h:192.020,l:191.380,c:191.480},
+      {o:191.480,h:191.760,l:191.080,c:191.240},{o:191.240,h:191.520,l:190.880,c:191.100},
+      {o:191.100,h:191.420,l:190.740,c:191.320},{o:191.320,h:191.680,l:191.000,c:191.560},
+      {o:191.560,h:192.380,l:191.440,c:192.220},{o:192.220,h:193.040,l:192.080,c:192.880},
+      {o:192.880,h:193.700,l:192.740,c:193.560},{o:193.560,h:194.380,l:193.420,c:194.240},
+      {o:194.240,h:195.060,l:194.100,c:194.920},{o:194.920,h:195.740,l:194.780,c:195.600},
+      {o:195.600,h:196.420,l:195.460,c:196.280},{o:196.280,h:197.100,l:196.140,c:196.960},
+    ],
+    ema20:[188.800,189.320,189.880,190.460,191.060,191.680,191.840,191.820,191.680,191.520,191.420,191.560,191.880,192.340,192.880,193.480,194.120,194.780,195.460,196.140],
+    ema50:[188.000,188.380,188.780,189.220,189.700,190.220,190.620,190.860,190.980,191.020,191.060,191.140,191.360,191.720,192.200,192.760,193.360,193.980,194.620,195.260],
+    annotations:[
+      {type:'support',   price:190.800, label:'Flag Support'},
+      {type:'resistance',price:192.200, label:'Flag Resistance'},
+      {type:'entry',     price:191.600, label:'Entry Buy'},
+      {type:'target',    price:197.000, label:'Target'},
+      {type:'stop',      price:190.400, label:'Stop Loss'},
+    ],
+    description:'Bull flag breakout after strong impulse move — trend continuation setup.',
+  },
+]
 const SCENE_EMOJIS: Partial<Record<SceneType, string>> = {
   hook:'🎣', problem:'⚠️', solution:'✅', stat:'📊', feature:'⚡',
   cta:'🚀', typewriter:'⌨️', reveal:'🎬', quote:'💬', announcement:'📢',
@@ -87,7 +241,7 @@ const EXITS: ExitAnim[] = ['none','fade','slideLeft','slideRight','scaleOut']
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type SideTab = 'media' | 'scenes' | 'objects' | 'audio'
+type SideTab = 'media' | 'scenes' | 'objects' | 'audio' | 'ai'
 
 type TrackId = 'main' | 'overlay' | 'overlay2' | 'audio'
 
@@ -96,6 +250,7 @@ type DragPayload =
   | { kind: 'shape'; shape: ObjectShape }
   | { kind: 'media'; mediaId: string }
   | { kind: 'audio'; mediaId: string }
+  | { kind: 'forex'; config: ForexChartConfig }
 
 interface VideoProject {
   id:          string
@@ -187,6 +342,17 @@ function newAudioClip(media: MediaFile, startFrame: number): TimelineClip {
     durationFrames: 10 * FPS,
     clipType: 'audio',
     media,
+  }
+}
+
+function newForexClip(config: ForexChartConfig, startFrame: number): TimelineClip {
+  return {
+    id: String(Date.now() + Math.random()),
+    track: 'main',
+    startFrame,
+    durationFrames: 8 * FPS,
+    clipType: 'forex',
+    forexConfig: config,
   }
 }
 
@@ -813,6 +979,12 @@ export default function VideoStudioPage() {
   const [exportQuality, setExportQuality]     = useState<'1080p' | '4k'>('1080p')
   const [exportProgress, setExportProgress]   = useState(0)
 
+  // AI Media
+  const [aiPrompt, setAiPrompt]         = useState('')
+  const [aiLoading, setAiLoading]       = useState(false)
+  const [aiGenerated, setAiGenerated]   = useState<ForexChartConfig | null>(null)
+  const [aiError, setAiError]           = useState('')
+
   // Refs
   const playerRef          = useRef<PlayerRef | null>(null)
   const timelineRef        = useRef<HTMLDivElement>(null)
@@ -1042,6 +1214,29 @@ export default function VideoStudioPage() {
     e.target.value = ''
   }
 
+  // ── AI forex generation ───────────────────────────────────────────────────────
+
+  async function handleForexGenerate() {
+    if (!aiPrompt.trim() || aiLoading) return
+    setAiLoading(true)
+    setAiError('')
+    setAiGenerated(null)
+    try {
+      const res = await fetch('/api/generate-forex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: aiPrompt }),
+      })
+      const data = await res.json() as { config?: ForexChartConfig; error?: string }
+      if (!res.ok || data.error) throw new Error(data.error ?? 'Generation failed')
+      setAiGenerated(data.config!)
+    } catch (err: unknown) {
+      setAiError((err as Error).message ?? 'Something went wrong')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   // ── Drop handler ──────────────────────────────────────────────────────────────
 
   const handleDrop = useCallback((
@@ -1077,6 +1272,9 @@ export default function VideoStudioPage() {
       const media = mediaFiles.find(m => m.id === payload.mediaId)
       if (!media) return
       newClip = { ...newAudioClip(media, startFrame), track: 'audio' }
+    } else if (payload.kind === 'forex') {
+      const dest = track === 'audio' ? 'main' : track
+      newClip = { ...newForexClip(payload.config, startFrame), track: dest }
     }
 
     if (newClip) setClips(prev => [...prev, newClip!])
@@ -1309,13 +1507,16 @@ export default function VideoStudioPage() {
               ['scenes',  Film,      'Scenes'],
               ['objects', Layers,    'Objects'],
               ['audio',   Music,     'Audio'],
+              ['ai',      Sparkles,  'AI'],
             ] as [SideTab, React.ComponentType<{className?: string}>, string][]).map(([tab, Icon, label]) => (
               <button
                 key={tab}
                 onClick={() => setSideTab(tab)}
                 className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 border-b-2 transition-all ${
                   sideTab === tab
-                    ? 'text-emerald-400 border-emerald-400 bg-emerald-500/5'
+                    ? tab === 'ai'
+                      ? 'text-purple-400 border-purple-400 bg-purple-500/5'
+                      : 'text-emerald-400 border-emerald-400 bg-emerald-500/5'
                     : 'text-gray-600 border-transparent hover:text-gray-300 hover:bg-white/3'
                 }`}
               >
@@ -1467,6 +1668,113 @@ export default function VideoStudioPage() {
                 {mediaAudio.length === 0 && (
                   <p className="text-[11px] text-gray-600 text-center py-4">No audio uploaded yet.</p>
                 )}
+              </div>
+            )}
+
+            {/* AI MEDIA panel */}
+            {sideTab === 'ai' && (
+              <div className="space-y-3">
+                {/* Header */}
+                <div className="flex items-center gap-1.5 pb-1">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  <span className="text-xs font-bold text-white">AI Media</span>
+                </div>
+
+                {/* Prompt input */}
+                <div className="space-y-1.5">
+                  <textarea
+                    rows={3}
+                    value={aiPrompt}
+                    onChange={e => setAiPrompt(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleForexGenerate() }}
+                    placeholder="Describe a forex setup…&#10;e.g. GBPUSD bearish flag on H4"
+                    className="w-full bg-[#070d1a] border border-white/10 rounded-lg px-2.5 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-purple-500/50 resize-none"
+                  />
+                  <button
+                    onClick={handleForexGenerate}
+                    disabled={aiLoading || !aiPrompt.trim()}
+                    className="w-full flex items-center justify-center gap-2 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-all"
+                  >
+                    {aiLoading
+                      ? <><Loader2 className="w-3 h-3 animate-spin" />Generating…</>
+                      : <><Send className="w-3 h-3" />Generate Chart</>}
+                  </button>
+                </div>
+
+                {/* Error */}
+                {aiError && (
+                  <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-2.5 py-2">{aiError}</p>
+                )}
+
+                {/* Generated result */}
+                {aiGenerated && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] text-purple-400 font-semibold">Generated — drag to timeline</p>
+                    {(() => {
+                      const cfg = aiGenerated
+                      const payload: DragPayload = { kind: 'forex', config: cfg }
+                      return (
+                        <div
+                          draggable
+                          onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                          onClick={() => {
+                            const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
+                            setClips(prev => [...prev, newForexClip(cfg, end)])
+                          }}
+                          className="bg-[#070d1a] border border-purple-500/40 hover:border-purple-400/70 rounded-lg p-2.5 cursor-grab active:cursor-grabbing transition-all group"
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <BarChart2 className="w-3 h-3 text-purple-400" />
+                            <span className="text-[10px] font-bold text-white">{cfg.pair}</span>
+                            <span className={`text-[9px] px-1 rounded font-semibold ${cfg.trend === 'bullish' ? 'text-emerald-400 bg-emerald-500/15' : cfg.trend === 'bearish' ? 'text-red-400 bg-red-500/15' : 'text-gray-400 bg-white/8'}`}>
+                              {cfg.trend.toUpperCase()}
+                            </span>
+                            <span className="ml-auto text-[9px] text-gray-600">{cfg.timeframe}</span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 truncate">{cfg.setup}</p>
+                          <p className="text-[9px] text-gray-600 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">Click to add · drag to position</p>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                {/* Divider */}
+                <div className="flex items-center gap-2 py-1">
+                  <div className="flex-1 h-px bg-white/8" />
+                  <span className="text-[9px] text-gray-600 font-medium">PRESET SAMPLES</span>
+                  <div className="flex-1 h-px bg-white/8" />
+                </div>
+
+                {/* Preset samples grid */}
+                <div className="space-y-1.5">
+                  {PRESET_FOREX_SAMPLES.map((cfg, i) => {
+                    const payload: DragPayload = { kind: 'forex', config: cfg }
+                    return (
+                      <div
+                        key={i}
+                        draggable
+                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                        onClick={() => {
+                          const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
+                          setClips(prev => [...prev, newForexClip(cfg, end)])
+                        }}
+                        className="bg-[#070d1a] border border-white/8 hover:border-cyan-500/40 rounded-lg px-2.5 py-2 cursor-grab active:cursor-grabbing transition-all group"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <BarChart2 className="w-3 h-3 text-cyan-400 shrink-0" />
+                          <span className="text-[10px] font-bold text-white">{cfg.pair}</span>
+                          <span className={`text-[9px] px-1 rounded font-semibold ${cfg.trend === 'bullish' ? 'text-emerald-400 bg-emerald-500/15' : cfg.trend === 'bearish' ? 'text-red-400 bg-red-500/15' : 'text-gray-400 bg-white/8'}`}>
+                            {cfg.trend === 'bullish' ? '▲' : cfg.trend === 'bearish' ? '▼' : '◆'}
+                          </span>
+                          <span className="text-[9px] text-gray-600">{cfg.timeframe}</span>
+                          <span className="ml-auto text-[9px] text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity">drag</span>
+                        </div>
+                        <p className="text-[9px] text-gray-500 mt-0.5 truncate">{cfg.setup}</p>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
 
@@ -1699,8 +2007,9 @@ export default function VideoStudioPage() {
                     const width = Math.max(40, clip.durationFrames * zoom)
                     const colorClass = CLIP_COLORS[clip.clipType] ?? 'bg-gray-700/90'
                     const label =
-                      clip.clipType === 'scene' ? (clip.scene?.headline ?? clip.clipType) :
-                      clip.clipType === 'shape' ? (clip.shape ? SHAPE_LABELS[clip.shape.shape] ?? clip.clipType : clip.clipType) :
+                      clip.clipType === 'scene'  ? (clip.scene?.headline ?? clip.clipType) :
+                      clip.clipType === 'shape'  ? (clip.shape ? SHAPE_LABELS[clip.shape.shape] ?? clip.clipType : clip.clipType) :
+                      clip.clipType === 'forex'  ? `${clip.forexConfig?.pair ?? 'FOREX'} ${clip.forexConfig?.setup ?? ''}` :
                       clip.media?.name ?? clip.clipType
 
                     return (

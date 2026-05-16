@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
     "@remotion/cli": "^4.0.445",
     "@remotion/player": "^4.0.445",
     "lucide-react": "^0.475.0",

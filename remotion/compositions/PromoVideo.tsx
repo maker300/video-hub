@@ -11,6 +11,8 @@ import {
   Sequence,
   Audio,
 } from 'remotion'
+import { ForexChartScene } from './ForexChartScene'
+export type { ForexChartConfig, ForexAnnotation, Candle } from './ForexChartScene'
 
 // ── Brand tokens ────────────────────────────────────────────────────────────
 const DARK     = '#070d1a'
@@ -94,7 +96,7 @@ export interface MediaFile {
   name: string
 }
 
-export type ClipType = 'scene' | 'image' | 'video' | 'shape' | 'audio'
+export type ClipType = 'scene' | 'image' | 'video' | 'shape' | 'audio' | 'forex'
 
 export interface TimelineClip {
   id:             string
@@ -105,6 +107,7 @@ export interface TimelineClip {
   scene?:         PromoScene
   media?:         MediaFile
   shape?:         VideoObject
+  forexConfig?:   import('./ForexChartScene').ForexChartConfig
   mediaX?:        number   // center %, default 50
   mediaY?:        number   // center %, default 50
   mediaW?:        number   // width %,  default 100
@@ -1019,6 +1022,9 @@ function renderClip(clip: TimelineClip): React.ReactNode {
   }
   if (clip.clipType === 'shape' && clip.shape) {
     return <ObjectRenderer obj={clip.shape} sceneDuration={clip.durationFrames} />
+  }
+  if (clip.clipType === 'forex' && clip.forexConfig) {
+    return <ForexChartScene config={clip.forexConfig} totalFrames={clip.durationFrames} />
   }
   return null
 }
