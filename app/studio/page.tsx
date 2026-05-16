@@ -245,12 +245,18 @@ type SideTab = 'media' | 'scenes' | 'objects' | 'audio' | 'ai'
 
 type TrackId = 'main' | 'overlay' | 'overlay2' | 'audio'
 
+type AiMediaResult =
+  | { type: 'image';     url: string; prompt: string }
+  | { type: 'forex';     config: ForexChartConfig }
+  | { type: 'animation'; scene: NonNullable<TimelineClip['scene']> }
+
 type DragPayload =
-  | { kind: 'scene'; sceneType: SceneType }
-  | { kind: 'shape'; shape: ObjectShape }
-  | { kind: 'media'; mediaId: string }
-  | { kind: 'audio'; mediaId: string }
-  | { kind: 'forex'; config: ForexChartConfig }
+  | { kind: 'scene';        sceneType: SceneType }
+  | { kind: 'shape';        shape: ObjectShape }
+  | { kind: 'media';        mediaId: string }
+  | { kind: 'audio';        mediaId: string }
+  | { kind: 'forex';        config: ForexChartConfig }
+  | { kind: 'ai-animation'; scene: NonNullable<TimelineClip['scene']> }
 
 interface VideoProject {
   id:          string
@@ -980,12 +986,15 @@ export default function VideoStudioPage() {
   const [exportProgress, setExportProgress]   = useState(0)
 
   // AI Media
-  const [aiPrompt, setAiPrompt]         = useState('')
-  const [aiLoading, setAiLoading]       = useState(false)
-  const [aiGenerated, setAiGenerated]   = useState<ForexChartConfig | null>(null)
-  const [aiError, setAiError]           = useState('')
-  const [forexSamples, setForexSamples] = useState<ForexChartConfig[]>(PRESET_FOREX_SAMPLES)
-  const [samplesOpen, setSamplesOpen]   = useState(true)
+  const [aiPrompt, setAiPrompt]           = useState('')
+  const [aiLoading, setAiLoading]         = useState(false)
+  const [aiResult, setAiResult]           = useState<AiMediaResult | null>(null)
+  const [aiError, setAiError]             = useState('')
+  const [aiImageAdding, setAiImageAdding] = useState(false)
+  const [aiSamples, setAiSamples]         = useState<AiMediaResult[]>(
+    PRESET_FOREX_SAMPLES.map(config => ({ type: 'forex' as const, config }))
+  )
+  const [samplesOpen, setSamplesOpen]     = useState(true)
 
   // Undo history
   const [clipsHistory, setClipsHistory] = useState<TimelineClip[][]>([])
@@ -1019,18 +1028,18 @@ export default function VideoStudioPage() {
     }).catch(() => {})
   }, [])
 
-  // Load persisted forex samples on mount (overrides hardcoded defaults)
+  // Load persisted AI samples on mount (overrides hardcoded defaults)
   useEffect(() => {
     try {
-      const stored = localStorage.getItem('video-hub-forex-samples')
-      if (stored) setForexSamples(JSON.parse(stored) as ForexChartConfig[])
+      const stored = localStorage.getItem('video-hub-ai-samples')
+      if (stored) setAiSamples(JSON.parse(stored) as AiMediaResult[])
     } catch {}
   }, [])
 
-  // Persist forex samples whenever they change
+  // Persist AI samples whenever they change
   useEffect(() => {
-    try { localStorage.setItem('video-hub-forex-samples', JSON.stringify(forexSamples)) } catch {}
-  }, [forexSamples])
+    try { localStorage.setItem('video-hub-ai-samples', JSON.stringify(aiSamples)) } catch {}
+  }, [aiSamples])
 
   useEffect(() => { setActiveObjId(null) }, [selectedClipId])
 
@@ -1258,26 +1267,46 @@ export default function VideoStudioPage() {
     e.target.value = ''
   }
 
-  // ── AI forex generation ───────────────────────────────────────────────────────
+  // ── AI media generation ───────────────────────────────────────────────────────
 
-  async function handleForexGenerate() {
+  async function handleAiGenerate() {
     if (!aiPrompt.trim() || aiLoading) return
     setAiLoading(true)
     setAiError('')
-    setAiGenerated(null)
+    setAiResult(null)
     try {
-      const res = await fetch('/api/generate-forex', {
+      const res = await fetch('/api/generate-ai-media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: aiPrompt }),
       })
-      const data = await res.json() as { config?: ForexChartConfig; error?: string }
+      const data = await res.json() as AiMediaResult & { error?: string }
       if (!res.ok || data.error) throw new Error(data.error ?? 'Generation failed')
-      setAiGenerated(data.config!)
+      setAiResult(data)
     } catch (err: unknown) {
       setAiError((err as Error).message ?? 'Something went wrong')
     } finally {
       setAiLoading(false)
+    }
+  }
+
+  async function addImageToMedia(url: string, promptText: string) {
+    setAiImageAdding(true)
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok) throw new Error('Fetch failed')
+      const blob = await resp.blob()
+      const id   = String(Date.now() + Math.random())
+      const name = `AI: ${promptText.slice(0, 28).trim()}`
+      const objUrl = URL.createObjectURL(blob)
+      const media: MediaFile = { id, url: objUrl, type: 'image', name }
+      setMediaFiles(prev => [...prev, media])
+      await dbSaveMedia({ id, name, type: 'image', blob })
+      setSideTab('media')
+    } catch {
+      setAiError('Could not save image — try again')
+    } finally {
+      setAiImageAdding(false)
     }
   }
 
@@ -1319,6 +1348,15 @@ export default function VideoStudioPage() {
     } else if (payload.kind === 'forex') {
       const dest = track === 'audio' ? 'main' : track
       newClip = { ...newForexClip(payload.config, startFrame), track: dest }
+    } else if (payload.kind === 'ai-animation') {
+      const dest = track === 'audio' ? 'main' : track
+      newClip = {
+        id: String(Date.now() + Math.random()),
+        track: dest, startFrame,
+        durationFrames: Math.round((payload.scene.duration ?? 5) * FPS),
+        clipType: 'scene',
+        scene: payload.scene,
+      }
     }
 
     if (newClip) { recordHistory(); setClips(prev => [...prev, newClip!]) }
@@ -1743,19 +1781,20 @@ export default function VideoStudioPage() {
                     rows={3}
                     value={aiPrompt}
                     onChange={e => setAiPrompt(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleForexGenerate() }}
-                    placeholder="Describe a forex setup…&#10;e.g. GBPUSD bearish flag on H4"
+                    onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleAiGenerate() }}
+                    placeholder="Describe anything…&#10;e.g. sunset over mountains&#10;or GBPUSD bearish flag H4&#10;or animated title intro"
                     className="w-full bg-[#070d1a] border border-white/10 rounded-lg px-2.5 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-purple-500/50 resize-none"
                   />
                   <button
-                    onClick={handleForexGenerate}
+                    onClick={handleAiGenerate}
                     disabled={aiLoading || !aiPrompt.trim()}
                     className="w-full flex items-center justify-center gap-2 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-all"
                   >
                     {aiLoading
                       ? <><Loader2 className="w-3 h-3 animate-spin" />Generating…</>
-                      : <><Send className="w-3 h-3" />Generate Chart</>}
+                      : <><Sparkles className="w-3 h-3" />Generate</>}
                   </button>
+                  <p className="text-[9px] text-gray-600 text-center">Images · Animations · Forex Charts</p>
                 </div>
 
                 {/* Error */}
@@ -1764,45 +1803,130 @@ export default function VideoStudioPage() {
                 )}
 
                 {/* Generated result */}
-                {aiGenerated && (() => {
-                  const cfg = aiGenerated
-                  const payload: DragPayload = { kind: 'forex', config: cfg }
-                  const alreadySaved = forexSamples.some(s => s.pair === cfg.pair && s.setup === cfg.setup)
-                  return (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <p className="text-[10px] text-purple-400 font-semibold">Generated — drag to timeline</p>
+                {aiResult && (() => {
+                  // ── Image result ────────────────────────────────────────────
+                  if (aiResult.type === 'image') {
+                    const alreadySaved = aiSamples.some(s => s.type === 'image' && s.url === aiResult.url)
+                    return (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] text-purple-400 font-semibold">Generated Image</p>
+                          <button
+                            onClick={() => { if (!alreadySaved) setAiSamples(prev => [...prev, aiResult]) }}
+                            disabled={alreadySaved}
+                            className="flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-lg border transition-all disabled:opacity-40 text-cyan-400 border-cyan-500/30 hover:border-cyan-400/60"
+                          >
+                            <Plus className="w-2.5 h-2.5" />{alreadySaved ? 'Saved' : 'Save'}
+                          </button>
+                        </div>
+                        {/* Preview */}
+                        <div className="rounded-lg overflow-hidden border border-white/10 bg-black aspect-video relative">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={aiResult.url} alt={aiResult.prompt} className="w-full h-full object-cover" />
+                        </div>
+                        {/* Add to media library */}
                         <button
-                          onClick={() => { if (!alreadySaved) setForexSamples(prev => [...prev, cfg]) }}
-                          disabled={alreadySaved}
-                          className="flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-lg border transition-all disabled:opacity-40 disabled:cursor-default text-cyan-400 border-cyan-500/30 hover:border-cyan-400/60 hover:text-cyan-300"
+                          onClick={() => addImageToMedia(aiResult.url, aiResult.prompt)}
+                          disabled={aiImageAdding}
+                          className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-blue-600/80 hover:bg-blue-500/80 disabled:opacity-50 text-white text-[11px] font-semibold rounded-lg transition-all"
                         >
-                          <Plus className="w-2.5 h-2.5" />{alreadySaved ? 'Saved' : 'Save to Samples'}
+                          {aiImageAdding
+                            ? <><Loader2 className="w-3 h-3 animate-spin" />Adding…</>
+                            : <><ImageIcon className="w-3 h-3" />Add to Media Library</>}
                         </button>
                       </div>
-                      <div
-                        draggable
-                        onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
-                        onClick={() => {
-                          recordHistory()
-                          const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
-                          setClips(prev => [...prev, newForexClip(cfg, end)])
-                        }}
-                        className="bg-[#070d1a] border border-purple-500/40 hover:border-purple-400/70 rounded-lg p-2.5 cursor-grab active:cursor-grabbing transition-all group"
-                      >
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <BarChart2 className="w-3 h-3 text-purple-400" />
-                          <span className="text-[10px] font-bold text-white">{cfg.pair}</span>
-                          <span className={`text-[9px] px-1 rounded font-semibold ${cfg.trend === 'bullish' ? 'text-emerald-400 bg-emerald-500/15' : cfg.trend === 'bearish' ? 'text-red-400 bg-red-500/15' : 'text-gray-400 bg-white/8'}`}>
-                            {cfg.trend.toUpperCase()}
-                          </span>
-                          <span className="ml-auto text-[9px] text-gray-600">{cfg.timeframe}</span>
+                    )
+                  }
+
+                  // ── Forex result ────────────────────────────────────────────
+                  if (aiResult.type === 'forex') {
+                    const cfg = aiResult.config
+                    const payload: DragPayload = { kind: 'forex', config: cfg }
+                    const alreadySaved = aiSamples.some(s => s.type === 'forex' && s.config.pair === cfg.pair && s.config.setup === cfg.setup)
+                    return (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] text-purple-400 font-semibold">Generated Chart</p>
+                          <button
+                            onClick={() => { if (!alreadySaved) setAiSamples(prev => [...prev, aiResult]) }}
+                            disabled={alreadySaved}
+                            className="flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-lg border transition-all disabled:opacity-40 text-cyan-400 border-cyan-500/30 hover:border-cyan-400/60"
+                          >
+                            <Plus className="w-2.5 h-2.5" />{alreadySaved ? 'Saved' : 'Save'}
+                          </button>
                         </div>
-                        <p className="text-[10px] text-gray-400 truncate">{cfg.setup}</p>
-                        <p className="text-[9px] text-gray-600 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">Click to add · drag to position</p>
+                        <div
+                          draggable
+                          onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                          onClick={() => {
+                            recordHistory()
+                            const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
+                            setClips(prev => [...prev, newForexClip(cfg, end)])
+                          }}
+                          className="bg-[#070d1a] border border-purple-500/40 hover:border-purple-400/70 rounded-lg p-2.5 cursor-grab active:cursor-grabbing transition-all group"
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <BarChart2 className="w-3 h-3 text-purple-400" />
+                            <span className="text-[10px] font-bold text-white">{cfg.pair}</span>
+                            <span className={`text-[9px] px-1 rounded font-semibold ${cfg.trend === 'bullish' ? 'text-emerald-400 bg-emerald-500/15' : cfg.trend === 'bearish' ? 'text-red-400 bg-red-500/15' : 'text-gray-400 bg-white/8'}`}>
+                              {cfg.trend.toUpperCase()}
+                            </span>
+                            <span className="ml-auto text-[9px] text-gray-600">{cfg.timeframe}</span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 truncate">{cfg.setup}</p>
+                          <p className="text-[9px] text-gray-600 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">Click to add · drag to position</p>
+                        </div>
                       </div>
-                    </div>
-                  )
+                    )
+                  }
+
+                  // ── Animation result ────────────────────────────────────────
+                  if (aiResult.type === 'animation') {
+                    const scene = aiResult.scene
+                    const payload: DragPayload = { kind: 'ai-animation', scene }
+                    const alreadySaved = aiSamples.some(s => s.type === 'animation' && s.scene.headline === scene.headline)
+                    return (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] text-purple-400 font-semibold">Generated Animation</p>
+                          <button
+                            onClick={() => { if (!alreadySaved) setAiSamples(prev => [...prev, aiResult]) }}
+                            disabled={alreadySaved}
+                            className="flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-lg border transition-all disabled:opacity-40 text-cyan-400 border-cyan-500/30 hover:border-cyan-400/60"
+                          >
+                            <Plus className="w-2.5 h-2.5" />{alreadySaved ? 'Saved' : 'Save'}
+                          </button>
+                        </div>
+                        <div
+                          draggable
+                          onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                          onClick={() => {
+                            recordHistory()
+                            const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
+                            setClips(prev => [...prev, {
+                              id: String(Date.now() + Math.random()),
+                              track: 'main', startFrame: end,
+                              durationFrames: Math.round((scene.duration ?? 5) * FPS),
+                              clipType: 'scene', scene,
+                            }])
+                          }}
+                          className="bg-[#070d1a] border border-purple-500/40 hover:border-purple-400/70 rounded-lg p-2.5 cursor-grab active:cursor-grabbing transition-all group"
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Film className="w-3 h-3 text-purple-400" />
+                            <span className="text-[10px] font-bold text-white capitalize">{scene.type}</span>
+                            <span className="text-[9px] text-purple-400 bg-purple-500/15 px-1 rounded">ANIM</span>
+                            <span className="ml-auto text-[9px] text-gray-600">{scene.duration ?? 5}s</span>
+                          </div>
+                          <p className="text-[10px] text-gray-300 font-medium truncate">{scene.headline}</p>
+                          {scene.subtext && <p className="text-[9px] text-gray-500 truncate">{scene.subtext}</p>}
+                          <p className="text-[9px] text-gray-600 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">Click to add · drag to position</p>
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  return null
                 })()}
 
                 {/* Samples dropdown */}
@@ -1812,44 +1936,70 @@ export default function VideoStudioPage() {
                     className="w-full flex items-center justify-between px-3 py-2 bg-white/3 hover:bg-white/5 transition-colors"
                   >
                     <div className="flex items-center gap-1.5">
-                      <BarChart2 className="w-3 h-3 text-cyan-400" />
-                      <span className="text-[10px] font-semibold text-gray-300">Samples ({forexSamples.length})</span>
+                      <Sparkles className="w-3 h-3 text-cyan-400" />
+                      <span className="text-[10px] font-semibold text-gray-300">Samples ({aiSamples.length})</span>
                     </div>
                     <ChevronRight className={`w-3 h-3 text-gray-500 transition-transform duration-150 ${samplesOpen ? 'rotate-90' : ''}`} />
                   </button>
 
                   {samplesOpen && (
                     <div className="divide-y divide-white/5 max-h-64 overflow-y-auto">
-                      {forexSamples.length === 0 && (
-                        <p className="text-[10px] text-gray-600 text-center py-4">No samples yet. Generate one and save it!</p>
+                      {aiSamples.length === 0 && (
+                        <p className="text-[10px] text-gray-600 text-center py-4">No samples yet. Generate something and save it!</p>
                       )}
-                      {forexSamples.map((cfg, i) => {
-                        const payload: DragPayload = { kind: 'forex', config: cfg }
+                      {aiSamples.map((sample, i) => {
+                        const payload: DragPayload =
+                          sample.type === 'forex'     ? { kind: 'forex', config: sample.config } :
+                          sample.type === 'animation' ? { kind: 'ai-animation', scene: sample.scene } :
+                          { kind: 'media', mediaId: '' }
+
+                        const icon = sample.type === 'image' ? <ImageIcon className="w-3 h-3 text-blue-400 shrink-0" />
+                          : sample.type === 'animation' ? <Film className="w-3 h-3 text-purple-400 shrink-0" />
+                          : <BarChart2 className="w-3 h-3 text-cyan-400 shrink-0" />
+
+                        const label = sample.type === 'image'     ? sample.prompt.slice(0, 32)
+                          : sample.type === 'forex'     ? `${sample.config.pair} · ${sample.config.setup}`
+                          : sample.scene.headline
+
+                        const sublabel = sample.type === 'image'     ? 'Image'
+                          : sample.type === 'forex'     ? `${sample.config.timeframe} · ${sample.config.trend}`
+                          : `${sample.scene.type} · ${sample.scene.duration ?? 5}s`
+
                         return (
                           <div
                             key={i}
-                            draggable
-                            onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
+                            draggable={sample.type !== 'image'}
+                            onDragStart={e => {
+                              if (sample.type !== 'image')
+                                e.dataTransfer.setData('application/json', JSON.stringify(payload))
+                            }}
                             onClick={() => {
+                              if (sample.type === 'image') {
+                                addImageToMedia(sample.url, sample.prompt)
+                                return
+                              }
                               recordHistory()
                               const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
-                              setClips(prev => [...prev, newForexClip(cfg, end)])
+                              if (sample.type === 'forex') {
+                                setClips(prev => [...prev, newForexClip(sample.config, end)])
+                              } else {
+                                setClips(prev => [...prev, {
+                                  id: String(Date.now() + Math.random()),
+                                  track: 'main' as const, startFrame: end,
+                                  durationFrames: Math.round((sample.scene.duration ?? 5) * FPS),
+                                  clipType: 'scene' as const, scene: sample.scene,
+                                }])
+                              }
                             }}
-                            className="flex items-center gap-1.5 px-2.5 py-2 cursor-grab active:cursor-grabbing hover:bg-white/3 transition-colors group"
+                            className="flex items-center gap-1.5 px-2.5 py-2 cursor-pointer hover:bg-white/3 transition-colors group"
                           >
-                            <BarChart2 className="w-3 h-3 text-cyan-400 shrink-0" />
+                            {icon}
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1">
-                                <span className="text-[10px] font-bold text-white">{cfg.pair}</span>
-                                <span className={`text-[9px] px-1 rounded font-semibold ${cfg.trend === 'bullish' ? 'text-emerald-400 bg-emerald-500/15' : cfg.trend === 'bearish' ? 'text-red-400 bg-red-500/15' : 'text-gray-400 bg-white/8'}`}>
-                                  {cfg.trend === 'bullish' ? '▲' : cfg.trend === 'bearish' ? '▼' : '◆'}
-                                </span>
-                                <span className="text-[9px] text-gray-600">{cfg.timeframe}</span>
-                              </div>
-                              <p className="text-[9px] text-gray-500 truncate">{cfg.setup}</p>
+                              <p className="text-[10px] font-semibold text-white truncate">{label}</p>
+                              <p className="text-[9px] text-gray-500 capitalize">{sublabel}</p>
                             </div>
                             <button
-                              onClick={e => { e.stopPropagation(); setForexSamples(prev => prev.filter((_, j) => j !== i)) }}
+                              onClick={e => { e.stopPropagation(); setAiSamples(prev => prev.filter((_, j) => j !== i)) }}
                               className="shrink-0 p-0.5 text-gray-700 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
                               title="Delete sample"
                             >
