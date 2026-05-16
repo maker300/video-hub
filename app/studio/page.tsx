@@ -7,7 +7,7 @@ import {
   LogOut, Save, Download, Play, Pause, ZoomIn, ZoomOut,
   Upload, Plus, X, Trash2, Film, Layers, Music, Image as ImageIcon,
   Loader2, Check, AlertCircle, FolderOpen, ChevronLeft, ChevronRight,
-  Sparkles, BarChart2, Send,
+  Sparkles, BarChart2, Send, Undo2,
 } from 'lucide-react'
 import type {
   PromoVideoProps, TimelineClip, MediaFile, SceneType, ObjectShape,
@@ -987,6 +987,9 @@ export default function VideoStudioPage() {
   const [forexSamples, setForexSamples] = useState<ForexChartConfig[]>(PRESET_FOREX_SAMPLES)
   const [samplesOpen, setSamplesOpen]   = useState(true)
 
+  // Undo history
+  const [clipsHistory, setClipsHistory] = useState<TimelineClip[][]>([])
+
   // Refs
   const playerRef          = useRef<PlayerRef | null>(null)
   const timelineRef        = useRef<HTMLDivElement>(null)
@@ -1030,6 +1033,31 @@ export default function VideoStudioPage() {
   }, [forexSamples])
 
   useEffect(() => { setActiveObjId(null) }, [selectedClipId])
+
+  // ── Undo helpers ─────────────────────────────────────────────────────────────
+
+  function recordHistory() {
+    setClipsHistory(prev => [...prev.slice(-49), clips])
+  }
+
+  function undo() {
+    setClipsHistory(prev => {
+      if (prev.length === 0) return prev
+      setClips(prev[prev.length - 1])
+      return prev.slice(0, -1)
+    })
+  }
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        undo()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  })
 
   async function deleteMediaFile(id: string) {
     setMediaFiles(prev => {
@@ -1210,6 +1238,7 @@ export default function VideoStudioPage() {
   }
 
   function deleteClip(id: string) {
+    recordHistory()
     setClips(prev => prev.filter(c => c.id !== id))
     if (selectedClipId === id) setSelectedClipId(null)
   }
@@ -1292,7 +1321,7 @@ export default function VideoStudioPage() {
       newClip = { ...newForexClip(payload.config, startFrame), track: dest }
     }
 
-    if (newClip) setClips(prev => [...prev, newClip!])
+    if (newClip) { recordHistory(); setClips(prev => [...prev, newClip!]) }
   }, [zoom, mediaFiles])
 
   // ── Clip dragging (horizontal reposition) ────────────────────────────────────
@@ -1301,6 +1330,7 @@ export default function VideoStudioPage() {
     e.stopPropagation()
     const clip = clips.find(c => c.id === clipId)
     if (!clip) return
+    recordHistory()
     const startX = e.clientX
     const origStart = clip.startFrame
 
@@ -1394,12 +1424,14 @@ export default function VideoStudioPage() {
   // ── Add to end shortcuts ──────────────────────────────────────────────────────
 
   function addSceneToEnd(sceneType: SceneType) {
+    recordHistory()
     const mainClips = clips.filter(c => c.track === 'main')
     const endFrame = mainClips.length === 0 ? 0 : totalDurationFrames(mainClips)
     setClips(prev => [...prev, newSceneClip(sceneType, endFrame)])
   }
 
   function addShapeAtCurrent(shape: ObjectShape) {
+    recordHistory()
     setClips(prev => [...prev, newShapeClip(shape, currentFrame)])
   }
 
@@ -1475,6 +1507,16 @@ export default function VideoStudioPage() {
           className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white border border-white/10 px-3 py-1.5 rounded-lg transition-all"
         >
           <FolderOpen className="w-3.5 h-3.5" /><span className="hidden sm:inline">Library</span>
+        </button>
+
+        <button
+          onClick={undo}
+          disabled={clipsHistory.length === 0}
+          title="Undo (Ctrl+Z)"
+          className="flex items-center gap-1.5 text-xs bg-white/8 hover:bg-white/12 border border-white/10 text-white px-3 py-1.5 rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <Undo2 className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Undo</span>
         </button>
 
         <button
@@ -1742,6 +1784,7 @@ export default function VideoStudioPage() {
                         draggable
                         onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
                         onClick={() => {
+                          recordHistory()
                           const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
                           setClips(prev => [...prev, newForexClip(cfg, end)])
                         }}
@@ -1788,6 +1831,7 @@ export default function VideoStudioPage() {
                             draggable
                             onDragStart={e => e.dataTransfer.setData('application/json', JSON.stringify(payload))}
                             onClick={() => {
+                              recordHistory()
                               const end = totalDurationFrames(clips.filter(c => c.track === 'main'))
                               setClips(prev => [...prev, newForexClip(cfg, end)])
                             }}
