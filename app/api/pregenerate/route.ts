@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
 
   const onlyLesson = req.nextUrl.searchParams.get('lesson')
   const onlyModule = req.nextUrl.searchParams.get('module')
+  const force      = req.nextUrl.searchParams.get('force') === 'true'
 
   const allLessons = courseModules.flatMap(mod =>
     mod.lessons.map(l => ({ ...l, moduleTitle: mod.title, moduleNumber: mod.moduleNumber }))
@@ -60,8 +61,8 @@ export async function GET(req: NextRequest) {
         const fullScript = segments.map(s => s.spokenText).join(' ')
         const hash       = crypto.createHash('sha256').update(fullScript).digest('hex').slice(0, 12)
 
-        // Skip if DB cache is still valid (same content hash)
-        if (cachedMap.get(lesson.id) === hash) {
+        // Skip if DB cache is still valid (same content hash) unless forced
+        if (!force && cachedMap.get(lesson.id) === hash) {
           skipped++
           send({ type: 'skip', lessonId: lesson.id, title: lesson.title, skipped })
           continue

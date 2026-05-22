@@ -982,7 +982,7 @@ function ContentTab() {
     setLessons(prev => ({ ...prev, [lessonId]: { ...prev[lessonId], status: 'generating', error: undefined } }))
     abortRef.current = new AbortController()
     try {
-      await consumeStream(`/api/pregenerate?lesson=${lessonId}`, abortRef.current.signal)
+      await consumeStream(`/api/pregenerate?lesson=${lessonId}&force=true`, abortRef.current.signal)
     } catch (e: unknown) {
       if (!(e instanceof Error && e.name === 'AbortError')) {
         setLessons(prev => ({ ...prev, [lessonId]: { ...prev[lessonId], status: 'error', error: String(e) } }))
