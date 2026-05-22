@@ -7,7 +7,7 @@ const API_BASE    = 'https://generativelanguage.googleapis.com/v1beta'
 const TTS_MODEL   = 'gemini-2.5-flash-preview-tts'
 const VOICE_NAME  = process.env.GOOGLE_TTS_VOICE ?? 'Charon'
 const SAMPLE_RATE = 24000   // Gemini TTS output sample rate (Hz)
-const REQUEST_DELAY_MS = 7_000  // 7s between segments → ~8 RPM (safe under 10 RPM limit)
+const MIN_INTERVAL_MS = 6_500   // min 6.5s between request STARTS → safely under 10 RPM
 const MAX_RETRIES = 6
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -122,8 +122,13 @@ export async function generateAllSegmentAudio(
 
   const results: SegmentAudio[] = []
   for (let i = 0; i < texts.length; i++) {
-    if (i > 0) await sleep(REQUEST_DELAY_MS)
+    const t0 = Date.now()
     results.push(await generateSegmentAudio(texts[i]))
+    if (i < texts.length - 1) {
+      // Subtract TTS time from the interval so total time between starts ≥ MIN_INTERVAL_MS
+      const gap = MIN_INTERVAL_MS - (Date.now() - t0)
+      if (gap > 0) await sleep(gap)
+    }
   }
   return results
 }

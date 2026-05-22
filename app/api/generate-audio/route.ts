@@ -13,7 +13,7 @@ import {
 } from '@/lib/lessonParser'
 import { generateAllSegmentAudio, concatSegmentsToWav } from '@/lib/tts'
 
-export const maxDuration = 60
+export const maxDuration = 300
 
 const FPS = 30
 

@@ -8,7 +8,7 @@ import { parseHtmlContent, buildNarrationSegments } from '@/lib/lessonParser'
 import { generateAllSegmentAudio, concatSegmentsToWav } from '@/lib/tts'
 import type { SlideCue } from '@/lib/lessonParser'
 
-export const maxDuration = 60
+export const maxDuration = 300
 
 const FPS = 30
 
