@@ -88,6 +88,13 @@ export async function generateSegmentAudio(text: string): Promise<SegmentAudio> 
       continue
     }
 
+    if (res.status >= 500) {
+      const body = await res.text().catch(() => '')
+      if (attempt >= MAX_RETRIES) throw new Error(`Gemini TTS ${res.status}: ${body}`)
+      await sleep((15 + attempt * 10) * 1_000)
+      continue
+    }
+
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       throw new Error(`Gemini TTS ${res.status}: ${body}`)
