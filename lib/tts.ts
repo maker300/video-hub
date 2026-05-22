@@ -1,14 +1,21 @@
 // lib/tts.ts
-// Google Gemini TTS — generates Charon-voiced WAV audio for lesson segments.
-// The Gemini TTS API returns raw 16-bit PCM (mono, 24 kHz); we wrap it in a
-// proper WAV container before storing so browsers can play it directly.
+// TTS provider: ElevenLabs (primary) with Gemini as fallback.
+// Both APIs return raw 16-bit PCM mono at 24 kHz; we wrap in a WAV container.
 
-const API_BASE    = 'https://generativelanguage.googleapis.com/v1beta'
-const TTS_MODEL   = 'gemini-2.5-flash-preview-tts'
-const VOICE_NAME  = process.env.GOOGLE_TTS_VOICE ?? 'Charon'
-const SAMPLE_RATE = 24000   // Gemini TTS output sample rate (Hz)
-const MIN_INTERVAL_MS = 6_500   // min 6.5s between request STARTS → safely under 10 RPM
-const MAX_RETRIES = 6
+// ── Gemini config ────────────────────────────────────────────────────────────
+const GEMINI_API_BASE  = 'https://generativelanguage.googleapis.com/v1beta'
+const GEMINI_TTS_MODEL = 'gemini-2.5-flash-preview-tts'
+const GEMINI_VOICE     = process.env.GOOGLE_TTS_VOICE ?? 'Charon'
+const GEMINI_MIN_INTERVAL_MS = 6_500   // safely under 10 RPM
+
+// ── ElevenLabs config ────────────────────────────────────────────────────────
+const EL_API_BASE  = 'https://api.elevenlabs.io/v1'
+const EL_VOICE_ID  = process.env.ELEVENLABS_VOICE_ID ?? 'oQV06a7Gn8pbCJh5DXcO'
+const EL_MODEL     = 'eleven_turbo_v2_5'   // fastest + cheapest; swap for eleven_multilingual_v2 for quality
+
+// ── Shared ───────────────────────────────────────────────────────────────────
+const SAMPLE_RATE = 24000
+const MAX_RETRIES = 4
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -17,34 +24,94 @@ export interface SegmentAudio {
   durationSeconds: number // exact duration from PCM length
 }
 
-/** Wrap raw PCM bytes in a standard WAV container (mono, 16-bit, 24 kHz). */
+/** Wrap raw 16-bit PCM bytes in a standard WAV container (mono, 24 kHz). */
 function pcmToWav(pcm: Buffer): Buffer {
-  const numChannels = 1
+  const numChannels  = 1
   const bitsPerSample = 16
-  const byteRate = SAMPLE_RATE * numChannels * (bitsPerSample / 8)
-  const blockAlign = numChannels * (bitsPerSample / 8)
-  const dataSize = pcm.byteLength
-  const header = Buffer.alloc(44)
+  const byteRate     = SAMPLE_RATE * numChannels * (bitsPerSample / 8)
+  const blockAlign   = numChannels * (bitsPerSample / 8)
+  const dataSize     = pcm.byteLength
+  const header       = Buffer.alloc(44)
 
   header.write('RIFF',  0, 'ascii')
   header.writeUInt32LE(36 + dataSize, 4)
   header.write('WAVE',  8, 'ascii')
   header.write('fmt ', 12, 'ascii')
-  header.writeUInt32LE(16,          16)   // PCM fmt chunk size
-  header.writeUInt16LE(1,           20)   // PCM format
-  header.writeUInt16LE(numChannels, 22)
-  header.writeUInt32LE(SAMPLE_RATE, 24)
-  header.writeUInt32LE(byteRate,    28)
-  header.writeUInt16LE(blockAlign,  32)
-  header.writeUInt16LE(bitsPerSample, 34)
+  header.writeUInt32LE(16,           16)
+  header.writeUInt16LE(1,            20)
+  header.writeUInt16LE(numChannels,  22)
+  header.writeUInt32LE(SAMPLE_RATE,  24)
+  header.writeUInt32LE(byteRate,     28)
+  header.writeUInt16LE(blockAlign,   32)
+  header.writeUInt16LE(bitsPerSample,34)
   header.write('data', 36, 'ascii')
-  header.writeUInt32LE(dataSize,    40)
+  header.writeUInt32LE(dataSize,     40)
 
   return Buffer.concat([header, pcm])
 }
 
-/** Generate WAV audio for a single text segment using Gemini TTS, with retry on 429. */
-export async function generateSegmentAudio(text: string): Promise<SegmentAudio> {
+// ── ElevenLabs TTS ───────────────────────────────────────────────────────────
+
+async function generateSegmentAudioElevenLabs(text: string): Promise<SegmentAudio> {
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) throw new Error('ELEVENLABS_API_KEY not configured')
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController()
+    const timeout    = setTimeout(() => controller.abort(), 60_000)
+    let res: Response
+    try {
+      res = await fetch(
+        `${EL_API_BASE}/text-to-speech/${EL_VOICE_ID}?output_format=pcm_24000`,
+        {
+          method:  'POST',
+          headers: {
+            'xi-api-key':   apiKey,
+            'Content-Type': 'application/json',
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            text,
+            model_id: EL_MODEL,
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          }),
+        },
+      )
+    } catch (netErr) {
+      clearTimeout(timeout)
+      if (attempt >= MAX_RETRIES) throw netErr
+      await sleep((10 + attempt * 5) * 1_000)
+      continue
+    }
+    clearTimeout(timeout)
+
+    if (res.status === 429) {
+      if (attempt >= MAX_RETRIES) throw new Error('ElevenLabs TTS: rate limited')
+      await sleep(30_000)
+      continue
+    }
+    if (res.status >= 500) {
+      if (attempt >= MAX_RETRIES) throw new Error(`ElevenLabs TTS ${res.status}`)
+      await sleep((10 + attempt * 10) * 1_000)
+      continue
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`ElevenLabs TTS ${res.status}: ${body}`)
+    }
+
+    const pcm    = Buffer.from(await res.arrayBuffer())
+    const buffer = pcmToWav(pcm)
+    const durationSeconds = pcm.byteLength / (SAMPLE_RATE * 2)
+    return { buffer, durationSeconds }
+  }
+
+  throw new Error('ElevenLabs TTS: exceeded retry limit')
+}
+
+// ── Gemini TTS ───────────────────────────────────────────────────────────────
+
+async function generateSegmentAudioGemini(text: string): Promise<SegmentAudio> {
   const apiKey = process.env.GOOGLE_TTS_API_KEY
   if (!apiKey) throw new Error('GOOGLE_TTS_API_KEY not configured')
 
@@ -54,7 +121,7 @@ export async function generateSegmentAudio(text: string): Promise<SegmentAudio> 
     let res: Response
     try {
       res = await fetch(
-        `${API_BASE}/models/${TTS_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        `${GEMINI_API_BASE}/models/${GEMINI_TTS_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`,
         {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -63,7 +130,7 @@ export async function generateSegmentAudio(text: string): Promise<SegmentAudio> 
             contents: [{ parts: [{ text }] }],
             generationConfig: {
               responseModalities: ['AUDIO'],
-              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: VOICE_NAME } } },
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } } },
             },
           }),
         },
@@ -84,17 +151,15 @@ export async function generateSegmentAudio(text: string): Promise<SegmentAudio> 
         if (m) retryAfter = parseInt(m[1]) + 3
       } catch { /* ignore */ }
       if (attempt >= MAX_RETRIES) throw new Error('Gemini TTS: rate limit — quota exhausted')
-      await sleep(retryAfter * 1_000)
+      await sleep(Math.min(retryAfter, 90) * 1_000)
       continue
     }
-
     if (res.status >= 500) {
       const body = await res.text().catch(() => '')
       if (attempt >= MAX_RETRIES) throw new Error(`Gemini TTS ${res.status}: ${body}`)
       await sleep((15 + attempt * 10) * 1_000)
       continue
     }
-
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       throw new Error(`Gemini TTS ${res.status}: ${body}`)
@@ -117,23 +182,39 @@ export async function generateSegmentAudio(text: string): Promise<SegmentAudio> 
   throw new Error('Gemini TTS: exceeded retry limit')
 }
 
+// ── Public API ───────────────────────────────────────────────────────────────
+
 /**
- * Generate audio for every segment sequentially with a short delay between requests.
- * Sequential (not batched) to stay safely under the 10 RPM rate limit.
- * Returns null if API key is missing.
+ * Generate WAV audio for a single segment.
+ * Uses ElevenLabs if ELEVENLABS_API_KEY is set, otherwise Gemini.
+ */
+export async function generateSegmentAudio(text: string): Promise<SegmentAudio> {
+  if (process.env.ELEVENLABS_API_KEY) {
+    return generateSegmentAudioElevenLabs(text)
+  }
+  return generateSegmentAudioGemini(text)
+}
+
+/**
+ * Generate audio for every segment sequentially.
+ * ElevenLabs has no strict RPM limit so no delay needed between requests.
+ * Gemini needs 6.5s between starts to stay under 10 RPM.
+ * Returns null if no TTS key is configured.
  */
 export async function generateAllSegmentAudio(
   texts: string[],
 ): Promise<SegmentAudio[] | null> {
-  if (!process.env.GOOGLE_TTS_API_KEY) return null
+  const useElevenLabs = !!process.env.ELEVENLABS_API_KEY
+  const useGemini     = !!process.env.GOOGLE_TTS_API_KEY
+  if (!useElevenLabs && !useGemini) return null
 
   const results: SegmentAudio[] = []
   for (let i = 0; i < texts.length; i++) {
     const t0 = Date.now()
     results.push(await generateSegmentAudio(texts[i]))
-    if (i < texts.length - 1) {
-      // Subtract TTS time from the interval so total time between starts ≥ MIN_INTERVAL_MS
-      const gap = MIN_INTERVAL_MS - (Date.now() - t0)
+    if (i < texts.length - 1 && !useElevenLabs) {
+      // Gemini only: enforce min interval between request starts
+      const gap = GEMINI_MIN_INTERVAL_MS - (Date.now() - t0)
       if (gap > 0) await sleep(gap)
     }
   }
@@ -141,10 +222,8 @@ export async function generateAllSegmentAudio(
 }
 
 /**
- * Concatenate multiple segment buffers into a single valid WAV file.
- * Each segment buffer is a complete WAV — we strip its 44-byte header,
- * join all the raw PCM, then wrap in one new header.
- * Use this instead of Buffer.concat(results.map(r => r.buffer)).
+ * Concatenate multiple WAV segment buffers into a single valid WAV file.
+ * Strips each 44-byte header, joins raw PCM, wraps in one header.
  */
 export function concatSegmentsToWav(segments: SegmentAudio[]): Buffer {
   const pcm = Buffer.concat(segments.map(s => s.buffer.slice(44)))
