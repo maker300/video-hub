@@ -1,0 +1,386 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  role          String    @default("user")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lastSeenAt      DateTime?
+
+  accounts          Account[]
+  sessions          Session[]
+  progress          UserProgress[]
+  subscription      Subscription?
+  analysisAccess    AnalysisAccess?
+  pageViews         PageView[]
+  supportTickets    SupportTicket[]
+  fmPredictions     FMPrediction[]
+  pairSubscriptions   PairSubscription[]
+  tradeUpdates        TradeUpdate[]
+  adminNotifications  AdminNotification[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expires])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@index([expires])
+}
+
+model UserProgress {
+  id          String    @id @default(cuid())
+  userId      String
+  lessonId    String
+  completed   Boolean   @default(false)
+  quizScore   Int?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+}
+
+model Subscription {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  plan      String   @default("free")
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Analysis page access control ──────────────────────────────────────────────
+
+model AnalysisAccess {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  // 'one_month' = fixed 30-day window; 'monthly_rollover' = ongoing until revoked
+  type        String   @default("one_month")
+  startDate   DateTime @default(now())
+  endDate     DateTime
+  active      Boolean  @default(true)
+  grantedAt   DateTime @default(now())
+  note        String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Page view tracking for admin analytics ────────────────────────────────────
+
+model PageView {
+  id        String   @id @default(cuid())
+  path      String
+  userId    String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+// ── Password reset tokens ─────────────────────────────────────────────────────
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expires   DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([expires])
+}
+
+// ── AI Customer Support tickets ───────────────────────────────────────────────
+
+model SupportTicket {
+  id         String   @id @default(cuid())
+  userId     String?
+  guestName  String?
+  guestEmail String?
+  subject    String
+  messages   Json     // ChatMessage[]
+  status     String   @default("open")   // open | in_progress | resolved
+  priority   String   @default("normal") // low | normal | high
+  adminNote  String?
+  adminReply String?
+  repliedAt  DateTime?
+  replyRead  Boolean  @default(false)
+  resolvedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+
+// ── FM Trader prediction & outcome tracking ───────────────────────────────────
+
+model FMPrediction {
+  id          String   @id @default(cuid())
+  userId      String
+  slug        String                           // pair slug e.g. "xau-usd"
+  display     String                           // e.g. "XAU/USD"
+  category    String                           // forex | commodity | crypto | indices
+  sessionSlot String                           // "08" – "21"
+  decision    String                           // BUY | SELL | NO TRADE
+  confidence  Int
+  entryLow    Float
+  entryHigh   Float
+  stopLoss    Float
+  tp1         Float
+  tp2         Float
+  tp3         Float
+  rrRatio     String
+  priceAtCall Float                            // live price when prediction was made
+  // Claude's full analysis text — stored on first call, reused for all users this hour
+  thesis             String?
+  technicalBreakdown String?
+  marketBias         String?
+  riskFactors        Json?                     // String[]
+  sessionContext     String?
+  traderNote         String?
+  timeValidity       String?
+  // Outcome fields — populated by background checker
+  outcome        String   @default("pending")     // pending | tp1_hit | tp2_hit | tp3_hit | sl_hit | expired
+  outcomeAt      DateTime?
+  priceAtOutcome Float?
+  // Market snapshot at prediction time — used by the learning agent to improve rule engine
+  // Stores: { decision, features: Record<string,number>, rawScore, claudeUsed, learnedBoost }
+  marketSnapshot Json?
+  // Metadata
+  generatedAt DateTime
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime                         // prediction valid until next hour boundary
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradeUpdates TradeUpdate[]
+
+  @@index([slug, outcome])
+  @@index([userId])
+  @@index([outcome, expiresAt])
+  @@index([createdAt])
+}
+
+// ── FM Trader rule-engine learning agent ──────────────────────────────────────
+// Single-row table (id = 'singleton') storing the learned feature weights.
+// Updated every cron run after resolving prediction outcomes.
+// The rule engine loads these weights on every request to improve its predictions.
+
+// ── Broker integration — admin-only trade execution via MetaApi ───────────────
+
+model BrokerTrade {
+  id           String   @id @default(cuid())
+  // Signal details (copied from FM Trader at signal time)
+  slug         String
+  display      String
+  decision     String                     // BUY | SELL
+  confidence   Int
+  entryLow     Float
+  entryHigh    Float
+  stopLoss     Float
+  tp1          Float
+  tp2          Float
+  tp3          Float
+  rrRatio      String
+  lotSize      Float                      // calculated from risk % at approval time
+  priceAtSignal Float
+  // Approval
+  status       String   @default("pending")  // pending | approved | rejected | expired | executed | closed
+  approvedAt   DateTime?
+  rejectedAt   DateTime?
+  expiresAt    DateTime                   // 5-min approval window
+  // Execution details (filled after broker order placed)
+  brokerOrderId   String?
+  executedAt      DateTime?
+  executedPrice   Float?
+  // Outcome (filled when trade closes)
+  closePrice   Float?
+  closedAt     DateTime?
+  outcome      String?                    // tp1_hit | tp2_hit | tp3_hit | sl_hit | manual_close
+  pnlPips      Float?
+  // Metadata
+  createdAt    DateTime @default(now())
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Tracks scanner alerts for dedup — prevents repeat Telegram messages in same session window.
+// sessionKey = "slug:decision:YYYY-MM-DD:bucket" where bucket = floor(utcHour/4).
+// The unique constraint on (slug, decision, sessionKey) is the atomic dedup lock —
+// two concurrent scan requests cannot both insert the same record.
+model SignalAlert {
+  id         String   @id @default(cuid())
+  slug       String
+  display    String   @default("")
+  decision   String
+  confidence Int
+  confluence Int
+  entryLow   Float    @default(0)
+  entryHigh  Float    @default(0)
+  price      Float    @default(0)
+  stopLoss   Float    @default(0)
+  tp1        Float    @default(0)
+  rrRatio    String   @default("—")
+  sessionKey String   @default("")   // dedup key — unique per instrument+direction per 4-hr block
+  sentAt     DateTime @default(now())
+  // Admin approval — only set when admin explicitly sends email notification to users
+  notifiedAt DateTime?
+  notifiedTo String?                 // "all" | JSON-encoded string[] of user IDs
+
+  @@unique([slug, decision, sessionKey])
+  @@index([sentAt])
+}
+
+// Users subscribed to pair signals — email sent on every new BUY/SELL signal for that pair.
+model PairSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  slug      String   // e.g. "eur-usd"
+  display   String   // e.g. "EUR/USD"
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, slug])
+  @@index([slug])
+}
+
+// Persists admin-level settings across sessions (single-row key/value store).
+// Admin broadcast notifications — one row per recipient per send action
+model AdminNotification {
+  id        String    @id @default(cuid())
+  userId    String
+  subject   String
+  message   String
+  read      Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([createdAt])
+  @@index([readAt])
+}
+
+model AdminSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ── Lesson audio cache ─────────────────────────────────────────────────────────
+// Stores generated ElevenLabs audio so it is generated once and served to all users.
+// audioData = concatenated MP3 buffers (bytea in Postgres).
+
+// ── FM Trader → Video Hub script pipeline ─────────────────────────────────────
+// Admin selects predictions, Claude writes a YouTube trade-review script,
+// admin approves it, Video Hub fetches approved scripts and builds a timeline.
+
+model TradeScript {
+  id            String    @id @default(cuid())
+  title         String                              // e.g. "XAUUSD SELL — 20 May 2026"
+  predictionIds Json                               // String[] of FMPrediction IDs used
+  segments      Json                               // ScriptSegment[] — the full script
+  status        String    @default("draft")        // draft | approved
+  approvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ── Lesson audio cache ─────────────────────────────────────────────────────────
+
+model LessonAudio {
+  id          String   @id @default(cuid())
+  lessonId    String   @unique
+  hash        String                        // content hash — invalidate when lesson text changes
+  audioData   Bytes                         // raw MP3 binary
+  cuePoints   Json                          // SlideCue[] with frame-accurate timing
+  totalFrames Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model RuleWeights {
+  id           String   @id @default("singleton")
+  // JSON: Record<featureName, { ema: number, count: number }>
+  // ema  = exponential moving average of outcome score (-1 to +1) when this feature fires
+  // count = total number of resolved predictions that activated this feature
+  weights      Json
+  totalLearned Int      @default(0)   // total resolved predictions processed
+  updatedAt    DateTime @updatedAt
+}
+
+model TradeUpdate {
+  id           String   @id @default(cuid())
+  predictionId String
+  userId       String
+  slug         String
+  display      String
+  type         String   // 'cancel' | 'move_sl_breakeven' | 'trail_sl'
+  message      String
+  currentPrice Float
+  suggestedSL  Float?
+  read         Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  prediction FMPrediction @relation(fields: [predictionId], references: [id], onDelete: Cascade)
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([predictionId, userId, type])
+  @@index([userId, read])
+  @@index([createdAt])
+}
