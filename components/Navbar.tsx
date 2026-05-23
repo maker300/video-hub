@@ -274,6 +274,11 @@ export default function Navbar() {
                           const tuLabel = tuType === 'cancel' ? '⚠️ Cancel Advisory'
                             : tuType === 'move_sl_breakeven' ? '🛡️ Move SL to Break Even'
                             : tuType === 'trail_sl' ? '📈 Trail SL into Profit'
+                            : tuType === 'tp1_hit' ? '🎯 TP1 Hit'
+                            : tuType === 'tp2_hit' ? '🎯 TP2 Hit'
+                            : tuType === 'tp3_hit' ? '🏆 TP3 Hit — Full Target'
+                            : tuType === 'sl_hit'  ? '🛑 Stop Loss Hit'
+                            : tuType === 'expired' ? '⏱ Expired'
                             : 'Trade Advisory'
                           return (
                             <button
@@ -538,6 +543,11 @@ export default function Navbar() {
                             const tuLabel = tuType === 'cancel' ? '⚠️ Cancel Advisory'
                               : tuType === 'move_sl_breakeven' ? '🛡️ Move SL to Break Even'
                               : tuType === 'trail_sl' ? '📈 Trail SL into Profit'
+                              : tuType === 'tp1_hit' ? '🎯 TP1 Hit'
+                              : tuType === 'tp2_hit' ? '🎯 TP2 Hit'
+                              : tuType === 'tp3_hit' ? '🏆 TP3 Hit — Full Target'
+                              : tuType === 'sl_hit'  ? '🛑 Stop Loss Hit'
+                              : tuType === 'expired' ? '⏱ Expired'
                               : 'Trade Advisory'
                             return (
                               <button

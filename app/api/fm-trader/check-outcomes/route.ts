@@ -46,10 +46,32 @@ export async function GET(req: Request) {
   const fiveHoursAgo  = new Date(now.getTime() -  5 * 60 * 60 * 1000)
 
   // ── 1. Expire predictions past their validity window ─────────────────────
-  await prisma.fMPrediction.updateMany({
-    where: { outcome: 'pending', expiresAt: { lt: now } },
-    data:  { outcome: 'expired' },
+  // Fetch first so we can create outcome notifications, then update.
+  const newlyExpired = await prisma.fMPrediction.findMany({
+    where:  { outcome: 'pending', expiresAt: { lt: now } },
+    select: { id: true, userId: true, slug: true, display: true, decision: true, priceAtCall: true },
   })
+  if (newlyExpired.length > 0) {
+    await prisma.fMPrediction.updateMany({
+      where: { id: { in: newlyExpired.map(p => p.id) } },
+      data:  { outcome: 'expired', outcomeAt: now },
+    })
+    for (const p of newlyExpired) {
+      // Bell notification — silent expiry is confusing; the user should know
+      // their prediction timed out without hitting TP or SL.
+      await prisma.tradeUpdate.create({
+        data: {
+          predictionId: p.id,
+          userId:       p.userId,
+          slug:         p.slug,
+          display:      p.display,
+          type:         'expired',
+          message:      `${p.decision} ${p.display} prediction expired without reaching TP or SL. The validity window has passed — re-run FM Trader if you still want to trade this pair.`,
+          currentPrice: p.priceAtCall,
+        },
+      }).catch(() => { /* unique constraint dupe — ignore */ })
+    }
+  }
 
   // ── 2. DB housekeeping — runs once per day (at UTC midnight) only ─────────
   // Running these deletes on every cron tick wastes CPU — the rows eligible
@@ -201,6 +223,34 @@ export async function GET(req: Request) {
           data:  { outcome, outcomeAt: now, priceAtOutcome: price },
         })
       )
+
+      // ── Bell notification: tell the user their trade closed ─────────────
+      // The bell already shows mid-trade advisories; now the conclusion shows too.
+      // @@unique([predictionId, userId, type]) prevents duplicates if cron re-runs.
+      const dec = price >= 100 ? 2 : price >= 1 ? 4 : 5
+      const fmt = (n: number) => n.toFixed(dec)
+      const outcomeMessage =
+          outcome === 'tp3_hit'  ? `${pred.decision} ${pred.display} hit TP3 (${fmt(pred.tp3)}) — full target reached at price ${fmt(price)}. Maximum reward captured.`
+        : outcome === 'tp2_hit' ? `${pred.decision} ${pred.display} hit TP2 (${fmt(pred.tp2)}) at price ${fmt(price)}. Trail stop loss aggressively and let TP3 run if structure supports it.`
+        : outcome === 'tp1_hit' ? `${pred.decision} ${pred.display} hit TP1 (${fmt(pred.tp1)}) at price ${fmt(price)}. ${trailUpdate ? 'Trailed stop locked in profit.' : beUpdate ? 'Break-even stop exited the trade flat — no loss.' : 'Move stop loss to break-even and let the remainder run.'}`
+        : outcome === 'sl_hit'  ? `${pred.decision} ${pred.display} hit Stop Loss (${fmt(pred.stopLoss)}) at price ${fmt(price)}. Trade closed at planned risk — review setup quality before re-entering.`
+        : null
+      if (outcomeMessage) {
+        updates.push(
+          prisma.tradeUpdate.create({
+            data: {
+              predictionId: pred.id,
+              userId:       pred.userId,
+              slug:         pred.slug,
+              display:      pred.display,
+              type:         outcome,                // 'tp1_hit' | 'tp2_hit' | 'tp3_hit' | 'sl_hit'
+              message:      outcomeMessage,
+              currentPrice: price,
+            },
+          }).catch(() => null) as Promise<unknown>   // unique-constraint duplicates are fine
+        )
+      }
+
       // ── Learning agent: feed this resolved outcome back into the rule weights ──
       // outcome score: +1 = any TP hit (win), -1 = SL hit (loss), 0 = expired
       const snapshot = pred.marketSnapshot as MarketSnapshot | null

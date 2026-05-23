@@ -70,9 +70,20 @@ export async function GET() {
   // ── Trade updates ──────────────────────────────────────────────────────────
   let tradeUpdates: object[] = []
   if (user) {
-    // Prune on-fetch: delete trade updates older than 24hrs
+    // Prune on-fetch:
+    //   • read + older than 24h → delete (user has seen them)
+    //   • unread + older than 7 days → delete (won't be relevant anymore)
+    // This preserves unread outcome notifications (TP/SL hits) for up to a
+    // week so users who log in days later still see their trade results.
+    const now = Date.now()
     await prisma.tradeUpdate.deleteMany({
-      where: { userId: user.id, createdAt: { lt: new Date(Date.now() - H24) } },
+      where: {
+        userId: user.id,
+        OR: [
+          { read: true,  createdAt: { lt: new Date(now - H24) } },
+          { read: false, createdAt: { lt: new Date(now - 7 * H24) } },
+        ],
+      },
     }).catch(() => {})
 
     const updates = await prisma.tradeUpdate.findMany({
