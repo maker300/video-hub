@@ -17,10 +17,15 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   const record = await prisma.lessonAudio.findUnique({
     where:  { lessonId: rawId },
-    select: { audioData: true },
+    select: { audioData: true, hash: true },
   })
 
   if (!record) return new NextResponse('Not Found', { status: 404 })
+
+  const etag = `"${record.hash}"`
+  if (req.headers.get('if-none-match') === etag) {
+    return new NextResponse(null, { status: 304, headers: { ETag: etag } })
+  }
 
   // Prisma returns Bytes as Buffer; convert to Uint8Array for the Response body
   const audio = new Uint8Array(record.audioData as Buffer)
@@ -33,8 +38,11 @@ export async function GET(req: NextRequest, { params }: Params) {
   const rangeHeader = req.headers.get('range')
   if (rangeHeader) {
     const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-')
-    const start = parseInt(startStr, 10)
-    const end   = endStr ? parseInt(endStr, 10) : total - 1
+    let start = parseInt(startStr, 10)
+    let end   = endStr ? parseInt(endStr, 10) : total - 1
+    if (!Number.isFinite(start) || start < 0)   start = 0
+    if (!Number.isFinite(end)   || end >= total) end   = total - 1
+    if (start > end)                             start = 0
     const chunk = audio.slice(start, end + 1)
 
     return new NextResponse(chunk, {
@@ -44,7 +52,8 @@ export async function GET(req: NextRequest, { params }: Params) {
         'Content-Range':  `bytes ${start}-${end}/${total}`,
         'Accept-Ranges':  'bytes',
         'Content-Length': String(chunk.byteLength),
-        'Cache-Control':  'public, max-age=31536000, immutable',
+        'Cache-Control':  'private, max-age=300, must-revalidate',
+        ETag:             etag,
       },
     })
   }
@@ -55,7 +64,8 @@ export async function GET(req: NextRequest, { params }: Params) {
       'Content-Type':   contentType,
       'Accept-Ranges':  'bytes',
       'Content-Length': String(total),
-      'Cache-Control':  'public, max-age=31536000, immutable',
+      'Cache-Control':  'private, max-age=300, must-revalidate',
+      ETag:             etag,
     },
   })
 }

@@ -19,9 +19,9 @@ interface PageProps {
 
 export async function generateStaticParams() {
   const params: Array<{ moduleId: string; lessonId: string }> = []
-  for (const module of courseModules) {
-    for (const lesson of module.lessons) {
-      params.push({ moduleId: module.id, lessonId: lesson.id })
+  for (const mod of courseModules) {
+    for (const lesson of mod.lessons) {
+      params.push({ moduleId: mod.id, lessonId: lesson.id })
     }
   }
   return params

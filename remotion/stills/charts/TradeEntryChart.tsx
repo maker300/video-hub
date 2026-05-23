@@ -9,6 +9,18 @@ const CHART_TOP    = 52;
 const CHART_BOTTOM = 570;
 const VOL_BOTTOM   = 635;
 
+const PillLabel: React.FC<{
+  y: number; text: string; color: string; bg: string;
+}> = ({ y, text, color, bg }) => (
+  <g>
+    <rect x={CHART_RIGHT + 82} y={y - 11} width={text.length * 6.5 + 10} height={22} rx={4} fill={bg} />
+    <text x={CHART_RIGHT + 87} y={y + 3}
+      fontFamily={tv.fontMono} fontSize={11} fontWeight={600} fill={color}>
+      {text}
+    </text>
+  </g>
+);
+
 export const TradeEntryChart: React.FC = () => {
   const candles = generateCandles(30, 1.0800, "up", 19);
   const pm = makePriceMapper(candles, CHART_TOP, CHART_BOTTOM);
@@ -36,18 +48,6 @@ export const TradeEntryChart: React.FC = () => {
   const lineFromX = cx(entryIdx);
   const lineToX   = CHART_RIGHT - 2;
   const bracketX  = CHART_RIGHT + 14;
-
-  const PillLabel: React.FC<{
-    y: number; text: string; color: string; bg: string;
-  }> = ({ y, text, color, bg }) => (
-    <g>
-      <rect x={CHART_RIGHT + 82} y={y - 11} width={text.length * 6.5 + 10} height={22} rx={4} fill={bg} />
-      <text x={CHART_RIGHT + 87} y={y + 3}
-        fontFamily={tv.fontMono} fontSize={11} fontWeight={600} fill={color}>
-        {text}
-      </text>
-    </g>
-  );
 
   return (
     <ChartFrame

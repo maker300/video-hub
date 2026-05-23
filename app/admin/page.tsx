@@ -142,16 +142,18 @@ function PieChart({ data }: { data: PieSlice[] }) {
   if (total === 0) return <div className="flex items-center justify-center h-40 text-gray-600 text-sm">No data yet</div>
 
   const R = 70, cx = 90, cy = 90
-  let angle = -Math.PI / 2
+  const cumulative: number[] = data.reduce<number[]>((acc, d) => {
+    acc.push((acc[acc.length - 1] ?? 0) + d.count / total)
+    return acc
+  }, [])
   const slices = data.map((d, i) => {
     const pct   = d.count / total
-    const start = angle
-    angle += pct * 2 * Math.PI
-    const end  = angle
-    const x1   = cx + R * Math.cos(start)
-    const y1   = cy + R * Math.sin(start)
-    const x2   = cx + R * Math.cos(end)
-    const y2   = cy + R * Math.sin(end)
+    const start = -Math.PI / 2 + (i === 0 ? 0 : cumulative[i - 1]) * 2 * Math.PI
+    const end   = -Math.PI / 2 + cumulative[i] * 2 * Math.PI
+    const x1    = cx + R * Math.cos(start)
+    const y1    = cy + R * Math.sin(start)
+    const x2    = cx + R * Math.cos(end)
+    const y2    = cy + R * Math.sin(end)
     const large = pct > 0.5 ? 1 : 0
     return { ...d, pct, path: `M${cx},${cy} L${x1},${y1} A${R},${R} 0 ${large} 1 ${x2},${y2} Z`, color: PIE_COLORS[i % PIE_COLORS.length] }
   })

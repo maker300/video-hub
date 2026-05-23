@@ -5198,11 +5198,11 @@ export function getModuleById(id: string): Module | undefined {
 }
 
 export function getLessonById(moduleId: string, lessonId: string): { lesson: Lesson; module: Module } | undefined {
-  const module = getModuleById(moduleId)
-  if (!module) return undefined
-  const lesson = module.lessons.find(l => l.id === lessonId)
+  const mod = getModuleById(moduleId)
+  if (!mod) return undefined
+  const lesson = mod.lessons.find(l => l.id === lessonId)
   if (!lesson) return undefined
-  return { lesson, module }
+  return { lesson, module: mod }
 }
 
 export function getAdjacentLessons(moduleId: string, lessonId: string): {
@@ -5210,9 +5210,9 @@ export function getAdjacentLessons(moduleId: string, lessonId: string): {
   next: { moduleId: string; lessonId: string } | null
 } {
   const allLessons: Array<{ moduleId: string; lessonId: string }> = []
-  for (const module of courseModules) {
-    for (const lesson of module.lessons) {
-      allLessons.push({ moduleId: module.id, lessonId: lesson.id })
+  for (const mod of courseModules) {
+    for (const lesson of mod.lessons) {
+      allLessons.push({ moduleId: mod.id, lessonId: lesson.id })
     }
   }
   const idx = allLessons.findIndex(l => l.moduleId === moduleId && l.lessonId === lessonId)

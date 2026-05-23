@@ -50,7 +50,7 @@ function PlansContent() {
         return
       }
 
-      window.location.href = data.url
+      window.location.assign(data.url)
     } catch {
       setError('Connection error. Please try again.')
       setLoading(null)

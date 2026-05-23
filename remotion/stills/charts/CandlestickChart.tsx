@@ -9,6 +9,19 @@ const CHART_TOP    = 52;
 const CHART_BOTTOM = 570;
 const VOL_BOTTOM   = 635;
 
+const Label: React.FC<{
+  x: number; y: number; text: string; color: string; bg: string; anchor?: string;
+}> = ({ x, y, text, color, bg, anchor = "start" }) => (
+  <g>
+    <rect x={anchor === "end" ? x - text.length * 5.5 - 8 : x - 4} y={y - 11}
+      width={text.length * 5.5 + 12} height={18} rx={3} fill={bg} />
+    <text x={anchor === "end" ? x - text.length * 5.5 - 2 : x + 2} y={y + 2}
+      fontFamily={tv.font} fontSize={11} fontWeight={600} fill={color}>
+      {text}
+    </text>
+  </g>
+);
+
 export const CandlestickChart: React.FC = () => {
   const candles = generateCandles(28, 1.0820, "up", 7);
   const pm = makePriceMapper(candles, CHART_TOP, CHART_BOTTOM);
@@ -31,19 +44,6 @@ export const CandlestickChart: React.FC = () => {
   // Leader line helper
   const leaderX = bx + colW * 0.5 + 30;
   const leaderXBear = bex - colW * 0.5 - 30;
-
-  const Label: React.FC<{
-    x: number; y: number; text: string; color: string; bg: string; anchor?: string;
-  }> = ({ x, y, text, color, bg, anchor = "start" }) => (
-    <g>
-      <rect x={anchor === "end" ? x - text.length * 5.5 - 8 : x - 4} y={y - 11}
-        width={text.length * 5.5 + 12} height={18} rx={3} fill={bg} />
-      <text x={anchor === "end" ? x - text.length * 5.5 - 2 : x + 2} y={y + 2}
-        fontFamily={tv.font} fontSize={11} fontWeight={600} fill={color}>
-        {text}
-      </text>
-    </g>
-  );
 
   return (
     <ChartFrame
