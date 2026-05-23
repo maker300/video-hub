@@ -1394,7 +1394,202 @@ function detectOrderBlock(
   return none
 }
 
-// ── 8. Setup Grader (A / B / C) ──────────────────────────────────────────────
+// ── 8. Fair Value Gap (FVG / Imbalance) Detector ─────────────────────────────
+// ICT/SMC concept: a 3-candle pattern where price moves so fast that candle 1's
+// wick and candle 3's wick do NOT overlap, leaving an unfilled "imbalance" zone
+// between them. Institutions often return to fill these gaps before continuing.
+// Bullish FVG (in uptrend): candle 1 high < candle 3 low → gap between is demand
+// Bearish FVG (in downtrend): candle 1 low > candle 3 high → gap is supply
+// We report the MOST RECENT unfilled FVG in the trend direction.
+function detectFairValueGap(
+  candles: Candle[],
+  trend:   'BULLISH' | 'BEARISH',
+): { found: boolean; top: number; bottom: number; mid: number; age: number; detail: string } {
+  const none = { found: false, top: 0, bottom: 0, mid: 0, age: 0, detail: '' }
+  if (candles.length < 4) return none
+  const n = candles.length
+  const price = candles[n-1].c
+
+  // Scan from oldest to newest (last 20 bars) for FVGs in trend direction
+  for (let i = Math.max(0, n - 20); i < n - 2; i++) {
+    const c1 = candles[i], c3 = candles[i + 2]
+    if (trend === 'BULLISH' && c3.l > c1.h) {
+      // Bullish FVG between c1.h and c3.l
+      const top = c3.l, bot = c1.h, mid = (top + bot) / 2
+      // Unfilled if current price hasn't traded back through to bot
+      // (any subsequent candle that closed below 'bot' filled it)
+      const filled = candles.slice(i + 3).some(c => c.l <= bot)
+      if (!filled) {
+        const inGap = price >= bot && price <= top
+        const age = n - 1 - (i + 2)
+        return {
+          found: true, top, bottom: bot, mid, age,
+          detail: `Bullish FVG (${bot.toFixed(4)}–${top.toFixed(4)}) ${age} bar${age === 1 ? '' : 's'} ago, ${inGap ? 'price currently in gap (high-probability fill zone)' : `price ${price > top ? 'above' : 'below'} gap`}.`,
+        }
+      }
+    }
+    if (trend === 'BEARISH' && c3.h < c1.l) {
+      // Bearish FVG between c3.h and c1.l
+      const top = c1.l, bot = c3.h, mid = (top + bot) / 2
+      const filled = candles.slice(i + 3).some(c => c.h >= top)
+      if (!filled) {
+        const inGap = price >= bot && price <= top
+        const age = n - 1 - (i + 2)
+        return {
+          found: true, top, bottom: bot, mid, age,
+          detail: `Bearish FVG (${bot.toFixed(4)}–${top.toFixed(4)}) ${age} bar${age === 1 ? '' : 's'} ago, ${inGap ? 'price currently in gap (high-probability fill zone)' : `price ${price > top ? 'above' : 'below'} gap`}.`,
+        }
+      }
+    }
+  }
+  return none
+}
+
+// ── 9. Break of Structure (BOS) + Change of Character (CHoCH) ────────────────
+// Smart Money Concept: identifies whether the most recent structural break
+// continues the trend (BOS) or signals a potential reversal (CHoCH).
+//
+// BOS (bullish trend):  price closes ABOVE the most recent confirmed swing HIGH.
+// CHoCH (bullish trend): price closes BELOW the most recent confirmed swing LOW
+//                        — first break against trend = character change warning.
+// Mirror for bearish trend.
+function detectBOSCHoCH(
+  candles: Candle[],
+  trend:   'BULLISH' | 'BEARISH',
+): { bos: boolean; choch: boolean; level: number; detail: string } {
+  const none = { bos: false, choch: false, level: 0, detail: '' }
+  if (candles.length < 12) return none
+
+  // Identify swing highs and lows in last 25 bars using 2-bar fractal:
+  // swing high = a bar with strictly higher high than both neighbours
+  const c = candles.slice(-25)
+  const swingHighs: { idx: number; price: number }[] = []
+  const swingLows:  { idx: number; price: number }[] = []
+  for (let i = 1; i < c.length - 1; i++) {
+    if (c[i].h > c[i-1].h && c[i].h > c[i+1].h) swingHighs.push({ idx: i, price: c[i].h })
+    if (c[i].l < c[i-1].l && c[i].l < c[i+1].l) swingLows.push({ idx: i, price: c[i].l })
+  }
+  if (swingHighs.length === 0 && swingLows.length === 0) return none
+
+  const last = c[c.length - 1]
+  // Most recent swings (highest-index)
+  const lastSH = swingHighs.length ? swingHighs[swingHighs.length - 1] : null
+  const lastSL = swingLows.length  ? swingLows[swingLows.length - 1]   : null
+
+  if (trend === 'BULLISH') {
+    // BOS: last candle closed above the most recent swing high → continuation
+    if (lastSH && last.c > lastSH.price) {
+      return {
+        bos: true, choch: false, level: lastSH.price,
+        detail: `Bullish BOS: price closed at ${last.c.toFixed(4)} above the most recent swing high (${lastSH.price.toFixed(4)}) — structural continuation of the bullish trend.`,
+      }
+    }
+    // CHoCH: last candle closed below the most recent swing low → potential reversal
+    if (lastSL && last.c < lastSL.price) {
+      return {
+        bos: false, choch: true, level: lastSL.price,
+        detail: `⚠ Bullish CHoCH: price closed at ${last.c.toFixed(4)} below the most recent swing low (${lastSL.price.toFixed(4)}) — first structural break against the bullish trend. Reversal warning.`,
+      }
+    }
+  } else {
+    if (lastSL && last.c < lastSL.price) {
+      return {
+        bos: true, choch: false, level: lastSL.price,
+        detail: `Bearish BOS: price closed at ${last.c.toFixed(4)} below the most recent swing low (${lastSL.price.toFixed(4)}) — structural continuation of the bearish trend.`,
+      }
+    }
+    if (lastSH && last.c > lastSH.price) {
+      return {
+        bos: false, choch: true, level: lastSH.price,
+        detail: `⚠ Bearish CHoCH: price closed at ${last.c.toFixed(4)} above the most recent swing high (${lastSH.price.toFixed(4)}) — first structural break against the bearish trend. Reversal warning.`,
+      }
+    }
+  }
+  return none
+}
+
+// ── 10. Equal Highs / Equal Lows (Liquidity Pools) ───────────────────────────
+// Smart Money Concept: when price tests the same swing high/low TWICE within a
+// tight tolerance, retail stops cluster there. Institutions sweep these levels
+// before reversing. Equal highs = bearish liquidity target. Equal lows = bullish.
+// Active EQH ABOVE current price (in a bullish trend) = liquidity to grab on the way up.
+function detectEqualLevels(
+  candles: Candle[],
+  trend:   'BULLISH' | 'BEARISH',
+): { found: boolean; level: number; touches: number; detail: string } {
+  const none = { found: false, level: 0, touches: 0, detail: '' }
+  if (candles.length < 10) return none
+
+  const c = candles.slice(-20)
+  const price = c[c.length - 1].c
+  const tol   = 0.0015  // 15 bps tolerance — adjustable per instrument volatility
+
+  // Build candidate clusters from highs (for EQH targets in bullish trend)
+  // and from lows (for EQL targets in bearish trend).
+  const series = trend === 'BULLISH' ? c.map(x => x.h) : c.map(x => x.l)
+
+  let best = { level: 0, touches: 0 }
+  for (let i = 0; i < series.length; i++) {
+    const pivot = series[i]
+    if (pivot <= 0) continue
+    let touches = 0
+    for (let j = 0; j < series.length; j++) {
+      if (Math.abs(series[j] - pivot) / pivot < tol) touches++
+    }
+    if (touches > best.touches) best = { level: pivot, touches }
+  }
+
+  // Need at least 2 touches to be a true equal-level liquidity pool
+  if (best.touches < 2) return none
+
+  // Only meaningful if level is in the direction price is moving toward
+  if (trend === 'BULLISH' && best.level <= price) return none
+  if (trend === 'BEARISH' && best.level >= price) return none
+
+  const dist = Math.abs(best.level - price) / price
+  if (dist > 0.025) return none  // too far away to matter (>2.5%)
+
+  const kind = trend === 'BULLISH' ? 'Equal Highs (EQH)' : 'Equal Lows (EQL)'
+  const dir  = trend === 'BULLISH' ? 'above' : 'below'
+  return {
+    found: true, level: best.level, touches: best.touches,
+    detail: `${kind} liquidity pool at ${best.level.toFixed(4)} (${best.touches} touches), ${(dist * 100).toFixed(2)}% ${dir} current price — retail stops cluster here; expect institutional sweep before reversal.`,
+  }
+}
+
+// ── 11. MACD Computation (12/26/9 standard) ──────────────────────────────────
+// Momentum confirmation indicator. Used as a confirmation overlay — not a
+// primary entry signal. Bullish: MACD line > signal line AND histogram rising.
+function calcMACD(
+  candles: Candle[],
+): { macd: number; signal: number; histogram: number; bullishCross: boolean; bearishCross: boolean } | null {
+  if (candles.length < 35) return null
+  const closes = candles.map(c => c.c)
+  const ema = (period: number): number[] => {
+    const k = 2 / (period + 1)
+    const out: number[] = []
+    out[0] = closes[0]
+    for (let i = 1; i < closes.length; i++) out[i] = closes[i] * k + out[i-1] * (1 - k)
+    return out
+  }
+  const ema12 = ema(12)
+  const ema26 = ema(26)
+  const macdLine: number[] = closes.map((_, i) => ema12[i] - ema26[i])
+  // Signal line = 9 EMA of MACD line
+  const k = 2 / (9 + 1)
+  const sig: number[] = []
+  sig[0] = macdLine[0]
+  for (let i = 1; i < macdLine.length; i++) sig[i] = macdLine[i] * k + sig[i-1] * (1 - k)
+
+  const n = closes.length - 1
+  const macd = macdLine[n], signal = sig[n], hist = macd - signal
+  const prevHist = macdLine[n-1] - sig[n-1]
+  const bullishCross = prevHist <= 0 && hist > 0
+  const bearishCross = prevHist >= 0 && hist < 0
+  return { macd, signal, histogram: hist, bullishCross, bearishCross }
+}
+
+// ── 12. Setup Grader (A / B / C) ─────────────────────────────────────────────
 // Grade A: institutional-quality setup — all or nearly all conditions optimal
 // Grade B: solid setup — key conditions met, minor compromises acceptable
 // Grade C: minimum criteria met — tradeable but reduced size and expectation
@@ -1420,6 +1615,13 @@ interface GradeParams {
   hasOB:       boolean
   obStrength:  'strong' | 'moderate' | null
   trend:       'BULLISH' | 'BEARISH'
+  // Smart Money additions (max combined bonus: 1.5 pts)
+  hasFVG?:     boolean
+  fvgFresh?:   boolean  // FVG ≤4 bars old AND price in gap
+  hasBOS?:     boolean
+  hasCHoCH?:   boolean  // counter-trend break — heavy penalty
+  hasEqLevels?:boolean
+  macdConfirms?: boolean
 }
 function gradeSetup(p: GradeParams): 'A' | 'B' | 'C' {
   let pts = 0
@@ -1431,6 +1633,13 @@ function gradeSetup(p: GradeParams): 'A' | 'B' | 'C' {
   pts += !p.hasDivergence               ? 0.5 : 0
   pts += p.obStrength === 'strong'      ? 1 : p.obStrength === 'moderate'    ? 0.5 : 0
   pts += p.regime !== 'VOLATILE' && p.regime !== 'RANGING' ? 0.5 : 0
+  // Smart Money bonuses (Max +1.5)
+  pts += p.fvgFresh    ? 0.5 : p.hasFVG ? 0.25 : 0
+  pts += p.hasBOS      ? 0.5 : 0
+  pts += p.macdConfirms ? 0.25 : 0
+  pts += p.hasEqLevels ? 0.25 : 0
+  // CHoCH is a structural reversal warning — penalty
+  pts += p.hasCHoCH    ? -1.5 : 0
 
   if (pts >= 7.5) return 'A'
   if (pts >= 4.5) return 'B'
@@ -2195,6 +2404,16 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
   const swHigh = mc?.swingHigh ?? 0, swLow = mc?.swingLow ?? 0
   const pdZone       = getPDZone(swHigh, swLow, d.price, trend)
   const orderBlock   = detectOrderBlock(candlesFor1H, trend)
+  // Smart Money additions
+  const fvg          = detectFairValueGap(candlesFor1H.length >= 6 ? candlesFor1H : candlesFor4H, trend)
+  const bosChoch     = detectBOSCHoCH(candlesFor4H.length >= 12 ? candlesFor4H : candlesFor1H, trend)
+  const eqLevels     = detectEqualLevels(candlesFor1H.length >= 12 ? candlesFor1H : candlesFor4H, trend)
+  const macd         = calcMACD(candlesFor1H.length >= 35 ? candlesFor1H : candlesFor4H)
+  const macdConfirms = !!macd && (
+    trend === 'BULLISH'
+      ? macd.macd > macd.signal && macd.histogram > 0
+      : macd.macd < macd.signal && macd.histogram < 0
+  )
 
   // ── Step 7: Setup grade ───────────────────────────────────────────────────
   const grade = gradeSetup({
@@ -2208,6 +2427,12 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
     hasOB:         orderBlock.found,
     obStrength:    orderBlock.strength,
     trend,
+    hasFVG:        fvg.found,
+    fvgFresh:      fvg.found && fvg.age <= 4 && d.price >= fvg.bottom && d.price <= fvg.top,
+    hasBOS:        bosChoch.bos,
+    hasCHoCH:      bosChoch.choch,
+    hasEqLevels:   eqLevels.found,
+    macdConfirms,
   })
 
   // ── Step 8: Confidence scoring — pure institutional factors ───────────────
@@ -2275,6 +2500,28 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
   else if (pdZone.quality === 'poor') conf -= 5
   if (orderBlock.found && orderBlock.strength === 'strong') conf += 6
   else if (orderBlock.found) conf += 3
+
+  // FVG (Fair Value Gap) — price in an active institutional imbalance zone
+  if (fvg.found) {
+    const inGap = d.price >= fvg.bottom && d.price <= fvg.top
+    if (inGap)            conf += 6   // currently in the gap = high-prob fill zone
+    else if (fvg.age <= 4) conf += 3   // fresh FVG nearby = institutional reference
+  }
+
+  // BOS / CHoCH — structural break confirmation or warning
+  if (bosChoch.bos)   conf += 5   // structural continuation in trend direction
+  if (bosChoch.choch) conf -= 12  // first counter-trend break = reversal warning
+
+  // EQH/EQL — liquidity pool target ahead = institutional draw on liquidity
+  if (eqLevels.found && eqLevels.touches >= 3) conf += 5
+  else if (eqLevels.found) conf += 3
+
+  // MACD momentum confirmation
+  if (macdConfirms)              conf += 4
+  if (macd?.bullishCross && trend === 'BULLISH') conf += 3
+  if (macd?.bearishCross && trend === 'BEARISH') conf += 3
+  if (macd && trend === 'BULLISH' && macd.macd < macd.signal && macd.histogram < 0) conf -= 3
+  if (macd && trend === 'BEARISH' && macd.macd > macd.signal && macd.histogram > 0) conf -= 3
 
   // Market regime
   if (regime === 'VOLATILE') conf -= 8
@@ -2346,6 +2593,12 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
 
   if (divergence.divergence)
     riskFactors.push(`⚠ RSI DIVERGENCE: ${divergence.detail}`)
+  if (bosChoch.choch)
+    riskFactors.unshift(`⚠ CHANGE OF CHARACTER (CHoCH): ${bosChoch.detail} This is the first structural break against trend. Reduce size by 50% and use a tight stop — if confirmed by a second close, treat as a full reversal.`)
+  if (fvg.found && d.price >= fvg.bottom && d.price <= fvg.top)
+    riskFactors.push(`Fair value gap fill in progress: price inside ${trend === 'BULLISH' ? 'bullish' : 'bearish'} FVG (${fvg.bottom.toFixed(dec)}–${fvg.top.toFixed(dec)}) — institutional rebalance zone, high-prob continuation if price holds.`)
+  if (eqLevels.found && eqLevels.touches >= 3)
+    riskFactors.push(`Liquidity target ahead: ${eqLevels.detail} Expect institutional sweep — TP placement should anticipate this level.`)
   if (pdZone.quality === 'poor')
     riskFactors.push(`⚠ COUNTER-INSTITUTIONAL ENTRY ZONE: ${pdZone.detail}`)
   if (regime === 'VOLATILE')
@@ -2496,6 +2749,10 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
     `PD ZONE: ${pdZone.detail}`,
     sweep.sweep      ? `✓ LIQUIDITY SWEEP: ${sweep.detail}` : `Liquidity sweep: none on last 1H candle`,
     orderBlock.found ? `✓ ORDER BLOCK (${orderBlock.strength?.toUpperCase()}): ${orderBlock.detail}` : `Order block: not at an active OB zone`,
+    fvg.found        ? `✓ FAIR VALUE GAP: ${fvg.detail}` : `Fair value gap: no active FVG in trend direction`,
+    bosChoch.bos     ? `✓ BOS: ${bosChoch.detail}` : bosChoch.choch ? `⚠ CHoCH: ${bosChoch.detail}` : `BOS/CHoCH: no recent structural break — trend intact`,
+    eqLevels.found   ? `✓ LIQUIDITY POOL: ${eqLevels.detail}` : `Equal highs/lows: no clustered liquidity ahead`,
+    macd             ? `MACD: line ${macd.macd.toFixed(5)} ${macdConfirms ? '✓ confirms' : 'does not confirm'} ${trend.toLowerCase()} (signal ${macd.signal.toFixed(5)}, hist ${macd.histogram.toFixed(5)})${macd.bullishCross && trend === 'BULLISH' ? ' — fresh bullish cross' : macd.bearishCross && trend === 'BEARISH' ? ' — fresh bearish cross' : ''}` : `MACD: insufficient candle history`,
     divergence.divergence ? `⚠ RSI DIVERGENCE: ${divergence.detail}` : `RSI divergence: none detected`,
     ``,
     `GRADE ${grade} POSITION SIZING:`,
@@ -2554,6 +2811,17 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
       divergenceDetail: divergence.detail,
       pdQuality:        pdZone.quality,
       pdDetail:         pdZone.detail,
+      hasFVG:           fvg.found,
+      fvgDetail:        fvg.detail,
+      hasBOS:           bosChoch.bos,
+      hasCHoCH:         bosChoch.choch,
+      bosChochDetail:   bosChoch.detail,
+      hasEqLevels:      eqLevels.found,
+      eqLevelsDetail:   eqLevels.detail,
+      macdConfirms,
+      macdDetail:       macd
+        ? `MACD ${macd.macd.toFixed(5)} vs signal ${macd.signal.toFixed(5)}, hist ${macd.histogram.toFixed(5)}`
+        : 'MACD: insufficient candle history',
     },
   }
 }
@@ -2897,14 +3165,27 @@ export async function POST(req: Request) {
       const atr          = calcATR(body)
       const dec          = dp(body.price)
       const decision     = sharedRow.decision as 'BUY' | 'SELL' | 'NO TRADE'
-      const features     = decision !== 'NO TRADE' ? extractFeatures(body, decision as 'BUY' | 'SELL', rawScore) : {}
-      const learnedBoost = decision !== 'NO TRADE' ? computeLearnedBoost(features, learnedWeights) : 0
 
-      // Run the CPU-only rule engine to recover setupGrade for level sizing.
-      // No Claude call — this is fast deterministic math only.
-      const freshGrade = decision !== 'NO TRADE'
-        ? (runAnalysis(body).setupGrade ?? 'B')
-        : 'B'
+      // Run the CPU-only rule engine ONCE to recover setupGrade AND institutional
+      // meta needed by the learner. No Claude call — deterministic math only.
+      const freshAnalysis = decision !== 'NO TRADE' ? runAnalysis(body) : null
+      const freshGrade    = freshAnalysis?.setupGrade ?? 'B'
+      const freshMeta     = freshAnalysis?.institutionalMeta
+
+      const features     = decision !== 'NO TRADE'
+        ? extractFeatures(body, decision as 'BUY' | 'SELL', rawScore, freshMeta ? {
+            grade:        freshMeta.grade,
+            hasSweep:     freshMeta.hasSweep,
+            hasOB:        freshMeta.hasOB,
+            pdQuality:    freshMeta.pdQuality,
+            hasFVG:       freshMeta.hasFVG,
+            hasBOS:       freshMeta.hasBOS,
+            hasCHoCH:     freshMeta.hasCHoCH,
+            hasEqLevels:  freshMeta.hasEqLevels,
+            macdConfirms: freshMeta.macdConfirms,
+          } : undefined)
+        : {}
+      const learnedBoost = decision !== 'NO TRADE' ? computeLearnedBoost(features, learnedWeights) : 0
       const freshLevels = decision !== 'NO TRADE'
         ? recalcLevels(body, decision as 'BUY' | 'SELL', freshGrade)
         : null
@@ -3109,10 +3390,15 @@ export async function POST(req: Request) {
     const instMeta = ruleResult.institutionalMeta
     const features     = decision !== 'NO TRADE'
       ? extractFeatures(body, decision as 'BUY' | 'SELL', rawScore, instMeta ? {
-          grade:     instMeta.grade,
-          hasSweep:  instMeta.hasSweep,
-          hasOB:     instMeta.hasOB,
-          pdQuality: instMeta.pdQuality,
+          grade:        instMeta.grade,
+          hasSweep:     instMeta.hasSweep,
+          hasOB:        instMeta.hasOB,
+          pdQuality:    instMeta.pdQuality,
+          hasFVG:       instMeta.hasFVG,
+          hasBOS:       instMeta.hasBOS,
+          hasCHoCH:     instMeta.hasCHoCH,
+          hasEqLevels:  instMeta.hasEqLevels,
+          macdConfirms: instMeta.macdConfirms,
         } : undefined)
       : {}
     const learnedBoost = decision !== 'NO TRADE'

@@ -163,5 +163,14 @@ export interface FMTraderResponse {
     divergenceDetail: string
     pdQuality:        'optimal' | 'good' | 'fair' | 'poor'
     pdDetail:         string
+    hasFVG?:          boolean      // Fair Value Gap in trend direction
+    fvgDetail?:       string
+    hasBOS?:          boolean      // Break of Structure (continuation)
+    hasCHoCH?:        boolean      // Change of Character (potential reversal)
+    bosChochDetail?:  string
+    hasEqLevels?:     boolean      // Equal highs/lows = liquidity pool ahead
+    eqLevelsDetail?:  string
+    macdConfirms?:    boolean      // MACD momentum confirms direction
+    macdDetail?:      string
   }
 }

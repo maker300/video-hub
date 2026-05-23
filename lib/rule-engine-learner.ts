@@ -86,6 +86,11 @@ const FEATURE_NAMES = [
   'liquidity_sweep_confirmed', // Liquidity sweep (stop hunt) detected on 1H
   'order_block_hit',           // Price entered an active order block zone
   'pd_zone_optimal',           // Entry in optimal PD zone
+  'fvg_active',                // Active Fair Value Gap in trend direction
+  'bos_confirmed',             // Break of Structure (continuation)
+  'choch_warning',             // Change of Character (negative — reversal warning)
+  'eq_liquidity_target',       // EQH/EQL liquidity pool ahead
+  'macd_confirms',             // MACD momentum confirms direction
 ] as const
 
 const DEFAULT_WEIGHTS: LearnedWeights = {
@@ -109,10 +114,15 @@ export function extractFeatures(
   decision:       'BUY' | 'SELL',
   rawScore:       number,
   institutional?: {
-    grade?:      'A' | 'B' | 'C'
-    hasSweep?:   boolean
-    hasOB?:      boolean
-    pdQuality?:  'optimal' | 'good' | 'fair' | 'poor'
+    grade?:        'A' | 'B' | 'C'
+    hasSweep?:     boolean
+    hasOB?:        boolean
+    pdQuality?:    'optimal' | 'good' | 'fair' | 'poor'
+    hasFVG?:       boolean
+    hasBOS?:       boolean
+    hasCHoCH?:     boolean
+    hasEqLevels?:  boolean
+    macdConfirms?: boolean
   },
 ): FeatureVector {
   const isBuy = decision === 'BUY'
@@ -123,31 +133,28 @@ export function extractFeatures(
   const mc    = d.marketContext
 
   // ── RSI — directional fit ─────────────────────────────────────────────────
-  // Best RSI zone for BUY: 40-65 (momentum without overbought)
-  // Best RSI zone for SELL: 35-60 (momentum without oversold)
-  // RSI scoring matches the rule engine's contrarian interpretation exactly:
-  //   rsiScore (route.ts): RSI ≤25 = +2 (deeply oversold → bullish), RSI ≥75 = -2 (overbought → bearish)
-  // So for BUY: the rule engine gains confidence from LOW RSI (mean-reversion / oversold bounce).
-  // For SELL: the rule engine gains confidence from HIGH RSI (overbought, expect pullback).
-  // The learner must record the same condition so feature weights describe the rule engine's logic.
+  // Mirror the rule engine's actual RSI logic from runAnalysis():
+  //   BUY:  RSI 50–68 = momentum sweet spot (+6 conf); RSI > 75 = overbought (-8 conf)
+  //   SELL: RSI 32–50 = momentum sweet spot (+6 conf); RSI < 25 = oversold   (-8 conf)
+  // The rule engine is MOMENTUM-based, not mean-reversion. The previous learner
+  // scored the opposite condition (low RSI = strong BUY) which trained the model
+  // on the wrong features. Fixed: BUY rewards high-but-not-extreme RSI.
   function rsiScore(rsi: number | undefined): number {
     if (!rsi || rsi <= 0) return 0
     if (isBuy) {
-      // BUY: rule engine rewarded low RSI (oversold bounce signal)
-      if (rsi <= 25) return 1.0   // deeply oversold — strongest BUY signal
-      if (rsi <= 35) return 0.8
-      if (rsi <= 45) return 0.5   // mild oversold bias
-      if (rsi >= 75) return 0     // overbought = engine penalised this, feature inactive
-      if (rsi >= 65) return 0
-      return 0.1                  // neutral zone — minor signal
+      // BUY: engine rewards RSI 50–68 momentum zone
+      if (rsi >= 50 && rsi <= 68) return 1.0   // ideal bullish momentum
+      if (rsi >= 45 && rsi < 50)  return 0.5   // approaching momentum zone
+      if (rsi > 68 && rsi < 75)   return 0.3   // strong but not extreme
+      if (rsi >= 75)              return 0     // overbought — engine penalised
+      return 0                                 // below 45 = bearish RSI, not a BUY feature
     } else {
-      // SELL: rule engine rewarded high RSI (overbought / expect pullback)
-      if (rsi >= 75) return 1.0   // deeply overbought — strongest SELL signal
-      if (rsi >= 65) return 0.8
-      if (rsi >= 55) return 0.5   // mild overbought bias
-      if (rsi <= 25) return 0     // oversold = engine penalised this, feature inactive
-      if (rsi <= 35) return 0
-      return 0.1                  // neutral zone — minor signal
+      // SELL: engine rewards RSI 32–50 momentum zone
+      if (rsi >= 32 && rsi <= 50) return 1.0   // ideal bearish momentum
+      if (rsi > 50 && rsi <= 55)  return 0.5   // approaching momentum zone
+      if (rsi > 25 && rsi < 32)   return 0.3   // strong but not extreme
+      if (rsi <= 25)              return 0     // oversold — engine penalised
+      return 0                                 // above 55 = bullish RSI, not a SELL feature
     }
   }
 
@@ -263,6 +270,11 @@ export function extractFeatures(
     liquidity_sweep_confirmed: institutional?.hasSweep                ? 1.0 : 0,
     order_block_hit:           institutional?.hasOB                   ? 1.0 : 0,
     pd_zone_optimal:           institutional?.pdQuality === 'optimal' ? 1.0 : 0,
+    fvg_active:                institutional?.hasFVG                  ? 1.0 : 0,
+    bos_confirmed:             institutional?.hasBOS                  ? 1.0 : 0,
+    choch_warning:             institutional?.hasCHoCH                ? 1.0 : 0,
+    eq_liquidity_target:       institutional?.hasEqLevels             ? 1.0 : 0,
+    macd_confirms:             institutional?.macdConfirms            ? 1.0 : 0,
   }
 }
 
