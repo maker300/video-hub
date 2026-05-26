@@ -171,6 +171,7 @@ model FMPrediction {
   display     String                           // e.g. "XAU/USD"
   category    String                           // forex | commodity | crypto | indices
   sessionSlot String                           // "08" – "21"
+  tradeHorizon String  @default("intraday")    // 'intraday' | 'swing' — controls TF stack
   decision    String                           // BUY | SELL | NO TRADE
   confidence  Int
   entryLow    Float

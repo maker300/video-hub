@@ -555,6 +555,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   const isAdmin = (session?.user as { role?: string })?.role === 'admin'
 
   const [slot,          setSlot]          = useState<SessionSlotId>(() => detectCurrentSlot(data.category))
+  const [horizon,       setHorizon]       = useState<'intraday' | 'swing'>('intraday')
   const [analysis,      setAnalysis]      = useState<FMTraderResponse | null>(null)
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState('')
@@ -721,10 +722,10 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
 
   useEffect(() => () => { if (countdownTimer.current) clearInterval(countdownTimer.current) }, [])
 
-  const fetchAnalysis = useCallback(async (sessionSlot: SessionSlotId, forceRefresh = false) => {
+  const fetchAnalysis = useCallback(async (sessionSlot: SessionSlotId, forceRefresh = false, tradeHorizon: 'intraday' | 'swing' = horizon) => {
     setLoading(true); setError(''); if (!forceRefresh) { setAnalysis(null) } setShowBreakdown(false)
     try {
-      const body: FMTraderRequest = { ...data, sessionSlot, ...(forceRefresh ? { forceRefresh: true } : {}) }
+      const body: FMTraderRequest = { ...data, sessionSlot, tradeHorizon, ...(forceRefresh ? { forceRefresh: true } : {}) }
       const res  = await fetch('/api/fm-trader', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -741,7 +742,13 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
     } finally {
       setLoading(false)
     }
-  }, [data, startCountdown])
+  }, [data, startCountdown, horizon])
+
+  function handleHorizonChange(next: 'intraday' | 'swing') {
+    if (next === horizon || loading) return
+    setHorizon(next)
+    fetchAnalysis(slot, false, next)
+  }
 
   // Auto-run on mount with detected slot
   useEffect(() => { fetchAnalysis(slot) }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -897,8 +904,43 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
           </div>
         </div>
 
-        {/* ── Session picker (only when not in history view) ───────────────── */}
+        {/* ── Trade horizon toggle (Intraday ↔ Swing) ────────────────────── */}
         {!showHistory && (
+          <div className="shrink-0 pt-4 px-1">
+            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white/5 border border-white/10">
+              <button
+                onClick={() => handleHorizonChange('intraday')}
+                disabled={loading}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  horizon === 'intraday'
+                    ? 'bg-[#1D9E75] text-white shadow'
+                    : 'text-gray-400 hover:text-white'
+                } disabled:opacity-50`}
+              >
+                Intraday
+              </button>
+              <button
+                onClick={() => handleHorizonChange('swing')}
+                disabled={loading}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  horizon === 'swing'
+                    ? 'bg-[#1D9E75] text-white shadow'
+                    : 'text-gray-400 hover:text-white'
+                } disabled:opacity-50`}
+              >
+                Swing
+              </button>
+            </div>
+            <p className="text-[10px] text-gray-500 mt-1.5 leading-relaxed">
+              {horizon === 'intraday'
+                ? 'Intraday — 1H entry, 4H structure, valid for the current session hour.'
+                : 'Swing — 4H entry, Daily structure, valid for up to 7 days. Session timing ignored.'}
+            </p>
+          </div>
+        )}
+
+        {/* ── Session picker (intraday only — swing ignores session) ────────── */}
+        {!showHistory && horizon === 'intraday' && (
           <div className="shrink-0 pt-4">
             <SessionPicker selected={slot} onChange={handleSlotChange} category={data.category} />
           </div>

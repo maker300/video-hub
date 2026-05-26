@@ -261,8 +261,10 @@ export async function GET(req: Request) {
           : outcome === 'tp2_hit' ? +1.0
           : outcome === 'tp1_hit' ? +0.5
           : 0
-        // Fire-and-forget — never block outcome resolution on learning
-        learnFromOutcome(snapshot.features, outcomeVal).catch(e =>
+        // Fire-and-forget — never block outcome resolution on learning.
+        // Learner is binned by horizon so swing outcomes don't pollute intraday weights.
+        const predHorizon = (pred.tradeHorizon === 'swing' ? 'swing' : 'intraday') as 'intraday' | 'swing'
+        learnFromOutcome(snapshot.features, outcomeVal, predHorizon).catch(e =>
           console.error('[rule-learner] learnFromOutcome failed:', e)
         )
       }

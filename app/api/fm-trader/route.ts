@@ -115,8 +115,12 @@ function pruneCache(nowTs: number) {
 const CACHE_MAX_AGE_MS = 60 * 60 * 1000   // full UTC hour = full session
 
 // ── Category-based prediction expiry ─────────────────────────────────────────
-// Crypto needs 24 h to play out; commodities ~12 h; forex/indices ~8 h.
-function predictionExpiresAt(category: string, nowTs: number): Date {
+// Intraday: Crypto 24h, commodities ~12h, forex/indices ~8h.
+// Swing:    7 days across the board — swing trades need room to develop.
+function predictionExpiresAt(category: string, nowTs: number, horizon: 'intraday' | 'swing' = 'intraday'): Date {
+  if (horizon === 'swing') {
+    return new Date(nowTs + 7 * 24 * 60 * 60 * 1000)
+  }
   const hours = category === 'crypto' ? 24 : category === 'commodity' ? 12 : 8
   return new Date(nowTs + hours * 60 * 60 * 1000)
 }
@@ -1768,14 +1772,16 @@ function classify4HStructure(
 // ── 1H entry trigger: closed candle pattern detection ────────────────────────
 function detect1HPattern(
   mc:    MarketContext | undefined,
-  tf1H:  TFData | undefined,
+  tf1H:  TFData | undefined,    // entry-role TF (1H for intraday, 4H for swing)
   trend: 'BULLISH' | 'BEARISH',
-  tf4H?: TFData | undefined,
+  tf4H?: TFData | undefined,    // structure-role TF (4H for intraday, Daily for swing)
+  entryCandlesOverride?: Candle[],
+  entryLabel: string = '1H',
 ): { pattern: string | null; patternType: 'A' | 'B' | null; lines: string[] } {
-  if (!mc || !tf1H) return { pattern: null, patternType: null, lines: ['No 1H data'] }
+  if (!mc || !tf1H) return { pattern: null, patternType: null, lines: [`No ${entryLabel} data`] }
 
-  const c3 = mc.last3Candles1H
-  if (c3.length < 2) return { pattern: null, patternType: null, lines: ['Insufficient closed 1H candles'] }
+  const c3 = entryCandlesOverride ?? mc.last3Candles1H
+  if (c3.length < 2) return { pattern: null, patternType: null, lines: [`Insufficient closed ${entryLabel} candles`] }
 
   const c0 = c3[c3.length - 1]           // most recently closed 1H candle (signal candle)
   const c1 = c3.length >= 2 ? c3[c3.length - 2] : c0
@@ -2263,13 +2269,34 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
   const slotMeta = findSlot(d.sessionSlot)
   const atr      = calcATR(d)
 
-  // Validate and correct client-provided EMA values against server-computed EMAs
-  const tfW   = d.timeframes.find(t => t.key === 'weekly')
-  const tfD   = d.timeframes.find(t => t.key === 'daily')   ? validateAndCorrectTF(d.timeframes.find(t => t.key === 'daily')!)   : undefined
-  const tf4H  = d.timeframes.find(t => t.key === '4h')      ? validateAndCorrectTF(d.timeframes.find(t => t.key === '4h')!)      : undefined
-  const tf1H  = d.timeframes.find(t => t.key === '1h')      ? validateAndCorrectTF(d.timeframes.find(t => t.key === '1h')!)      : undefined
-  const tf30m = d.timeframes.find(t => t.key === '30m')
-  const tf15m = d.timeframes.find(t => t.key === '15m')
+  // ── Trade-horizon TF re-aim ────────────────────────────────────────────────
+  //   intraday: entry=1H, structure=4H, macroP=Daily, macroS=Weekly
+  //   swing:    entry=4H, structure=Daily, macroP=Weekly, macroS=none
+  // The variable names below (tf1H/tf4H/tfD/tfW) refer to ROLES, not raw TFs.
+  // LBL_ENTRY / LBL_STRUCT / LBL_MACRO are used in user-visible text.
+  const horizon = d.tradeHorizon ?? 'intraday'
+  const swing   = horizon === 'swing'
+  const LBL_ENTRY  = swing ? '4H'     : '1H'
+  const LBL_STRUCT = swing ? 'Daily'  : '4H'
+  const LBL_MACRO  = swing ? 'Weekly' : 'Daily'
+
+  // Raw TF data (validated EMAs)
+  const rawW  = d.timeframes.find(t => t.key === 'weekly')
+  const rawD  = d.timeframes.find(t => t.key === 'daily')   ? validateAndCorrectTF(d.timeframes.find(t => t.key === 'daily')!)   : undefined
+  const raw4H = d.timeframes.find(t => t.key === '4h')      ? validateAndCorrectTF(d.timeframes.find(t => t.key === '4h')!)      : undefined
+  const raw1H = d.timeframes.find(t => t.key === '1h')      ? validateAndCorrectTF(d.timeframes.find(t => t.key === '1h')!)      : undefined
+
+  // Role assignment — swing shifts each role up one rung.
+  // (We keep the original variable names so the body of runAnalysis can stay
+  // unchanged; they now represent ROLES rather than literal timeframes.)
+  const tfW   = swing ? undefined : rawW   // macroS — no role above Weekly for swing
+  const tfD   = swing ? rawW      : rawD
+  const tf4H  = swing ? rawD      : raw4H
+  const tf1H  = swing ? raw4H     : raw1H
+
+  // Short TFs (30m/15m) are intraday-only refinement; skip in swing
+  const tf30m = swing ? undefined : d.timeframes.find(t => t.key === '30m')
+  const tf15m = swing ? undefined : d.timeframes.find(t => t.key === '15m')
   const mc    = d.marketContext
 
   // Weekend guard (non-crypto)
@@ -2378,7 +2405,9 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
     !unconfirmedReversal && structure.state !== 'CONTINUATION' && structure.state !== 'NEUTRAL'
 
   // ── Step 4: 1H entry trigger ──────────────────────────────────────────────
-  const entrySignal = detect1HPattern(mc, tf1H, trend, tf4H)
+  // Entry pattern uses the entry-role TF (1H intraday, 4H swing)
+  const entryCandlesForPattern = swing ? (mc?.last3Candles4H ?? []) : undefined
+  const entrySignal = detect1HPattern(mc, tf1H, trend, tf4H, entryCandlesForPattern, LBL_ENTRY)
   const noPattern   = !entrySignal.pattern
 
   // ── Step 5: Reversal risk check (4H + daily both confirming reversal) ─────
@@ -2783,6 +2812,7 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
 
   return {
     decision,
+    tradeHorizon:       horizon,
     confidence:         conf,
     entryZone:          [0, 0],   // computed in POST handler
     stopLoss:           0,
@@ -2966,8 +2996,9 @@ export async function POST(req: Request) {
   // ── Session/liquidity gate (server-enforced) ───────────────────────────────
   // This is synchronous and free — we check the actual server clock, not the
   // client-supplied sessionSlot (which is local-timezone and can be spoofed).
+  // Session gate is intraday-only — swing trades don't care about London open
   const gate = sessionGate(body.category, body.slug)
-  if (gate.blocked && !body.scanOnly) {
+  if (gate.blocked && !body.scanOnly && body.tradeHorizon !== 'swing') {
     const dec = dp(body.price)
     const kl  = body.keyLevels
     const atr = calcATR(body)
@@ -3062,13 +3093,13 @@ export async function POST(req: Request) {
       )
     }
     // Bust in-memory cache so fresh Claude analysis is triggered below
-    cache.delete(`${body.slug}:${utcHour}`)
+    cache.delete(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`)
   }
 
   // In-memory hit: valid only if within CACHE_MAX_AGE_MS (not just same UTC hour key)
-  const memEntry = cache.get(`${body.slug}:${utcHour}`)
+  const memEntry = cache.get(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`)
   const inMemory = memEntry && (nowTs - memEntry.ts) < CACHE_MAX_AGE_MS ? memEntry : null
-  if (memEntry && !inMemory) cache.delete(`${body.slug}:${utcHour}`)  // expired — evict
+  if (memEntry && !inMemory) cache.delete(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`)  // expired — evict
 
   // Resolve the user once here — reused for personal row save
   const dbUser = session?.user?.email
@@ -3109,15 +3140,16 @@ export async function POST(req: Request) {
     // Save personal row for this user if missing
     if (dbUser && memResult.decision !== 'NO TRADE') {
       const alreadySaved = await prisma.fMPrediction.findFirst({
-        where: { userId: dbUser.id, slug: body.slug, generatedAt: { gte: hourStart } },
+        where: { userId: dbUser.id, slug: body.slug, tradeHorizon: body.tradeHorizon ?? 'intraday', generatedAt: { gte: hourStart } },
         select: { id: true },
       })
       if (!alreadySaved) {
-        const expiresAt = predictionExpiresAt(body.category, nowTs)
+        const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
         prisma.fMPrediction.create({
           data: {
             userId: dbUser.id, slug: body.slug, display: body.display,
             category: body.category, sessionSlot: body.sessionSlot,
+            tradeHorizon: body.tradeHorizon ?? 'intraday',
             decision: memResult.decision, confidence: memResult.confidence,
             entryLow: memResult.entryZone[0], entryHigh: memResult.entryZone[1],
             stopLoss: memResult.stopLoss, tp1: memResult.tp1,
@@ -3144,6 +3176,9 @@ export async function POST(req: Request) {
         // Only serve BUY/SELL from shared cache — NO TRADE must never be locked in for
         // the full UTC hour because conditions change. Every NO TRADE re-runs fresh.
         decision: { in: ['BUY', 'SELL'] },
+        // Swing predictions and intraday predictions never share — they're computed
+        // from different TF stacks, so a swing call must not be served as intraday.
+        tradeHorizon: body.tradeHorizon ?? 'intraday',
         generatedAt: { gte: hourStart > maxAgeTs ? hourStart : maxAgeTs },
         expiresAt:   { gt: new Date(nowTs) },
       },
@@ -3159,7 +3194,7 @@ export async function POST(req: Request) {
     })
 
     if (sharedRow && !body.scanOnly && !body.forceRefresh) {
-      const learnedWeights = await getLearnedWeights()
+      const learnedWeights = await getLearnedWeights(body.tradeHorizon ?? 'intraday')
       const rawScore     = body.timeframes.reduce((s, tf) => s + sigWeight(tf.signal), 0)
       const slotMeta     = findSlot(body.sessionSlot)
       const atr          = calcATR(body)
@@ -3212,22 +3247,23 @@ export async function POST(req: Request) {
 
       // Only cache BUY/SELL — never lock users into NO TRADE for the full hour
       if (decision !== 'NO TRADE') {
-        cache.set(`${body.slug}:${utcHour}`, { data: sharedResult, ts: nowTs, expiresAt: hourEnd.getTime() })
+        cache.set(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`, { data: sharedResult, ts: nowTs, expiresAt: hourEnd.getTime() })
       }
 
       // Save personal row for this user if they don't have one yet
       if (dbUser && decision !== 'NO TRADE') {
         const alreadySaved = await prisma.fMPrediction.findFirst({
-          where: { userId: dbUser.id, slug: body.slug, generatedAt: { gte: hourStart } },
+          where: { userId: dbUser.id, slug: body.slug, tradeHorizon: body.tradeHorizon ?? 'intraday', generatedAt: { gte: hourStart } },
           select: { id: true },
         })
         if (!alreadySaved) {
-          const expiresAt = predictionExpiresAt(body.category, nowTs)
+          const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
           const snapshot: MarketSnapshot = { decision, features, rawScore, claudeUsed: false, learnedBoost }
           prisma.fMPrediction.create({
             data: {
               userId: dbUser.id, slug: body.slug, display: body.display,
               category: body.category, sessionSlot: body.sessionSlot,
+              tradeHorizon: body.tradeHorizon ?? 'intraday',
               decision, confidence: sharedRow.confidence,
               entryLow:  sharedResult.entryZone[0], entryHigh: sharedResult.entryZone[1],
               stopLoss:  sharedResult.stopLoss, tp1: sharedResult.tp1,
@@ -3248,7 +3284,7 @@ export async function POST(req: Request) {
     // ── No shared result yet — call Claude for the first time this hour ───────
     // ── Step 0: Load learned weights + per-pair win rate → inject into prompt ─
     const [learnedWeights, pairStats] = await Promise.all([
-      getLearnedWeights(),
+      getLearnedWeights(body.tradeHorizon ?? 'intraday'),
       prisma.fMPrediction.findMany({
         where: {
           slug: body.slug,
@@ -3430,7 +3466,7 @@ export async function POST(req: Request) {
     // scanOnly results are never cached: they have no Claude narrative and must not be
     // served to UI users who expect the full analysis.
     if (finalResult.decision !== 'NO TRADE' && !body.scanOnly) {
-      cache.set(`${body.slug}:${utcHour}`, { data: finalResult, ts: nowTs, expiresAt: hourEnd.getTime() })
+      cache.set(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`, { data: finalResult, ts: nowTs, expiresAt: hourEnd.getTime() })
     }
 
     // ── Auto-save prediction — one row per user+slug per UTC hour ────────────
@@ -3440,11 +3476,11 @@ export async function POST(req: Request) {
     if (decision !== 'NO TRADE' && dbUser && !body.scanOnly) {
       try {
         const alreadySaved = await prisma.fMPrediction.findFirst({
-          where: { userId: dbUser.id, slug: body.slug, generatedAt: { gte: hourStart } },
+          where: { userId: dbUser.id, slug: body.slug, tradeHorizon: body.tradeHorizon ?? 'intraday', generatedAt: { gte: hourStart } },
           select: { id: true },
         })
         if (!alreadySaved) {
-          const expiresAt = predictionExpiresAt(body.category, nowTs)
+          const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
           const snapshot: MarketSnapshot = {
             decision, features, rawScore, claudeUsed: narrative !== null, learnedBoost,
           }
@@ -3455,6 +3491,7 @@ export async function POST(req: Request) {
               display:           body.display,
               category:          body.category,
               sessionSlot:       body.sessionSlot,
+              tradeHorizon:      body.tradeHorizon ?? 'intraday',
               decision,
               confidence:        finalConfidence,
               entryLow,
@@ -3490,7 +3527,7 @@ export async function POST(req: Request) {
     return NextResponse.json(finalResult)
   } catch (err) {
     console.error('[fm-trader]', err)
-    const stale = cache.get(`${body.slug}:${utcHour}`)
+    const stale = cache.get(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`)
     if (stale) {
       const staleDrift = staleLevelsWarning(stale.data, body.price)
       const staleResult = staleDrift

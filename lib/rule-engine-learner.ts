@@ -99,9 +99,11 @@ const DEFAULT_WEIGHTS: LearnedWeights = {
   updatedAt:    new Date().toISOString(),
 }
 
-// ── In-memory cache ───────────────────────────────────────────────────────────
+// ── In-memory cache (per-horizon) ─────────────────────────────────────────────
 
-let weightsCache: { data: LearnedWeights; ts: number } | null = null
+type Horizon = 'intraday' | 'swing'
+const weightsCache: Map<Horizon, { data: LearnedWeights; ts: number }> = new Map()
+const idForHorizon = (h: Horizon) => h === 'swing' ? 'singleton-swing' : 'singleton-intraday'
 
 // ── Feature extraction ────────────────────────────────────────────────────────
 
@@ -280,14 +282,15 @@ export function extractFeatures(
 
 // ── Weight loading ─────────────────────────────────────────────────────────────
 
-export async function getLearnedWeights(): Promise<LearnedWeights> {
-  if (weightsCache && Date.now() - weightsCache.ts < CACHE_TTL) {
-    return weightsCache.data
+export async function getLearnedWeights(horizon: Horizon = 'intraday'): Promise<LearnedWeights> {
+  const cached = weightsCache.get(horizon)
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return cached.data
   }
   try {
-    const record = await (prisma as any).ruleWeights.findUnique({ where: { id: 'singleton' } })
+    const record = await (prisma as any).ruleWeights.findUnique({ where: { id: idForHorizon(horizon) } })
     if (!record) {
-      weightsCache = { data: DEFAULT_WEIGHTS, ts: Date.now() }
+      weightsCache.set(horizon, { data: DEFAULT_WEIGHTS, ts: Date.now() })
       return DEFAULT_WEIGHTS
     }
     const data = record.weights as LearnedWeights
@@ -295,7 +298,7 @@ export async function getLearnedWeights(): Promise<LearnedWeights> {
     for (const f of FEATURE_NAMES) {
       if (!data.features[f]) data.features[f] = { ema: 0, count: 0 }
     }
-    weightsCache = { data, ts: Date.now() }
+    weightsCache.set(horizon, { data, ts: Date.now() })
     return data
   } catch {
     return DEFAULT_WEIGHTS
@@ -311,8 +314,9 @@ export async function getLearnedWeights(): Promise<LearnedWeights> {
 export async function learnFromOutcome(
   features:   FeatureVector,
   outcomeVal: number,           // +1, -1, or 0
+  horizon:    Horizon = 'intraday',
 ): Promise<void> {
-  const current = await getLearnedWeights()
+  const current = await getLearnedWeights(horizon)
 
   // Deep copy features map
   const updatedFeatures = Object.fromEntries(
@@ -338,13 +342,14 @@ export async function learnFromOutcome(
   }
 
   try {
+    const id = idForHorizon(horizon)
     await (prisma as any).ruleWeights.upsert({
-      where:  { id: 'singleton' },
-      create: { id: 'singleton', weights: updated, totalLearned: updated.totalLearned },
-      update: { weights: updated, totalLearned: updated.totalLearned },
+      where:  { id },
+      create: { id, weights: updated, totalLearned: updated.totalLearned },
+      update: {     weights: updated, totalLearned: updated.totalLearned },
     })
     // Invalidate cache so next request loads fresh weights
-    weightsCache = { data: updated, ts: Date.now() }
+    weightsCache.set(horizon, { data: updated, ts: Date.now() })
   } catch (err) {
     console.error('[rule-learner] Failed to save weights:', err)
   }

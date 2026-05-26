@@ -112,6 +112,13 @@ export interface FMTraderRequest {
     signal:         'confirms' | 'conflicts' | 'neutral'  // vs current FM direction
   }
 
+  // Trade horizon — controls the TF stack
+  //   'intraday' (default): entry=1H, structure=4H, macro=Daily; validity = 1 hour;
+  //                          session gates ON; uses 30m/15m short-TF confirmation.
+  //   'swing'             : entry=4H, structure=Daily, macro=Weekly; validity = 7 days;
+  //                          session gates OFF; no short-TF requirement.
+  tradeHorizon?: 'intraday' | 'swing'
+
   // Senior analyst signals — computed from full candle history server-side
   marketContext: {
     atr14:          number   // True 14-period ATR (Wilder) from daily bars
@@ -132,6 +139,7 @@ export interface FMTraderRequest {
 
 export interface FMTraderResponse {
   decision:           'BUY' | 'SELL' | 'NO TRADE'
+  tradeHorizon?:      'intraday' | 'swing'
   confidence:         number
   entryZone:          [number, number]
   stopLoss:           number
