@@ -1168,19 +1168,23 @@ function detectRegime(candles: Candle[]): 'TRENDING_UP' | 'TRENDING_DOWN' | 'RAN
 }
 
 // ── 2. Multi-Timeframe Confluence Score (0–100) ──────────────────────────────
-// Each timeframe is weighted by its influence on price action:
-//   Weekly=28, Daily=24, 4H=24, 1H=20, others=4
-// Points: signal alignment (base), RSI zone (bonus/penalty), EMA stack (bonus)
+// Each timeframe is weighted by its influence on price action.
+// 15m/30m are deliberately weighted ~0: they flip too often during pullbacks
+// (which is the engine's preferred entry setup), so giving them confluence
+// weight adds more variance than signal. They're used for entry-timing hints
+// in riskFactors but never for scoring.
 function calcMultiTFConfluence(
   tfs:   TFData[],
   trend: 'BULLISH' | 'BEARISH',
 ): { score: number; details: string[] } {
   const bull = trend === 'BULLISH'
-  const weightMap: Record<string, number> = { weekly: 28, daily: 24, '4h': 24, '1h': 20, '30m': 12, '15m': 10 }
+  const weightMap: Record<string, number> = { weekly: 28, daily: 24, '4h': 24, '1h': 20 }
   const details: string[] = []
   let raw = 0, maxRaw = 0
 
   for (const tf of tfs) {
+    // Skip 15m/30m entirely — they're entry-timing tools, not confluence drivers
+    if (tf.key === '15m' || tf.key === '30m') continue
     const w  = weightMap[tf.key] ?? 4
     maxRaw  += w + 5 + 3  // signal + RSI bonus cap + EMA stack cap
 
@@ -2499,19 +2503,13 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
     if (trend === 'BEARISH' && tfD.rsi < 22) conf -= 6
   }
 
-  // 15m/30m entry confirmation — short-term momentum alignment with working direction
-  if (tf30m || tf15m) {
-    const shortTFs = [tf30m, tf15m].filter((t): t is NonNullable<typeof t> => !!t)
-    const shortBull = shortTFs.filter(t => t.signal === 'STRONG BUY'  || t.signal === 'BUY').length
-    const shortBear = shortTFs.filter(t => t.signal === 'STRONG SELL' || t.signal === 'SELL').length
-    if (trend === 'BULLISH') {
-      if (shortBull === shortTFs.length && shortBull > 0) conf += 5   // all short-TFs confirm
-      else if (shortBear > 0)                             conf -= 5   // short-TF momentum opposing
-    } else {
-      if (shortBear === shortTFs.length && shortBear > 0) conf += 5
-      else if (shortBull > 0)                             conf -= 5
-    }
-  }
+  // ── 15m/30m: ENTRY TIMING ONLY (no confidence impact) ─────────────────────
+  // Originally 15m/30m contributed ±5 conf points, but the engine's bread-and-butter
+  // setup is a 1H pullback ending — and by definition a 1H pullback means the
+  // 15m/30m are STILL printing counter-trend candles at that exact moment.
+  // The old penalty was punishing the engine for the very condition it's meant
+  // to reward. Short TFs are now used purely for entry-timing hints in the
+  // riskFactors list, never for confidence scoring.
 
   // Setup grade bonus
   if (grade === 'A') conf += 10
@@ -2638,14 +2636,25 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
     riskFactors.push(`1H RSI ${tf1H.rsi.toFixed(0)} — entry is late in the 1H move. Target TP1 first, then trail stop to breakeven.`)
   if (tf1H && tf1H.rsi < 35 && trend === 'BEARISH')
     riskFactors.push(`1H RSI ${tf1H.rsi.toFixed(0)} — approaching oversold on the entry timeframe. Trail stop aggressively.`)
+  // ── Entry-timing hint from 15m/30m (advisory only, no confidence impact) ──
+  // A counter-trend short TF is NORMAL during a pullback — it's what creates the
+  // entry opportunity. We only surface a TIMING hint here so the trader knows
+  // whether to pull the trigger immediately or wait for the next short-TF close.
   if (tf30m || tf15m) {
     const shortTFs = [tf30m, tf15m].filter((t): t is NonNullable<typeof t> => !!t)
     const shortBull = shortTFs.filter(t => t.signal === 'STRONG BUY'  || t.signal === 'BUY').length
     const shortBear = shortTFs.filter(t => t.signal === 'STRONG SELL' || t.signal === 'SELL').length
-    if (trend === 'BULLISH' && shortBear > 0)
-      riskFactors.push(`Short-TF caution: ${shortBear === shortTFs.length ? '15m and 30m both' : (tf15m?.signal?.includes('SELL') ? '15m' : '30m')} showing bearish momentum — consider waiting for 15m/30m to align before entry.`)
-    if (trend === 'BEARISH' && shortBull > 0)
-      riskFactors.push(`Short-TF caution: ${shortBull === shortTFs.length ? '15m and 30m both' : (tf15m?.signal?.includes('BUY') ? '15m' : '30m')} showing bullish momentum — consider waiting for 15m/30m to align before entry.`)
+    const allAligned = trend === 'BULLISH'
+      ? shortBull === shortTFs.length && shortBull > 0
+      : shortBear === shortTFs.length && shortBear > 0
+    if (allAligned) {
+      riskFactors.push(`Entry timing: 15m and 30m both confirm ${trend.toLowerCase()} momentum — trigger ready.`)
+    } else {
+      const stillCounter = trend === 'BULLISH' ? shortBear > 0 : shortBull > 0
+      if (stillCounter) {
+        riskFactors.push(`Entry timing: 15m/30m still finishing the pullback — fine to enter at market if the 1H signal is confirmed, or wait for the next 15m close in trend direction for a tighter trigger.`)
+      }
+    }
   }
   if (tfD && tfD.rsi > 72)
     riskFactors.push(`Daily RSI ${tfD.rsi.toFixed(0)} elevated — upside may be compressed. 50% position size, TP1 only.`)
