@@ -59,36 +59,6 @@ function isSlotActive(id: SessionSlotId, category = 'forex'): boolean {
   return h === parseInt(id, 10)
 }
 
-// ── Confidence ring ────────────────────────────────────────────────────────────
-
-function ConfidenceRing({ pct, decision }: { pct: number; decision: string }) {
-  const r    = 42
-  const circ = 2 * Math.PI * r
-  const fill = (pct / 100) * circ
-  const color =
-    decision === 'BUY'  ? '#1D9E75' :
-    decision === 'SELL' ? '#ef5350' : '#f59e0b'
-
-  return (
-    <div className="relative w-28 h-28 shrink-0">
-      <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
-        <circle cx="50" cy="50" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="9" />
-        <circle
-          cx="50" cy="50" r={r} fill="none"
-          stroke={color} strokeWidth="9"
-          strokeDasharray={`${fill} ${circ}`}
-          strokeLinecap="round"
-          style={{ filter: `drop-shadow(0 0 6px ${color}80)`, transition: 'stroke-dasharray 1.2s ease' }}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-2xl font-black tabular-nums" style={{ color }}>{pct}%</span>
-        <span className="text-[9px] text-gray-500 font-bold uppercase tracking-wider">Confidence</span>
-      </div>
-    </div>
-  )
-}
-
 // ── Decision badge ────────────────────────────────────────────────────────────
 
 function DecisionBadge({ decision }: { decision: string }) {
@@ -557,6 +527,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   const [slot,          setSlot]          = useState<SessionSlotId>(() => detectCurrentSlot(data.category))
   const [horizon,       setHorizon]       = useState<'intraday' | 'swing'>('intraday')
   const [refining,      setRefining]      = useState(false)
+  const [view,          setView]          = useState<'trade' | 'why' | 'risk' | 'detail'>('trade')
   const [analysis,      setAnalysis]      = useState<FMTraderResponse | null>(null)
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState('')
@@ -1146,60 +1117,92 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                 <span className="text-[11px] text-gray-600">{analysis.timeValidity}</span>
               </div>
 
-              {/* Decision + confidence */}
+              {/* ── HERO CARD: decision + grade + confidence + entry/SL/TPs/R:R ── */}
               <div className={`rounded-2xl p-5 border ${
-                analysis.decision === 'BUY'  ? 'bg-emerald-500/5 border-emerald-500/20' :
-                analysis.decision === 'SELL' ? 'bg-red-500/5 border-red-500/20'         :
-                                               'bg-amber-500/5 border-amber-500/20'
+                analysis.decision === 'BUY'  ? 'bg-emerald-500/[0.06] border-emerald-500/30' :
+                analysis.decision === 'SELL' ? 'bg-red-500/[0.06] border-red-500/30'         :
+                                               'bg-amber-500/[0.06] border-amber-500/30'
               }`}>
-                <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 sm:gap-5">
-                  <ConfidenceRing pct={analysis.confidence} decision={analysis.decision} />
-                  <div className="flex-1 min-w-0 text-center sm:text-left">
-                    <div className="flex items-center justify-center sm:justify-start gap-3 mb-2 flex-wrap">
-                      <DecisionBadge decision={analysis.decision} />
-                    </div>
-                    <p className="text-sm text-gray-200 leading-relaxed font-medium">{analysis.thesis}</p>
-                    {refining && (
-                      <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-emerald-300/80 font-medium">
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                        Refining analysis…
-                      </p>
+                {/* Top row: badge + grade + horizon + confidence */}
+                <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <DecisionBadge decision={analysis.decision} />
+                    {analysis.setupGrade && analysis.decision !== 'NO TRADE' && (
+                      <span className={`text-[10px] font-black px-2 py-1 rounded-md border ${
+                        analysis.setupGrade === 'A' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' :
+                        analysis.setupGrade === 'B' ? 'bg-blue-500/15 text-blue-300 border-blue-500/40' :
+                                                      'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                      }`}>
+                        GRADE {analysis.setupGrade}
+                      </span>
+                    )}
+                    {analysis.tradeHorizon === 'swing' && (
+                      <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-purple-500/15 text-purple-300 border border-purple-500/40">SWING · 7d</span>
                     )}
                   </div>
+                  <div className="text-right">
+                    <div className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Confidence</div>
+                    <div className={`text-2xl font-black tabular-nums ${
+                      analysis.decision === 'BUY'  ? 'text-emerald-300' :
+                      analysis.decision === 'SELL' ? 'text-red-300'     :
+                                                     'text-amber-300'
+                    }`}>{analysis.confidence}%</div>
+                  </div>
                 </div>
+
+                {/* Levels (only when there's a trade) */}
+                {analysis.decision !== 'NO TRADE' && (
+                  <>
+                    <div className="flex items-baseline justify-between gap-3 mb-3 pb-3 border-b border-white/10">
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-gray-500 uppercase font-bold tracking-wider mb-0.5">Entry Zone</div>
+                        <div className="text-base font-black tabular-nums text-white truncate">
+                          {fmt(analysis.entryZone[0], dec)} – {fmt(analysis.entryZone[1], dec)}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[10px] text-gray-500 uppercase font-bold tracking-wider mb-0.5">R / R</div>
+                        <div className="text-base font-black text-[#1D9E75]">{analysis.rrRatio}</div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { label: 'SL',  value: analysis.stopLoss, tone: 'red'   },
+                        { label: 'TP1', value: analysis.tp1,      tone: 'green' },
+                        { label: 'TP2', value: analysis.tp2,      tone: 'green' },
+                        { label: 'TP3', value: analysis.tp3,      tone: 'green' },
+                      ].map(lvl => (
+                        <div key={lvl.label} className={`rounded-lg px-2 py-2 text-center border ${
+                          lvl.tone === 'red'
+                            ? 'bg-red-500/10 border-red-500/25'
+                            : 'bg-emerald-500/10 border-emerald-500/25'
+                        }`}>
+                          <div className={`text-[9px] uppercase font-black tracking-wider mb-0.5 ${
+                            lvl.tone === 'red' ? 'text-red-400' : 'text-emerald-400'
+                          }`}>{lvl.label}</div>
+                          <div className={`text-xs font-bold tabular-nums ${
+                            lvl.tone === 'red' ? 'text-red-200' : 'text-emerald-200'
+                          }`}>{fmt(lvl.value, dec)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
 
-              {/* ── Send to Broker (admin only) ────────────────────────── */}
-              {isAdmin && analysis.decision !== 'NO TRADE' && (
-                <div className="flex items-center gap-3 bg-[#0f1e35] border border-blue-500/25 rounded-xl px-4 py-3">
-                  <Wifi className="w-4 h-4 text-blue-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-bold text-blue-300">Broker Execution</p>
-                    <p className="text-[10px] text-gray-500 mt-0.5">Risk % of account balance</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5">
-                      <input
-                        type="number"
-                        min="0.1" max="5" step="0.1"
-                        value={riskPct}
-                        onChange={e => setRiskPct(e.target.value)}
-                        className="w-10 bg-transparent text-xs text-white text-right outline-none tabular-nums"
-                      />
-                      <span className="text-[10px] text-gray-500">%</span>
-                    </div>
-                    <button
-                      onClick={() => { setBrokerModal(true); setBrokerTrade(null); setBrokerError('') }}
-                      className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-600/20 border border-blue-500/40 text-blue-300 hover:bg-blue-600/35 transition"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      Send to Broker
-                    </button>
-                  </div>
-                </div>
-              )}
+              {/* ── Thesis (one-glance "why") ───────────────────────────── */}
+              <div className="bg-[#131722]/60 border border-white/10 rounded-xl px-4 py-3">
+                <p className="text-sm text-gray-200 leading-relaxed">{analysis.thesis}</p>
+                {refining && (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-emerald-300/80 font-medium">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Refining analysis…
+                  </p>
+                )}
+              </div>
 
-              {/* Alert set confirmation toast */}
+              {/* Alert toast (subscription confirmation) */}
               {alertToast && (
                 <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-2.5">
                   <Bell className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -1207,7 +1210,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                 </div>
               )}
 
-              {/* ⚡ In-zone alert banner */}
+              {/* ⚡ In-zone alert banner — always visible (action-critical) */}
               {analysis.decision !== 'NO TRADE' &&
                data.price >= analysis.entryZone[0] &&
                data.price <= analysis.entryZone[1] && (
@@ -1216,182 +1219,194 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                   <div>
                     <p className="text-sm font-bold text-amber-300 mb-0.5">Price is currently within the entry zone</p>
                     <p className="text-xs text-amber-400/80 leading-relaxed">
-                      FM Trader has detected the current price is inside the {analysis.decision} entry zone ({fmt(analysis.entryZone[0], dec)} – {fmt(analysis.entryZone[1], dec)}).
-                      Proceed with caution — always apply proper risk management and never risk more than 1–2% of your capital per trade.
+                      Current price is inside the {analysis.decision} zone ({fmt(analysis.entryZone[0], dec)} – {fmt(analysis.entryZone[1], dec)}).
+                      Proceed with proper risk management — never risk more than 1–2% per trade.
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* Trade levels */}
-              {analysis.decision !== 'NO TRADE' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* ── TABS ─────────────────────────────────────────────────── */}
+              <div className="flex gap-1 p-1 bg-white/[0.04] border border-white/10 rounded-xl">
+                {([
+                  { id: 'trade',  label: 'Trade'  },
+                  { id: 'why',    label: 'Why'    },
+                  { id: 'risk',   label: `Risk${analysis.riskFactors?.length ? ` · ${analysis.riskFactors.length}` : ''}` },
+                  { id: 'detail', label: 'Detail' },
+                ] as const).map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setView(tab.id)}
+                    className={`flex-1 py-2 px-2 rounded-lg text-[11px] font-bold uppercase tracking-wider transition ${
+                      view === tab.id
+                        ? 'bg-[#1D9E75] text-white shadow'
+                        : 'text-gray-500 hover:text-gray-200'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
 
-                  {/* Entry + Stop */}
-                  <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Target className="w-4 h-4 text-[#1D9E75]" />
-                      <span className="text-xs font-bold text-white uppercase tracking-wider">Entry & Stop</span>
-                    </div>
-                    <div className="space-y-0">
-                      <div className="flex items-center justify-between py-2 border-b border-white/5">
-                        <span className="text-xs text-gray-400 font-medium">Entry Zone</span>
-                        <span className="text-sm font-bold tabular-nums text-white">
-                          {fmt(analysis.entryZone[0], dec)} – {fmt(analysis.entryZone[1], dec)}
-                        </span>
+              {/* ── TAB: Trade ──────────────────────────────────────────── */}
+              {view === 'trade' && (
+                <div className="space-y-4">
+                  {analysis.decision !== 'NO TRADE' && (
+                    <PositionSizer
+                      decision={analysis.decision}
+                      entryHigh={analysis.entryZone[1]}
+                      entryLow={analysis.entryZone[0]}
+                      stopLoss={analysis.stopLoss}
+                      category={data.category}
+                      slug={data.slug}
+                      price={data.price}
+                    />
+                  )}
+                  {isAdmin && analysis.decision !== 'NO TRADE' && (
+                    <div className="flex items-center gap-3 bg-[#0f1e35] border border-blue-500/25 rounded-xl px-4 py-3">
+                      <Wifi className="w-4 h-4 text-blue-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-blue-300">Broker Execution</p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">Risk % of account balance</p>
                       </div>
-                      <div className="flex items-center justify-between py-2 border-b border-white/5">
-                        <div className="flex items-center gap-1.5">
-                          <Shield className="w-3 h-3 text-red-400" />
-                          <span className="text-xs text-gray-400 font-medium">Stop Loss</span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5">
+                          <input
+                            type="number" min="0.1" max="5" step="0.1"
+                            value={riskPct}
+                            onChange={e => setRiskPct(e.target.value)}
+                            className="w-10 bg-transparent text-xs text-white text-right outline-none tabular-nums"
+                          />
+                          <span className="text-[10px] text-gray-500">%</span>
                         </div>
-                        <span className="text-sm font-bold tabular-nums text-red-400">{fmt(analysis.stopLoss, dec)}</span>
+                        <button
+                          onClick={() => { setBrokerModal(true); setBrokerTrade(null); setBrokerError('') }}
+                          className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-600/20 border border-blue-500/40 text-blue-300 hover:bg-blue-600/35 transition"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          Send to Broker
+                        </button>
                       </div>
-                      <div className="flex items-center justify-between pt-2">
-                        <span className="text-xs text-gray-400 font-medium">Risk / Reward</span>
-                        <span className="text-sm font-bold text-[#1D9E75]">{analysis.rrRatio}</span>
+                    </div>
+                  )}
+                  {analysis.decision === 'NO TRADE' && (
+                    <div className="bg-[#131722] border border-white/10 rounded-xl p-6 text-center">
+                      <Shield className="w-6 h-6 text-amber-400 mx-auto mb-2" />
+                      <p className="text-sm text-gray-300 font-medium">No trade to execute right now.</p>
+                      <p className="text-xs text-gray-500 mt-1">Check the Why tab to understand why we&apos;re standing aside.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── TAB: Why ────────────────────────────────────────────── */}
+              {view === 'why' && (
+                <div className="space-y-4">
+                  {/* FM Trader note */}
+                  <div className="bg-gradient-to-r from-[#1D9E75]/10 to-transparent border border-[#1D9E75]/20 rounded-xl p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-7 h-7 rounded-lg bg-[#1D9E75]/20 flex items-center justify-center shrink-0 mt-0.5">
+                        <Brain className="w-4 h-4 text-[#1D9E75]" />
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-bold text-[#1D9E75] uppercase tracking-wider mb-1">FM Trader says</p>
+                        <p className="text-sm text-gray-300 leading-relaxed italic">&quot;{analysis.traderNote}&quot;</p>
                       </div>
                     </div>
                   </div>
-
-                  {/* Take profits */}
-                  <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Zap className="w-4 h-4 text-amber-400" />
-                      <span className="text-xs font-bold text-white uppercase tracking-wider">Take Profits</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Clock className="w-3.5 h-3.5 text-blue-400" />
+                        <span className="text-[11px] font-bold text-white uppercase tracking-wider">Session Context</span>
+                      </div>
+                      <p className="text-xs text-gray-400 leading-relaxed">{analysis.sessionContext}</p>
                     </div>
-                    <div className="space-y-0">
-                      {[
-                        { label: 'TP 1', note: 'Close 40%', value: analysis.tp1, col: 'text-emerald-300' },
-                        { label: 'TP 2', note: 'Close 35%', value: analysis.tp2, col: 'text-emerald-300' },
-                        { label: 'TP 3', note: 'Close 25%', value: analysis.tp3, col: 'text-emerald-300' },
-                      ].map((tp, i, arr) => (
-                        <div key={tp.label} className={`flex items-center justify-between py-2 ${i < arr.length - 1 ? 'border-b border-white/5' : ''}`}>
-                          <div>
-                            <span className="text-xs text-gray-400 font-medium">{tp.label}</span>
-                            <span className="text-[10px] text-gray-600 ml-1.5">{tp.note}</span>
-                          </div>
-                          <span className={`text-sm font-bold tabular-nums ${tp.col}`}>{fmt(tp.value, dec)}</span>
-                        </div>
+                    <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
+                        <span className="text-[11px] font-bold text-white uppercase tracking-wider">Market Bias</span>
+                      </div>
+                      <p className="text-xs text-gray-400 leading-relaxed">{analysis.marketBias}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── TAB: Risk ───────────────────────────────────────────── */}
+              {view === 'risk' && (
+                <div className="bg-[#131722] border border-amber-500/20 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-[11px] font-bold text-white uppercase tracking-wider">Risk Factors</span>
+                  </div>
+                  {analysis.riskFactors?.length ? (
+                    <ul className="space-y-2">
+                      {analysis.riskFactors.map((r, i) => (
+                        <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
+                          <span className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[9px] font-bold shrink-0 mt-0.5">{i + 1}</span>
+                          {r}
+                        </li>
                       ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-gray-500">No elevated risk factors detected for this setup.</p>
+                  )}
+                </div>
+              )}
+
+              {/* ── TAB: Detail ─────────────────────────────────────────── */}
+              {view === 'detail' && (
+                <div className="space-y-4">
+                  <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
+                    <p className="text-[11px] font-bold text-white uppercase tracking-wider mb-3">Timeframe Signals Used</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {data.timeframes.map(tf => {
+                        const col =
+                          tf.signal === 'STRONG BUY'  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' :
+                          tf.signal === 'BUY'         ? 'text-teal-300 bg-teal-500/10 border-teal-500/30'         :
+                          tf.signal === 'STRONG SELL' ? 'text-red-300 bg-red-500/10 border-red-500/30'            :
+                          tf.signal === 'SELL'        ? 'text-orange-300 bg-orange-500/10 border-orange-500/30'   :
+                                                        'text-amber-300 bg-amber-500/10 border-amber-500/30'
+                        return (
+                          <div key={tf.key} className="text-center">
+                            <p className="text-[9px] text-gray-600 uppercase tracking-wider mb-1 font-semibold">{tf.label}</p>
+                            <div className={`text-[10px] font-bold px-1.5 py-1 rounded-lg border ${col}`}>{tf.signal}</div>
+                            <p className="text-[9px] text-gray-600 mt-1">RSI {tf.rsi.toFixed(0)}</p>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
-                </div>
-              )}
-
-              {/* Position sizing */}
-              {analysis.decision !== 'NO TRADE' && (
-                <PositionSizer
-                  decision={analysis.decision}
-                  entryHigh={analysis.entryZone[1]}
-                  entryLow={analysis.entryZone[0]}
-                  stopLoss={analysis.stopLoss}
-                  category={data.category}
-                  slug={data.slug}
-                  price={data.price}
-                />
-              )}
-
-              {/* Context cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Clock className="w-3.5 h-3.5 text-blue-400" />
-                    <span className="text-[11px] font-bold text-white uppercase tracking-wider">Session Context</span>
-                  </div>
-                  <p className="text-xs text-gray-400 leading-relaxed">{analysis.sessionContext}</p>
-                </div>
-                <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
-                    <span className="text-[11px] font-bold text-white uppercase tracking-wider">Market Bias</span>
-                  </div>
-                  <p className="text-xs text-gray-400 leading-relaxed">{analysis.marketBias}</p>
-                </div>
-              </div>
-
-              {/* FM Trader note */}
-              <div className="bg-gradient-to-r from-[#1D9E75]/10 to-transparent border border-[#1D9E75]/20 rounded-xl p-4">
-                <div className="flex items-start gap-3">
-                  <div className="w-7 h-7 rounded-lg bg-[#1D9E75]/20 flex items-center justify-center shrink-0 mt-0.5">
-                    <Brain className="w-4 h-4 text-[#1D9E75]" />
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-bold text-[#1D9E75] uppercase tracking-wider mb-1">FM Trader says</p>
-                    <p className="text-sm text-gray-300 leading-relaxed italic">"{analysis.traderNote}"</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Risk factors */}
-              <div className="bg-[#131722] border border-amber-500/20 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                  <span className="text-[11px] font-bold text-white uppercase tracking-wider">Risk Factors</span>
-                </div>
-                <ul className="space-y-2">
-                  {analysis.riskFactors.map((r, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
-                      <span className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[9px] font-bold shrink-0 mt-0.5">{i + 1}</span>
-                      {r}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* Full technical breakdown (collapsible) */}
-              <div className="bg-[#131722] border border-white/10 rounded-xl overflow-hidden">
-                <button
-                  onClick={() => setShowBreakdown(v => !v)}
-                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition"
-                >
-                  <div className="flex items-center gap-2">
-                    <BarChart3 className="w-3.5 h-3.5 text-blue-400" />
-                    <span className="text-[11px] font-bold text-white uppercase tracking-wider">Full Technical Breakdown</span>
-                  </div>
-                  {showBreakdown ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
-                </button>
-                {showBreakdown && (
-                  <div className="px-4 pb-4 border-t border-white/5 pt-3">
-                    <Paragraphs text={analysis.technicalBreakdown} />
-                  </div>
-                )}
-              </div>
-
-              {/* TF signal summary */}
-              <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
-                <p className="text-[11px] font-bold text-white uppercase tracking-wider mb-3">Timeframe Signals Used</p>
-                <div className="grid grid-cols-4 gap-2">
-                  {data.timeframes.map(tf => {
-                    const col =
-                      tf.signal === 'STRONG BUY'  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30' :
-                      tf.signal === 'BUY'          ? 'text-teal-300 bg-teal-500/10 border-teal-500/30'         :
-                      tf.signal === 'STRONG SELL'  ? 'text-red-300 bg-red-500/10 border-red-500/30'            :
-                      tf.signal === 'SELL'         ? 'text-orange-300 bg-orange-500/10 border-orange-500/30'   :
-                                                     'text-amber-300 bg-amber-500/10 border-amber-500/30'
-                    return (
-                      <div key={tf.key} className="text-center">
-                        <p className="text-[9px] text-gray-600 uppercase tracking-wider mb-1 font-semibold">{tf.label}</p>
-                        <div className={`text-[10px] font-bold px-1.5 py-1 rounded-lg border ${col}`}>{tf.signal}</div>
-                        <p className="text-[9px] text-gray-600 mt-1">RSI {tf.rsi.toFixed(0)}</p>
+                  <div className="bg-[#131722] border border-white/10 rounded-xl overflow-hidden">
+                    <button
+                      onClick={() => setShowBreakdown(v => !v)}
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition"
+                    >
+                      <div className="flex items-center gap-2">
+                        <BarChart3 className="w-3.5 h-3.5 text-blue-400" />
+                        <span className="text-[11px] font-bold text-white uppercase tracking-wider">Full Technical Breakdown</span>
                       </div>
-                    )
-                  })}
+                      {showBreakdown ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+                    </button>
+                    {showBreakdown && (
+                      <div className="px-4 pb-4 border-t border-white/5 pt-3">
+                        <Paragraphs text={analysis.technicalBreakdown} />
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Educational disclaimer */}
+              {/* Disclaimer + generated-at */}
               <div className="rounded-xl bg-amber-500/5 border border-amber-500/20 px-4 py-3">
                 <p className="text-[10px] text-amber-600/80 font-semibold text-center">
                   ⚠ Educational purposes only — not regulated financial advice
                 </p>
                 <p className="text-[10px] text-gray-600 text-center mt-1 leading-relaxed">
-                  FM Trader AI analysis is for learning and research only. It does not constitute a recommendation to buy or sell any financial instrument.
                   Always apply your own judgement and consult a regulated adviser before trading real capital.
                 </p>
               </div>
-
-              {/* Generated at */}
               <div className="flex items-center justify-between text-[10px] text-gray-700 pb-1">
                 <span>Generated {timeAgo(analysis.generatedAt)} · Cached 3 min per session</span>
                 <span className="text-gray-700">Risk max 1–2% of capital per trade</span>
