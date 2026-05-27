@@ -14,40 +14,43 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
 
   const body = await req.json() as {
-    slug:        string
-    display:     string
-    category:    string
-    sessionSlot: string
-    priceAtCall: number
-    result:      FMTraderResponse
+    slug:         string
+    display:      string
+    category:     string
+    sessionSlot:  string
+    priceAtCall:  number
+    tradeHorizon?: 'intraday' | 'swing'
+    result:       FMTraderResponse
   }
 
   if (body.result.decision === 'NO TRADE') {
     return NextResponse.json({ saved: false, reason: 'NO TRADE predictions are not tracked' })
   }
 
-  const now     = new Date()
-  const expHours = body.category === 'crypto' ? 24 : body.category === 'commodity' ? 12 : 8
-  const expiresAt = new Date(now.getTime() + expHours * 60 * 60 * 1000)
+  // Uniform expiry per horizon — forex/indices no longer expire early vs crypto.
+  const horizon = body.tradeHorizon ?? body.result.tradeHorizon ?? 'intraday'
+  const expMs   = horizon === 'swing' ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000
+  const expiresAt = new Date(Date.now() + expMs)
 
   const prediction = await prisma.fMPrediction.create({
     data: {
-      userId:      user.id,
-      slug:        body.slug,
-      display:     body.display,
-      category:    body.category,
-      sessionSlot: body.sessionSlot,
-      decision:    body.result.decision,
-      confidence:  body.result.confidence,
-      entryLow:    body.result.entryZone[0],
-      entryHigh:   body.result.entryZone[1],
-      stopLoss:    body.result.stopLoss,
-      tp1:         body.result.tp1,
-      tp2:         body.result.tp2,
-      tp3:         body.result.tp3,
-      rrRatio:     body.result.rrRatio,
-      priceAtCall: body.priceAtCall,
-      generatedAt: new Date(body.result.generatedAt),
+      userId:       user.id,
+      slug:         body.slug,
+      display:      body.display,
+      category:     body.category,
+      sessionSlot:  body.sessionSlot,
+      tradeHorizon: horizon,
+      decision:     body.result.decision,
+      confidence:   body.result.confidence,
+      entryLow:     body.result.entryZone[0],
+      entryHigh:    body.result.entryZone[1],
+      stopLoss:     body.result.stopLoss,
+      tp1:          body.result.tp1,
+      tp2:          body.result.tp2,
+      tp3:          body.result.tp3,
+      rrRatio:      body.result.rrRatio,
+      priceAtCall:  body.priceAtCall,
+      generatedAt:  new Date(body.result.generatedAt),
       expiresAt,
     },
   })

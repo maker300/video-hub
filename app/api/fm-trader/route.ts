@@ -114,15 +114,22 @@ function pruneCache(nowTs: number) {
 // CACHE_MAX_AGE_MS is intentionally the full hour so no mid-session refreshes occur.
 const CACHE_MAX_AGE_MS = 60 * 60 * 1000   // full UTC hour = full session
 
-// ── Category-based prediction expiry ─────────────────────────────────────────
-// Intraday: Crypto 24h, commodities ~12h, forex/indices ~8h.
-// Swing:    7 days across the board — swing trades need room to develop.
-function predictionExpiresAt(category: string, nowTs: number, horizon: 'intraday' | 'swing' = 'intraday'): Date {
-  if (horizon === 'swing') {
-    return new Date(nowTs + 7 * 24 * 60 * 60 * 1000)
-  }
-  const hours = category === 'crypto' ? 24 : category === 'commodity' ? 12 : 8
-  return new Date(nowTs + hours * 60 * 60 * 1000)
+// ── Prediction expiry — uniform per horizon, NOT per category ────────────────
+// Previously intraday windows varied by category (crypto 24h, commodities 12h,
+// forex/indices 8h) which made forex/indices trade history disappear earlier
+// than crypto on the same kind of setup. Same horizon now = same window for
+// every pair.
+//
+//   intraday → 24 hours (one full UTC day so overnight intraday holds resolve)
+//   swing    → 7 days   (swing trades need a full week to develop)
+//
+// `category` is kept in the signature so existing callers don't need updating,
+// but it is no longer used.
+function predictionExpiresAt(_category: string, nowTs: number, horizon: 'intraday' | 'swing' = 'intraday'): Date {
+  const ms = horizon === 'swing'
+    ? 7 * 24 * 60 * 60 * 1000   // 7 days
+    : 24 * 60 * 60 * 1000        // 24 hours
+  return new Date(nowTs + ms)
 }
 
 // ── Decimal / format helpers ──────────────────────────────────────────────────
