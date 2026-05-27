@@ -3399,7 +3399,20 @@ export async function POST(req: Request) {
       return NextResponse.json(sharedResult)
     }
 
-    // ── No shared result yet — call Claude for the first time this hour ───────
+    // ── No shared result yet — full Claude path ────────────────────────────────
+    // STREAMING:
+    //   When the client sends `Accept: application/x-ndjson` (the FMTrader UI does),
+    //   we stream two NDJSON chunks instead of blocking on Claude:
+    //     chunk 1 (~100ms): rule-engine result + fallback levels + rule-engine thesis
+    //                       → UI renders the card immediately
+    //     chunk 2 (~5–15s): Claude's overrides (thesis, marketBias, possibly levels)
+    //                       → UI swaps in the polished text
+    //   DB save + cache happen on the server with the MERGED result before close.
+    //
+    //   When `Accept` is `application/json` (or anything else), we fall back to the
+    //   original blocking JSON response for compatibility.
+    const wantsStream = (req.headers.get('accept') ?? '').includes('application/x-ndjson')
+
     // ── Step 0: Load learned weights + per-pair win rate → inject into prompt ─
     const [learnedWeights, pairStats] = await Promise.all([
       getLearnedWeights(body.tradeHorizon ?? 'intraday'),
@@ -3436,17 +3449,7 @@ export async function POST(req: Request) {
     const ruleResult = runAnalysis(body)
     const { decision, confidence } = ruleResult
 
-    // ── Step 2: Claude writes the narrative explanation only ──────────────────
-    // Claude receives the fixed decision and writes thesis + marketBias text.
-    // It cannot change or override the decision.
-    // NO TRADE skips Claude entirely — no credit spent on discarded signals.
-    const narrative  = decision !== 'NO TRADE' && !body.scanOnly
-      ? await getClaudeNarrative(body, decision, confidence, ruleResult.institutionalMeta)
-      : null
-    const thesis     = narrative?.thesis    ?? ruleResult.thesis
-    const marketBias = narrative?.marketBias ?? ruleResult.marketBias
-
-    // ── Step 5: Entry / Stop / TP — delegated to horizon-aware recalcLevels ───
+    // ── Step 2: Compute fallback levels via horizon-aware recalcLevels ─────────
     const dec      = dp(body.price)
     const price    = body.price
     const kl       = body.keyLevels
@@ -3458,10 +3461,6 @@ export async function POST(req: Request) {
     let entryLow: number, entryHigh: number, stopLoss: number
     let tp1: number, tp2: number, tp3: number
 
-    // Delegate SL/TP/entry-zone to recalcLevels — that function is now horizon-aware
-    // and handles intraday vs swing structurally (4H pattern candle, Daily ATR,
-    // 2.5/4.5/8 R targets, daily+weekly fractal swing anchors for swing mode).
-    // For NO TRADE, fall back to simple S1/R1/R2 levels.
     if (decision === 'BUY' || decision === 'SELL') {
       const lvl = recalcLevels(body, decision, setupGrade)
       entryLow  = lvl.entryLow
@@ -3479,31 +3478,16 @@ export async function POST(req: Request) {
       tp3 = round(kl.resistance2 * (1 + 0.003), dec)
     }
 
-    // If Claude returned valid levels, prefer them — they're anchored to the live price
-    // and use market context that pure formula can't capture. Fall back to formula only
-    // when Claude's numbers are missing or zero.
-    const clv = narrative
-    if (clv && decision !== 'NO TRADE') {
-      if (clv.entryLow  > 0) entryLow  = round(clv.entryLow,  dec)
-      if (clv.entryHigh > 0) entryHigh = round(clv.entryHigh, dec)
-      if (clv.stopLoss  > 0) stopLoss  = round(clv.stopLoss,  dec)
-      if (clv.tp1       > 0) tp1       = round(clv.tp1,       dec)
-      if (clv.tp2       > 0) tp2       = round(clv.tp2,       dec)
-      if (clv.tp3       > 0) tp3       = round(clv.tp3,       dec)
+    const calcRR = (eL: number, eH: number, sl: number, t2: number) => {
+      const r = decision === 'BUY' ? eH - sl : decision === 'SELL' ? sl - eL : 0
+      if (r <= 0) return '—'
+      const n = Math.abs(t2 - (decision === 'BUY' ? eH : eL)) / r
+      return `1:${n.toFixed(1)}`
     }
 
-    const riskPips = decision === 'BUY' ? entryHigh - stopLoss : decision === 'SELL' ? stopLoss - entryLow : 0
-    const rrNum    = riskPips > 0 ? Math.abs(tp2 - (decision === 'BUY' ? entryHigh : entryLow)) / riskPips : 0
-    const rrRatio  = riskPips > 0 ? `1:${rrNum.toFixed(1)}` : '—'
-
     const rawScore = body.timeframes.reduce((s, tf) => s + sigWeight(tf.signal), 0)
-
-    // ── Apply learned boost to confidence ─────────────────────────────────────
-    // The learning agent adjusts confidence based on historical pattern data.
-    // Applied AFTER Claude/rule-engine runs so it never overrides their core decision —
-    // it only fine-tunes the confidence within a ±18-point window.
     const instMeta = ruleResult.institutionalMeta
-    const features     = decision !== 'NO TRADE'
+    const features = decision !== 'NO TRADE'
       ? extractFeatures(body, decision as 'BUY' | 'SELL', rawScore, instMeta ? {
           grade:        instMeta.grade,
           hasSweep:     instMeta.hasSweep,
@@ -3523,88 +3507,166 @@ export async function POST(req: Request) {
       ? Math.min(92, Math.max(28, confidence + learnedBoost))
       : confidence
 
-    const finalResult: FMTraderResponse = {
+    // PRELIMINARY result — uses rule-engine thesis/marketBias/levels. Sent
+    // immediately when streaming so the UI can render the trade card while
+    // Claude is still working.
+    const preliminary: FMTraderResponse = {
       decision,
       confidence:         finalConfidence,
       setupGrade:         ruleResult.setupGrade,
       confluenceScore:    ruleResult.confluenceScore,
       entryZone:          [entryLow, entryHigh],
       stopLoss,
-      tp1, tp2, tp3, rrRatio,
+      tp1, tp2, tp3,
+      rrRatio:            calcRR(entryLow, entryHigh, stopLoss, tp2),
       timeValidity:       body.tradeHorizon === 'swing'
         ? `Valid for up to 7 days — swing trade, session timing ignored`
         : `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
-      thesis,
+      thesis:             ruleResult.thesis,
       technicalBreakdown: ruleResult.technicalBreakdown,
-      riskFactors:    ruleResult.riskFactors,
-      sessionContext: ruleResult.sessionContext,
-      marketBias,
-      traderNote:   buildTraderNote(body, decision, confidence, dec),
-      generatedAt:  Date.now(),
+      riskFactors:        ruleResult.riskFactors,
+      sessionContext:     ruleResult.sessionContext,
+      marketBias:         ruleResult.marketBias,
+      traderNote:         buildTraderNote(body, decision, finalConfidence, dec),
+      generatedAt:        Date.now(),
+      tradeHorizon:       ruleResult.tradeHorizon,
+      institutionalMeta:  ruleResult.institutionalMeta,
     }
 
-    // Only cache BUY/SELL — never lock users into NO TRADE for the full hour
-    // scanOnly results are never cached: they have no Claude narrative and must not be
-    // served to UI users who expect the full analysis.
-    if (finalResult.decision !== 'NO TRADE' && !body.scanOnly) {
-      cache.set(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`, { data: finalResult, ts: nowTs, expiresAt: hourEnd.getTime() })
-    }
+    // Shared finishing routine: merge Claude overrides into preliminary,
+    // cache, save to DB, fire outcome-checker. Used by both paths so the
+    // streaming and non-streaming flows produce identical persisted state.
+    const finishSlowPath = async (narrative: Awaited<ReturnType<typeof getClaudeNarrative>>): Promise<FMTraderResponse> => {
+      const merged: FMTraderResponse = { ...preliminary }
+      if (narrative?.thesis)     merged.thesis     = narrative.thesis
+      if (narrative?.marketBias) merged.marketBias = narrative.marketBias
 
-    // ── Auto-save prediction — one row per user+slug per UTC hour ────────────
-    // Must be awaited before returning — Vercel kills the function the moment
-    // the response is sent, so fire-and-forget DB writes are silently dropped.
-    // We skip the save if a row already exists for this hour (cold-start dedup).
-    if (decision !== 'NO TRADE' && dbUser && !body.scanOnly) {
-      try {
-        const alreadySaved = await prisma.fMPrediction.findFirst({
-          where: { userId: dbUser.id, slug: body.slug, tradeHorizon: body.tradeHorizon ?? 'intraday', generatedAt: { gte: hourStart } },
-          select: { id: true },
-        })
-        if (!alreadySaved) {
-          const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
-          const snapshot: MarketSnapshot = {
-            decision, features, rawScore, claudeUsed: narrative !== null, learnedBoost,
-          }
-          await prisma.fMPrediction.create({
-            data: {
-              userId:            dbUser.id,
-              slug:              body.slug,
-              display:           body.display,
-              category:          body.category,
-              sessionSlot:       body.sessionSlot,
-              tradeHorizon:      body.tradeHorizon ?? 'intraday',
-              decision,
-              confidence:        finalConfidence,
-              entryLow,
-              entryHigh,
-              stopLoss,
-              tp1, tp2, tp3,
-              rrRatio,
-              priceAtCall:       body.price,
-              marketSnapshot:    snapshot as object,
-              generatedAt:       new Date(finalResult.generatedAt),
-              expiresAt,
-              // Store Claude's full text so all subsequent users get the real analysis
-              thesis:            finalResult.thesis,
-              technicalBreakdown: finalResult.technicalBreakdown,
-              marketBias:        finalResult.marketBias,
-              riskFactors:       finalResult.riskFactors as object,
-              sessionContext:    finalResult.sessionContext,
-              traderNote:        finalResult.traderNote,
-              timeValidity:      finalResult.timeValidity,
-            },
-          })
-        }
-      } catch (err) {
-        console.error('[fm-trader/save-prediction]', err)
+      // Claude levels override formula levels when valid (anchored to live price)
+      let fEntryLow = entryLow, fEntryHigh = entryHigh, fSL = stopLoss
+      let fTP1 = tp1, fTP2 = tp2, fTP3 = tp3
+      const clv = narrative
+      if (clv && decision !== 'NO TRADE') {
+        if (clv.entryLow  > 0) fEntryLow  = round(clv.entryLow,  dec)
+        if (clv.entryHigh > 0) fEntryHigh = round(clv.entryHigh, dec)
+        if (clv.stopLoss  > 0) fSL        = round(clv.stopLoss,  dec)
+        if (clv.tp1       > 0) fTP1       = round(clv.tp1,       dec)
+        if (clv.tp2       > 0) fTP2       = round(clv.tp2,       dec)
+        if (clv.tp3       > 0) fTP3       = round(clv.tp3,       dec)
       }
+      merged.entryZone = [fEntryLow, fEntryHigh]
+      merged.stopLoss  = fSL
+      merged.tp1 = fTP1; merged.tp2 = fTP2; merged.tp3 = fTP3
+      merged.rrRatio   = calcRR(fEntryLow, fEntryHigh, fSL, fTP2)
+
+      // Cache (BUY/SELL only)
+      if (merged.decision !== 'NO TRADE' && !body.scanOnly) {
+        cache.set(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`, { data: merged, ts: nowTs, expiresAt: hourEnd.getTime() })
+      }
+
+      // Persist prediction row (awaited — Vercel kills the function on response close)
+      if (decision !== 'NO TRADE' && dbUser && !body.scanOnly) {
+        try {
+          const alreadySaved = await prisma.fMPrediction.findFirst({
+            where: { userId: dbUser.id, slug: body.slug, tradeHorizon: body.tradeHorizon ?? 'intraday', generatedAt: { gte: hourStart } },
+            select: { id: true },
+          })
+          if (!alreadySaved) {
+            const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
+            const snapshot: MarketSnapshot = {
+              decision, features, rawScore, claudeUsed: narrative !== null, learnedBoost,
+            }
+            await prisma.fMPrediction.create({
+              data: {
+                userId:            dbUser.id,
+                slug:              body.slug,
+                display:           body.display,
+                category:          body.category,
+                sessionSlot:       body.sessionSlot,
+                tradeHorizon:      body.tradeHorizon ?? 'intraday',
+                decision,
+                confidence:        finalConfidence,
+                entryLow:          fEntryLow,
+                entryHigh:         fEntryHigh,
+                stopLoss:          fSL,
+                tp1: fTP1, tp2: fTP2, tp3: fTP3,
+                rrRatio:           merged.rrRatio,
+                priceAtCall:       body.price,
+                marketSnapshot:    snapshot as object,
+                generatedAt:       new Date(merged.generatedAt),
+                expiresAt,
+                thesis:            merged.thesis,
+                technicalBreakdown: merged.technicalBreakdown,
+                marketBias:        merged.marketBias,
+                riskFactors:       merged.riskFactors as object,
+                sessionContext:    merged.sessionContext,
+                traderNote:        merged.traderNote,
+                timeValidity:      merged.timeValidity,
+              },
+            })
+          }
+        } catch (err) {
+          console.error('[fm-trader/save-prediction]', err)
+        }
+      }
+
+      // Outcome checker — fire-and-forget
+      fetch(`${process.env.NEXTAUTH_URL ?? 'http://localhost:3000'}/api/fm-trader/check-outcomes`, {
+        headers: { authorization: `Bearer ${process.env.CRON_SECRET ?? 'dev'}` },
+      }).catch(() => { /* non-critical */ })
+
+      return merged
     }
 
-    // Trigger outcome checker — fire-and-forget is fine here (non-critical, no data loss)
-    fetch(`${process.env.NEXTAUTH_URL ?? 'http://localhost:3000'}/api/fm-trader/check-outcomes`, {
-      headers: { authorization: `Bearer ${process.env.CRON_SECRET ?? 'dev'}` },
-    }).catch(() => { /* non-critical */ })
+    // ── Streaming path: send rule-engine preliminary first, Claude overrides second
+    if (wantsStream && decision !== 'NO TRADE' && !body.scanOnly) {
+      const stream = new ReadableStream({
+        async start(controller) {
+          const enc  = new TextEncoder()
+          const send = (obj: object) => controller.enqueue(enc.encode(JSON.stringify(obj) + '\n'))
+          try {
+            // Chunk 1: rule-engine result (~100ms after request)
+            send({ ...preliminary, _streaming: 'partial' })
 
+            // Slow part: Claude narrative (5–15s)
+            const narrative = await getClaudeNarrative(body, decision, finalConfidence, ruleResult.institutionalMeta)
+
+            const merged = await finishSlowPath(narrative)
+
+            // Chunk 2: overrides (the UI merges these onto chunk 1's state)
+            const overrides: Record<string, unknown> = { _streaming: 'final' }
+            if (narrative?.thesis     && narrative.thesis     !== preliminary.thesis)     overrides.thesis     = merged.thesis
+            if (narrative?.marketBias && narrative.marketBias !== preliminary.marketBias) overrides.marketBias = merged.marketBias
+            // Levels: only send if they actually changed
+            if (merged.entryZone[0] !== preliminary.entryZone[0] || merged.entryZone[1] !== preliminary.entryZone[1]) overrides.entryZone = merged.entryZone
+            if (merged.stopLoss !== preliminary.stopLoss) overrides.stopLoss = merged.stopLoss
+            if (merged.tp1      !== preliminary.tp1)      overrides.tp1      = merged.tp1
+            if (merged.tp2      !== preliminary.tp2)      overrides.tp2      = merged.tp2
+            if (merged.tp3      !== preliminary.tp3)      overrides.tp3      = merged.tp3
+            if (merged.rrRatio  !== preliminary.rrRatio)  overrides.rrRatio  = merged.rrRatio
+            send(overrides)
+
+            controller.close()
+          } catch (e) {
+            console.error('[fm-trader stream]', e)
+            try { controller.error(e) } catch { /* already closed */ }
+          }
+        },
+      })
+      return new NextResponse(stream, {
+        headers: {
+          'Content-Type':      'application/x-ndjson',
+          'Cache-Control':     'no-cache',
+          'X-Accel-Buffering': 'no',
+          'Transfer-Encoding': 'chunked',
+        },
+      })
+    }
+
+    // ── Non-streaming path (NO TRADE, scanOnly, or no streaming requested) ─────
+    const narrative  = decision !== 'NO TRADE' && !body.scanOnly
+      ? await getClaudeNarrative(body, decision, finalConfidence, ruleResult.institutionalMeta)
+      : null
+    const finalResult = await finishSlowPath(narrative)
     return NextResponse.json(finalResult)
   } catch (err) {
     console.error('[fm-trader]', err)

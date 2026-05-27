@@ -556,6 +556,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
 
   const [slot,          setSlot]          = useState<SessionSlotId>(() => detectCurrentSlot(data.category))
   const [horizon,       setHorizon]       = useState<'intraday' | 'swing'>('intraday')
+  const [refining,      setRefining]      = useState(false)
   const [analysis,      setAnalysis]      = useState<FMTraderResponse | null>(null)
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState('')
@@ -723,24 +724,85 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   useEffect(() => () => { if (countdownTimer.current) clearInterval(countdownTimer.current) }, [])
 
   const fetchAnalysis = useCallback(async (sessionSlot: SessionSlotId, forceRefresh = false, tradeHorizon: 'intraday' | 'swing' = horizon) => {
-    setLoading(true); setError(''); if (!forceRefresh) { setAnalysis(null) } setShowBreakdown(false)
+    setLoading(true); setError(''); setRefining(false)
+    if (!forceRefresh) { setAnalysis(null) }
+    setShowBreakdown(false)
     try {
       const body: FMTraderRequest = { ...data, sessionSlot, tradeHorizon, ...(forceRefresh ? { forceRefresh: true } : {}) }
       const res  = await fetch('/api/fm-trader', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        headers: {
+          'Content-Type': 'application/json',
+          // Opt in to streaming so the rule-engine card renders in ~100ms while
+          // Claude's narrative streams in 5–15s later
+          'Accept':       'application/x-ndjson',
+        },
+        body: JSON.stringify(body),
       })
-      const json = await res.json()
-      if (!res.ok) throw new Error((json as { error?: string }).error || `HTTP ${res.status}`)
-      const result = json as FMTraderResponse
-      setAnalysis(result)
-      setRefreshReady(false)
-      startCountdown(result.generatedAt)
+
+      if (!res.ok) {
+        // Errors come back as JSON regardless of streaming intent
+        const errJson = await res.json().catch(() => ({} as { error?: string }))
+        throw new Error(errJson.error || `HTTP ${res.status}`)
+      }
+
+      const ct = res.headers.get('content-type') ?? ''
+
+      // ── Non-streaming path: server returned JSON (cache hit, NO TRADE, gates)
+      if (!ct.includes('application/x-ndjson')) {
+        const json = await res.json()
+        const result = json as FMTraderResponse
+        setAnalysis(result)
+        setRefreshReady(false)
+        startCountdown(result.generatedAt)
+        return
+      }
+
+      // ── Streaming path: server sends 2 NDJSON chunks
+      //     chunk 1 (~100ms): full preliminary result with _streaming='partial'
+      //     chunk 2 (~5–15s): Claude overrides with _streaming='final'
+      const reader = res.body?.getReader()
+      if (!reader) throw new Error('Stream not readable')
+      const decoder = new TextDecoder()
+      let buf = ''
+      let firstChunk = true
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          let parsed: Record<string, unknown>
+          try { parsed = JSON.parse(line) } catch { continue }
+
+          if (firstChunk) {
+            // Chunk 1: full preliminary result — render card immediately,
+            // drop loading=false, flag 'refining' so the UI knows Claude is still working
+            const { _streaming, ...rest } = parsed as unknown as { _streaming?: string } & FMTraderResponse
+            void _streaming
+            const result = rest as FMTraderResponse
+            setAnalysis(result)
+            setRefreshReady(false)
+            startCountdown(result.generatedAt)
+            setLoading(false)
+            setRefining(true)
+            firstChunk = false
+          } else {
+            // Chunk 2: Claude overrides — merge into existing state
+            const { _streaming: _s, ...overrides } = parsed as unknown as { _streaming?: string } & Partial<FMTraderResponse>
+            void _s
+            setAnalysis(prev => prev ? { ...prev, ...overrides } : prev)
+            setRefining(false)
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed. Please try again.')
     } finally {
       setLoading(false)
+      setRefining(false)
     }
   }, [data, startCountdown, horizon])
 
@@ -1097,6 +1159,12 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                       <DecisionBadge decision={analysis.decision} />
                     </div>
                     <p className="text-sm text-gray-200 leading-relaxed font-medium">{analysis.thesis}</p>
+                    {refining && (
+                      <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-emerald-300/80 font-medium">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Refining analysis…
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
