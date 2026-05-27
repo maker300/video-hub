@@ -62,6 +62,15 @@ export async function GET(req: Request) {
     if (!isAdmin) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // Mode: intraday (default, hourly cron) or swing (4-hourly cron)
+  // External cron config:
+  //   GET /api/cron/scan              — every hour (intraday)
+  //   GET /api/cron/scan?mode=swing   — every 4 hours (swing)
+  const url    = new URL(req.url)
+  const mode   = url.searchParams.get('mode') === 'swing' ? 'swing' : 'intraday'
+  const horizon: 'intraday' | 'swing' = mode
+  const swing  = horizon === 'swing'
+
   const now      = new Date()
   const utcHour  = now.getUTCHours()
   const utcDay   = now.getUTCDay()
@@ -89,7 +98,7 @@ export async function GET(req: Request) {
       if (!mdRes.ok) throw new Error(`Market data ${slug}: ${mdRes.status}`)
       const data = await mdRes.json() as FMTraderRequest
 
-      const analysis = runAnalysis({ ...data, sessionSlot: slotId })
+      const analysis = runAnalysis({ ...data, sessionSlot: slotId, tradeHorizon: horizon })
 
       return { slug, display: data.display, analysis, price: data.price }
     })
@@ -148,18 +157,19 @@ export async function GET(req: Request) {
   }
 
   // ── Atomic dedup via DB unique constraint ────────────────────────────────────
-  // sessionKey = "slug:decision:YYYY-MM-DD:bucket" (bucket = floor(utcHour/4))
-  // Two concurrent scan requests cannot both insert the same key — the second
-  // gets a unique violation and skips that pair. SignalAlert is saved BEFORE
-  // Telegram so the lock is held even if Telegram or BrokerTrade creation fails.
+  // sessionKey = "slug:decision:YYYY-MM-DD:bucket:horizon"
+  //   intraday → bucket = floor(utcHour / 4)  → 4-hour dedup window
+  //   swing    → bucket = 0                   → one alert per pair per UTC day
+  // Including horizon in the key means an intraday BUY and a swing BUY on the
+  // same pair never collide.
   const dateStr = now.toISOString().slice(0, 10)           // "YYYY-MM-DD"
-  const bucket  = Math.floor(utcHour / 4)                  // 0-5, changes every 4 hours
+  const bucket  = swing ? 0 : Math.floor(utcHour / 4)
 
   const toAlert: ScanResult[] = []
   const deduped: string[]     = []
 
   for (const signal of qualified) {
-    const sessionKey = `${signal.slug}:${signal.analysis.decision}:${dateStr}:${bucket}`
+    const sessionKey = `${signal.slug}:${signal.analysis.decision}:${dateStr}:${bucket}:${horizon}`
     try {
       await prisma.signalAlert.create({
         data: {
@@ -308,7 +318,7 @@ export async function GET(req: Request) {
       )
 
     for (const signal of subOnlySignals) {
-      const sessionKey = `${signal.slug}:${signal.analysis.decision}:${dateStr}:${bucket}:sub`
+      const sessionKey = `${signal.slug}:${signal.analysis.decision}:${dateStr}:${bucket}:sub:${horizon}`
 
       let alertRecord: Awaited<ReturnType<typeof prisma.signalAlert.create>> | null = null
       try {
@@ -375,7 +385,7 @@ export async function GET(req: Request) {
   const session = sessionName(utcHour)
   const nums    = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣']
   const lines: string[] = [
-    `📡 <b>FM Trader — ${toAlert.length} Signal${toAlert.length > 1 ? 's' : ''} Ready</b>`,
+    `📡 <b>FM Trader ${swing ? '· SWING' : ''} — ${toAlert.length} Signal${toAlert.length > 1 ? 's' : ''} Ready</b>`,
     `🕐 ${String(utcHour).padStart(2,'0')}:00 UTC · ${session}`,
     ``,
   ]

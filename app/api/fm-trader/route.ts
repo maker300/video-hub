@@ -2111,6 +2111,8 @@ function computeStructuralTPs(
   kl:         FMTraderRequest['keyLevels'],
   mc:         MarketContext | undefined | null,
   dec:        number,
+  extraLevels: number[] = [],   // swing-mode swing-highs/lows (daily, weekly) — added to the candidate pool
+  excludeIntradayLevels = false, // when true, skip PDH/PDL and 20-bar swing — too close for swing trades
 ): { tp1: number; tp2: number; tp3: number } {
   if (risk <= 0) {
     // Fallback when risk is zero or negative (data issue)
@@ -2130,8 +2132,9 @@ function computeStructuralTPs(
     // Collect structural resistance levels above entry, sorted ascending (nearest first)
     const levels = [
       kl.resistance1, kl.resistance2,
-      mc?.prevDayHigh  ?? 0,
-      mc?.swingHigh    ?? 0,
+      excludeIntradayLevels ? 0 : (mc?.prevDayHigh ?? 0),
+      excludeIntradayLevels ? 0 : (mc?.swingHigh   ?? 0),
+      ...extraLevels,
     ]
     .filter(l => l > entryHigh + risk * 0.8)   // must be at least 0.8R above entry
     .sort((a, b) => a - b)
@@ -2154,8 +2157,9 @@ function computeStructuralTPs(
     // Collect structural support levels below entry, sorted descending (nearest first)
     const levels = [
       kl.support1, kl.support2,
-      mc?.prevDayLow   ?? 0,
-      mc?.swingLow     ?? 0,
+      excludeIntradayLevels ? 0 : (mc?.prevDayLow ?? 0),
+      excludeIntradayLevels ? 0 : (mc?.swingLow   ?? 0),
+      ...extraLevels,
     ]
     .filter(l => l > 0 && l < entryLow - risk * 0.8)
     .sort((a, b) => b - a)   // descending: highest (nearest) first
@@ -2174,9 +2178,40 @@ function computeStructuralTPs(
   }
 }
 
+// Extract fractal swing highs/lows from a candle series (5-bar fractal):
+// a swing high is a bar whose high is strictly greater than both 2 neighbours each side.
+function extractSwingExtremes(
+  candles: Candle[],
+  kind: 'high' | 'low',
+  maxOut = 6,
+): number[] {
+  if (candles.length < 5) return []
+  const out: number[] = []
+  for (let i = 2; i < candles.length - 2; i++) {
+    if (kind === 'high') {
+      if (candles[i].h > candles[i-1].h && candles[i].h > candles[i-2].h
+        && candles[i].h > candles[i+1].h && candles[i].h > candles[i+2].h) {
+        out.push(candles[i].h)
+      }
+    } else {
+      if (candles[i].l < candles[i-1].l && candles[i].l < candles[i-2].l
+        && candles[i].l < candles[i+1].l && candles[i].l < candles[i+2].l) {
+        out.push(candles[i].l)
+      }
+    }
+  }
+  // Last `maxOut` (most recent extremes are most relevant as TP magnets)
+  return out.slice(-maxOut)
+}
+
 // ── Fresh level recalculation from current price ──────────────────────────────
 // Used when serving a cached decision/narrative so entry/SL/TP always reflect
 // the live price rather than the price at the time the analysis was first generated.
+//
+// Branches by horizon:
+//   intraday: 1H pattern candle, 1H+Wilder blended ATR, tight SL (~0.2 ATR), TPs 1.5/3/5 R
+//   swing:    4H pattern candle, Daily ATR, wide SL (~0.5 ATR daily), TPs 2.5/4.5/8 R,
+//             structural anchors from Daily AND Weekly swing highs/lows
 function recalcLevels(
   body:       FMTraderRequest,
   decision:   'BUY' | 'SELL',
@@ -2187,44 +2222,107 @@ function recalcLevels(
   const kl         = body.keyLevels
   const atr        = calcATR(body)
   const atr14Post  = effectiveATR(body, atr.atrProxy)
-  const tf1H       = body.timeframes.find(t => t.key === '1h')
   const ewp        = atr.entryWidthPct
   const spreadBuf  = body.category === 'forex' ? price * 0.00015 : price * 0.0004
+  const horizon    = body.tradeHorizon ?? 'intraday'
+  const swing      = horizon === 'swing'
 
-  const slMult = setupGrade === 'A' ? 0.18 : setupGrade === 'B' ? 0.22 : 0.28
-  const tp1R   = 1.5
-  const tp2R   = setupGrade === 'A' ? 3.0 : setupGrade === 'B' ? 2.5 : 2.0
-  const tp3R   = setupGrade === 'A' ? 5.0 : setupGrade === 'B' ? 4.0 : 3.0
+  // Per-horizon entry TF + anchor candle
+  const tf1H       = body.timeframes.find(t => t.key === '1h')
+  const tf4H       = body.timeframes.find(t => t.key === '4h')
+  const tfDaily    = body.timeframes.find(t => t.key === 'daily')
+  const tfWeekly   = body.timeframes.find(t => t.key === 'weekly')
+  const tfEntry    = swing ? tf4H : tf1H
 
-  const tf1H_candles = body.timeframes.find(t => t.key === '1h')?.candles ?? []
-  const atr1H      = calcTFATR(tf1H_candles)
-  const blendedATR = atr1H > 0 ? atr1H * 0.6 + atr14Post * 0.4 : atr14Post
+  const entryEMA9  = tfEntry?.ema9 ?? price
+  const entryLowFb = tfEntry?.low  ?? price * 0.995
+  const entryHghFb = tfEntry?.high ?? price * 1.005
 
-  const signalCandle      = body.marketContext?.prevClosed1H
-  const patternCandleLow  = signalCandle && signalCandle.l > 0 ? signalCandle.l : (tf1H?.low  ?? price * 0.995)
-  const patternCandleHigh = signalCandle && signalCandle.h > 0 ? signalCandle.h : (tf1H?.high ?? price * 1.005)
+  // Per-horizon ATR for SL/entry-width sizing
+  const dailyCandles  = tfDaily?.candles ?? []
+  const fourHCandles  = tf4H?.candles ?? []
+  const oneHCandles   = tf1H?.candles ?? []
+  const atr1H         = calcTFATR(oneHCandles)
+  const atr4H         = calcTFATR(fourHCandles)
+  const atrDaily      = calcTFATR(dailyCandles) || atr14Post * 5   // fallback if daily ATR unavailable
+
+  // Intraday: blend 1H ATR with the daily-proxy (existing behaviour)
+  // Swing:    blend 4H ATR with the true Daily ATR — gives realistic swing-trade noise width
+  const blendedATR = swing
+    ? (atr4H > 0 ? atr4H * 0.4 + atrDaily * 0.6 : atrDaily)
+    : (atr1H > 0 ? atr1H * 0.6 + atr14Post * 0.4 : atr14Post)
+
+  // Pattern (signal) candle — 1H for intraday, last closed 4H for swing
+  const signalCandle      = swing
+    ? (body.marketContext?.last3Candles4H?.[body.marketContext.last3Candles4H.length - 1] ?? null)
+    : (body.marketContext?.prevClosed1H ?? null)
+  const patternCandleLow  = signalCandle && signalCandle.l > 0 ? signalCandle.l : entryLowFb
+  const patternCandleHigh = signalCandle && signalCandle.h > 0 ? signalCandle.h : entryHghFb
+
+  // SL multiplier — swing gets a wider buffer to survive normal daily noise
+  const slMult = swing
+    ? (setupGrade === 'A' ? 0.40 : setupGrade === 'B' ? 0.55 : 0.75)
+    : (setupGrade === 'A' ? 0.18 : setupGrade === 'B' ? 0.22 : 0.28)
+
+  // Max-width SL cap — swing allows 2.5–3× ATR (vs 1.5× for intraday) so the
+  // stop genuinely lives at structural distance, not at session-noise distance.
+  const slCapMult = swing ? 3.0 : 1.5
+
+  // Entry-zone width — swing zones are wider so price has room to retest
+  const entryWidthLow  = swing ? ewp * 1.6 : ewp
+  const entryWidthHigh = swing ? ewp * 0.7 : ewp * 0.4
+
+  // R-multiples — swing trades aim for far bigger targets to justify the longer hold
+  const tp1R = swing
+    ? (setupGrade === 'A' ? 2.5 : setupGrade === 'B' ? 2.0 : 1.5)
+    : 1.5
+  const tp2R = swing
+    ? (setupGrade === 'A' ? 4.5 : setupGrade === 'B' ? 3.5 : 2.5)
+    : (setupGrade === 'A' ? 3.0 : setupGrade === 'B' ? 2.5 : 2.0)
+  const tp3R = swing
+    ? (setupGrade === 'A' ? 8.0 : setupGrade === 'B' ? 6.0 : 4.5)
+    : (setupGrade === 'A' ? 5.0 : setupGrade === 'B' ? 4.0 : 3.0)
+
+  // Swing-mode TP anchors — pull from Daily and Weekly fractal swing extremes
+  // (these are the levels institutions actually target on multi-day holds).
+  // We INTENTIONALLY ignore prevDayHigh/Low and the 20-bar swing for swing trades
+  // because those are too close — a swing TP should reach prior-week/month structure.
+  const swingTPAnchors = swing
+    ? [
+        ...extractSwingExtremes(dailyCandles,  decision === 'BUY' ? 'high' : 'low', 6),
+        ...extractSwingExtremes(tfWeekly?.candles ?? [], decision === 'BUY' ? 'high' : 'low', 4),
+        // Recent absolute extremes also count
+        ...(dailyCandles.length ? [decision === 'BUY' ? Math.max(...dailyCandles.slice(-30).map(c => c.h)) : Math.min(...dailyCandles.slice(-30).map(c => c.l))] : []),
+      ]
+    : []
 
   let entryLow: number, entryHigh: number, stopLoss: number
   let tp1: number, tp2: number, tp3: number
 
   if (decision === 'BUY') {
-    const entryMid = Math.min(price, tf1H?.ema9 ?? price) + spreadBuf
-    entryLow  = round(entryMid * (1 - ewp), dec)
-    entryHigh = round(entryMid * (1 + ewp * 0.4), dec)
+    const entryMid = Math.min(price, entryEMA9) + spreadBuf
+    entryLow  = round(entryMid * (1 - entryWidthLow), dec)
+    entryHigh = round(entryMid * (1 + entryWidthHigh), dec)
     const patternStop  = patternCandleLow - blendedATR * slMult - spreadBuf
-    const maxWidthStop = entryLow - blendedATR * 1.5
+    const maxWidthStop = entryLow - blendedATR * slCapMult
     stopLoss = round(Math.max(patternStop, maxWidthStop), dec)
     const risk = entryHigh - stopLoss
-    ;({ tp1, tp2, tp3 } = computeStructuralTPs('BUY', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec))
+    ;({ tp1, tp2, tp3 } = computeStructuralTPs(
+      'BUY', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec,
+      swingTPAnchors, /* excludeIntradayLevels */ swing,
+    ))
   } else {
-    const entryMid = Math.max(price, tf1H?.ema9 ?? price) - spreadBuf
-    entryHigh = round(entryMid * (1 + ewp), dec)
-    entryLow  = round(entryMid * (1 - ewp * 0.4), dec)
+    const entryMid = Math.max(price, entryEMA9) - spreadBuf
+    entryHigh = round(entryMid * (1 + entryWidthLow), dec)
+    entryLow  = round(entryMid * (1 - entryWidthHigh), dec)
     const patternStop  = patternCandleHigh + blendedATR * slMult + spreadBuf
-    const maxWidthStop = entryHigh + blendedATR * 1.5
+    const maxWidthStop = entryHigh + blendedATR * slCapMult
     stopLoss = round(Math.min(patternStop, maxWidthStop), dec)
     const risk = stopLoss - entryLow
-    ;({ tp1, tp2, tp3 } = computeStructuralTPs('SELL', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec))
+    ;({ tp1, tp2, tp3 } = computeStructuralTPs(
+      'SELL', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec,
+      swingTPAnchors, /* excludeIntradayLevels */ swing,
+    ))
   }
 
   const riskPips = decision === 'BUY' ? entryHigh - stopLoss : stopLoss - entryLow
@@ -2256,7 +2354,9 @@ function noTrade(
     tp2:                round(kl.resistance2, dec),
     tp3:                round(kl.resistance2 * 1.003, dec),
     rrRatio:            '—',
-    timeValidity:       `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
+    timeValidity:       d.tradeHorizon === 'swing'
+      ? `Valid for up to 7 days — swing trade, session timing ignored`
+      : `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
     thesis:             reasons[0] ?? 'Entry conditions not met.',
     technicalBreakdown: reasons.filter(Boolean).join('\n'),
     riskFactors:        ['Standing aside — insufficient multi-timeframe confluence for a tradeable setup'],
@@ -2827,7 +2927,9 @@ export function runAnalysis(d: FMTraderRequest): FMTraderResponse {
     stopLoss:           0,
     tp1: 0, tp2: 0, tp3: 0,
     rrRatio:            '—',
-    timeValidity:       `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
+    timeValidity:       swing
+      ? `Valid for up to 7 days — swing trade, session timing ignored`
+      : `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
     thesis,
     technicalBreakdown,
     riskFactors,
@@ -3337,69 +3439,30 @@ export async function POST(req: Request) {
     const thesis     = narrative?.thesis    ?? ruleResult.thesis
     const marketBias = narrative?.marketBias ?? ruleResult.marketBias
 
-    // ── Step 5: Entry / Stop / TP using grade-adjusted ATR-based math ─────────
+    // ── Step 5: Entry / Stop / TP — delegated to horizon-aware recalcLevels ───
     const dec      = dp(body.price)
     const price    = body.price
     const kl       = body.keyLevels
     const slotMeta = findSlot(body.sessionSlot)
-    const atr       = calcATR(body)
-    const atr14Post = effectiveATR(body, atr.atrProxy)
-    const tf1H      = body.timeframes.find(t => t.key === '1h')
-    const ewp       = atr.entryWidthPct
-    const spreadBuf = body.category === 'forex' ? price * 0.00015 : price * 0.0004
-
-    // Grade-adjusted R:R multipliers
-    // Grade A: tighter SL (precise entry), wider targets (high conviction)
-    // Grade B: standard 1.5R / 2.5R / 4.0R
-    // Grade C: wider SL (less precise), conservative targets (TP1 emphasis)
+    const atr      = calcATR(body)
+    const ewp      = atr.entryWidthPct
     const setupGrade = ruleResult.setupGrade ?? 'B'
-    const slMult  = setupGrade === 'A' ? 0.18 : setupGrade === 'B' ? 0.22 : 0.28
-    const tp1R    = 1.5
-    const tp2R    = setupGrade === 'A' ? 3.0 : setupGrade === 'B' ? 2.5 : 2.0
-    const tp3R    = setupGrade === 'A' ? 5.0 : setupGrade === 'B' ? 4.0 : 3.0
-
-    // 1H timeframe ATR — more precise for entry-level SL than daily ATR14.
-    // Blended: 60% 1H ATR (entry precision) + 40% daily ATR (structural context).
-    const tf1H_candles = body.timeframes.find(t => t.key === '1h')?.candles ?? []
-    const atr1H      = calcTFATR(tf1H_candles)
-    const blendedATR = atr1H > 0 ? atr1H * 0.6 + atr14Post * 0.4 : atr14Post
 
     let entryLow: number, entryHigh: number, stopLoss: number
     let tp1: number, tp2: number, tp3: number
 
-    // Pattern candle: the last CLOSED 1H signal candle is the structural invalidation
-    // reference. SL below its low (BUY) or above its high (SELL) is the correct
-    // technical stop — if price closes back through the pattern candle, the setup is invalid.
-    // Fallback to tf1H aggregate if prevClosed1H is unavailable.
-    const signalCandle = body.marketContext?.prevClosed1H
-    const patternCandleLow  = signalCandle && signalCandle.l > 0 ? signalCandle.l : (tf1H?.low  ?? price * 0.995)
-    const patternCandleHigh = signalCandle && signalCandle.h > 0 ? signalCandle.h : (tf1H?.high ?? price * 1.005)
-
-    if (decision === 'BUY') {
-      const entryMid = Math.min(price, tf1H?.ema9 ?? price) + spreadBuf
-      entryLow  = round(entryMid * (1 - ewp), dec)
-      entryHigh = round(entryMid * (1 + ewp * 0.4), dec)
-      // Primary SL: below the signal candle's low + ATR buffer (pattern invalidation)
-      const patternStop = patternCandleLow - blendedATR * slMult - spreadBuf
-      // Cap: SL not more than 1.5× ATR below entry — prevents unacceptably wide R:R
-      const maxWidthStop = entryLow - blendedATR * 1.5
-      // Use the shallower (tighter) of the two, but never above S1 (would be absurd)
-      stopLoss = round(Math.max(patternStop, maxWidthStop), dec)
-      const risk = entryHigh - stopLoss
-      ;({ tp1, tp2, tp3 } = computeStructuralTPs('BUY', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec))
-
-    } else if (decision === 'SELL') {
-      const entryMid = Math.max(price, tf1H?.ema9 ?? price) - spreadBuf
-      entryHigh = round(entryMid * (1 + ewp), dec)
-      entryLow  = round(entryMid * (1 - ewp * 0.4), dec)
-      // Primary SL: above the signal candle's high + ATR buffer (pattern invalidation)
-      const patternStop = patternCandleHigh + blendedATR * slMult + spreadBuf
-      // Cap: SL not more than 1.5× ATR above entry
-      const maxWidthStop = entryHigh + blendedATR * 1.5
-      stopLoss = round(Math.min(patternStop, maxWidthStop), dec)
-      const risk = stopLoss - entryLow
-      ;({ tp1, tp2, tp3 } = computeStructuralTPs('SELL', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec))
-
+    // Delegate SL/TP/entry-zone to recalcLevels — that function is now horizon-aware
+    // and handles intraday vs swing structurally (4H pattern candle, Daily ATR,
+    // 2.5/4.5/8 R targets, daily+weekly fractal swing anchors for swing mode).
+    // For NO TRADE, fall back to simple S1/R1/R2 levels.
+    if (decision === 'BUY' || decision === 'SELL') {
+      const lvl = recalcLevels(body, decision, setupGrade)
+      entryLow  = lvl.entryLow
+      entryHigh = lvl.entryHigh
+      stopLoss  = lvl.stopLoss
+      tp1       = lvl.tp1
+      tp2       = lvl.tp2
+      tp3       = lvl.tp3
     } else {
       entryLow  = round(price * (1 - ewp), dec)
       entryHigh = round(price * (1 + ewp), dec)
@@ -3461,7 +3524,9 @@ export async function POST(req: Request) {
       entryZone:          [entryLow, entryHigh],
       stopLoss,
       tp1, tp2, tp3, rrRatio,
-      timeValidity:       `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
+      timeValidity:       body.tradeHorizon === 'swing'
+        ? `Valid for up to 7 days — swing trade, session timing ignored`
+        : `Valid for the ${slotMeta.label} hour (${slotMeta.name})`,
       thesis,
       technicalBreakdown: ruleResult.technicalBreakdown,
       riskFactors:    ruleResult.riskFactors,
