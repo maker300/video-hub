@@ -273,21 +273,24 @@ export async function GET(req: Request) {
 
   await Promise.allSettled(updates)
 
-  // ── 4b. Auto-close LiveTrades when matching FM Trader prediction hits TP1 ───
-  // When any FMPrediction resolves with outcome 'tp1_hit', mirror that to any
-  // OPEN LiveTrade on the same slug + decision. Settles all positions at the
-  // TP1 price (admins don't need to manually close — the underlying call
-  // hitting TP1 IS the close signal).
+  // ── 4b. Auto-close LiveTrades when matching FM Trader prediction hits TP1 or SL ─
+  // When any FMPrediction resolves with outcome 'tp1_hit' (win) or 'sl_hit'
+  // (loss), mirror that to any OPEN LiveTrade on the same slug + decision and
+  // settle every position at the actual hit price.
   //
-  // Why only TP1 and not TP2/TP3: TP1 is the high-confidence target; TP2/TP3
-  // are stretch goals admins typically scale out of manually. Auto-close on
-  // TP1 captures the win cleanly.
+  //   tp1_hit → close at pred.tp1 → positive PnL%
+  //   sl_hit  → close at pred.stopLoss → negative PnL%
+  //
+  // TP2/TP3 are stretch goals admins typically scale out of manually so they
+  // do NOT auto-close — only TP1 (win lock) and SL (risk lock) trigger.
   for (const pred of pending) {
     const newOutcomePred = await prisma.fMPrediction.findUnique({
       where:  { id: pred.id },
       select: { outcome: true },
     })
-    if (newOutcomePred?.outcome !== 'tp1_hit') continue
+    const isTp1 = newOutcomePred?.outcome === 'tp1_hit'
+    const isSl  = newOutcomePred?.outcome === 'sl_hit'
+    if (!isTp1 && !isSl) continue
 
     const matches = await prisma.liveTrade.findMany({
       where: {
@@ -300,7 +303,8 @@ export async function GET(req: Request) {
     for (const lt of matches) {
       const entry = lt.entryPrice
       if (!entry || entry <= 0) continue
-      const closeAt = pred.tp1                  // fetched from prediction's TP1
+      const closeAt = isTp1 ? pred.tp1 : pred.stopLoss
+      const reason  = isTp1 ? 'TP1' : 'SL'
       const pnlPct = lt.decision === 'BUY'
         ? (closeAt - entry) / entry
         : (entry - closeAt) / entry
@@ -325,7 +329,7 @@ export async function GET(req: Request) {
               pnlPct,
               status:     'closed',
               closedAt:   new Date(),
-              note:       `Auto-closed when ${pred.display} ${pred.decision} hit TP1 (${closeAt})`,
+              note:       `Auto-closed when ${pred.display} ${pred.decision} hit ${reason} (${closeAt})`,
             },
           })
         })
@@ -336,8 +340,8 @@ export async function GET(req: Request) {
           const sign = pnlPct > 0 ? '+' : ''
           void notifyTeamUsers({
             email:   false,
-            subject: `${lt.decision} ${lt.display} auto-closed at TP1 (${sign}${pct}%)`,
-            message: `The underlying FM Trader signal for ${lt.display} hit TP1 (${closeAt}). The live trade was auto-closed and all positions settled. Outcome: ${sign}${pct}%. Open the Live Trade page to see your updated balance.`,
+            subject: `${lt.decision} ${lt.display} auto-closed at ${reason} (${sign}${pct}%)`,
+            message: `The underlying FM Trader signal for ${lt.display} hit ${reason} (${closeAt}). The live trade was auto-closed and all positions settled. Outcome: ${sign}${pct}%. Open the Live Trade page to see your updated balance.`,
           })
         } catch (notifyErr) {
           console.error('[check-outcomes] live-trade notify failed:', notifyErr)
