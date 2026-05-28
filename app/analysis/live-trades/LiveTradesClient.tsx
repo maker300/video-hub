@@ -7,6 +7,17 @@ import { ArrowLeft, Bitcoin, TrendingUp, TrendingDown, Plus, Edit3, X, CheckCirc
 
 const BTC_RECEIVE_ADDRESS = 'bc1q3yzzgs6nflrfkz3uvmx30y8upvjlqwfud9ptya'
 
+// Slug → Yahoo symbol map (mirrors SLUG_TO_SYMBOL in the server route — kept
+// inline so the client can resolve live prices without importing server code).
+const SLUG_TO_YF: Record<string, string> = {
+  'eur-usd': 'EURUSD=X', 'gbp-usd': 'GBPUSD=X', 'usd-jpy': 'USDJPY=X', 'aud-usd': 'AUDUSD=X', 'usd-cad': 'USDCAD=X',
+  'usd-chf': 'USDCHF=X', 'nzd-usd': 'NZDUSD=X', 'eur-gbp': 'EURGBP=X', 'gbp-jpy': 'GBPJPY=X', 'eur-jpy': 'EURJPY=X',
+  'xau-usd': 'GC=F', 'xag-usd': 'SI=F', 'wti-usd': 'CL=F', 'copper': 'HG=F',
+  'sp-500': 'ES=F', 'dj-30': 'YM=F', 'nas-100': 'NQ=F', 'us-dxy': 'DX-Y.NYB',
+  'apple': 'AAPL', 'microsoft': 'MSFT', 'google': 'GOOGL', 'tesla': 'TSLA',
+  'btc-usd': 'BTC-USD', 'eth-usd': 'ETH-USD', 'sol-usd': 'SOL-USD', 'xrp-usd': 'XRP-USD', 'bnb-usd': 'BNB-USD', 'doge-usd': 'DOGE-USD',
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface MyPosition {
@@ -113,6 +124,8 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   const [me,         setMe]         = useState<Me | null>(null)
   const [trades,     setTrades]     = useState<LiveTrade[]>([])
   const [loading,    setLoading]    = useState(true)
+  // Live prices per slug — refreshed every 60s while there are open trades
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({})
   const [err,        setErr]        = useState<string | null>(null)
   const [view,       setView]       = useState<'open' | 'mine' | 'history' | 'admin' | 'withdrawals'>('open')
 
@@ -182,6 +195,36 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     const t = setInterval(load, 60_000)
     return () => clearInterval(t)
   }, [load])
+
+  // Live-price polling — every 60s while there are 'open' trades (status === 'open'
+  // = entry set, settling pending). Pulls /api/market-data/live which returns
+  // every tracked instrument in one call. We extract only the slugs we need.
+  useEffect(() => {
+    const inSession = trades.filter(t => t.status === 'open')
+    if (inSession.length === 0) {
+      setLivePrices({})
+      return
+    }
+
+    let cancelled = false
+    async function fetchLive() {
+      try {
+        const r = await fetch('/api/market-data/live')
+        if (!r.ok || cancelled) return
+        const data = await r.json() as { prices: Record<string, { price: number }> }
+        const next: Record<string, number> = {}
+        for (const t of inSession) {
+          const sym = SLUG_TO_YF[t.slug]
+          const p = sym ? data.prices?.[sym]?.price : undefined
+          if (typeof p === 'number' && p > 0) next[t.slug] = p
+        }
+        if (!cancelled) setLivePrices(next)
+      } catch { /* silent — stale prices are better than crashes */ }
+    }
+    fetchLive()
+    const t = setInterval(fetchLive, 60_000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [trades])
 
   // ── Categorised trades ────────────────────────────────────────────────────
   const openTrades   = useMemo(() => trades.filter(t => t.status === 'pending' || t.status === 'open'), [trades])
@@ -475,7 +518,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 key={t.id}
                 trade={t}
                 isAdmin={isAdmin}
-                myBalance={me?.teamBalanceBtc ?? 0}
+                myBalance={me?.teamBalanceBtc ?? 0} livePrice={livePrices[t.slug] ?? null}
                 onJoin={() => { setPosErr(null); setPosAmount(t.suggestedAmountBtc ? String(t.suggestedAmountBtc) : ''); setPosModal({ trade: t }) }}
                 onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
@@ -494,7 +537,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               </div>
             )}
             {myPositions.map(t => (
-              <TradeCard key={t.id} trade={t} isAdmin={isAdmin} myBalance={me?.teamBalanceBtc ?? 0}
+              <TradeCard key={t.id} trade={t} isAdmin={isAdmin} myBalance={me?.teamBalanceBtc ?? 0} livePrice={livePrices[t.slug] ?? null}
                 onJoin={() => null} showJoin={false}
                 onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
@@ -513,7 +556,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               </div>
             )}
             {historyList.map(t => (
-              <TradeCard key={t.id} trade={t} isAdmin={isAdmin} myBalance={me?.teamBalanceBtc ?? 0}
+              <TradeCard key={t.id} trade={t} isAdmin={isAdmin} myBalance={me?.teamBalanceBtc ?? 0} livePrice={livePrices[t.slug] ?? null}
                 onJoin={() => null} showJoin={false}
                 onSetEntry={() => null} onSetClose={() => null} onCancel={() => null} hideAdminActions
               />
@@ -537,7 +580,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             <div className="space-y-3">
               {trades.map(t => (
                 <TradeCard key={t.id} trade={t} isAdmin
-                  myBalance={me?.teamBalanceBtc ?? 0}
+                  myBalance={me?.teamBalanceBtc ?? 0} livePrice={livePrices[t.slug] ?? null}
                   onJoin={() => { setPosErr(null); setPosAmount(''); setPosModal({ trade: t }) }}
                   showJoin={false}
                   onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
@@ -893,7 +936,7 @@ function Modal({ title, onClose, wide = false, children }: { title: string; onCl
 
 function TradeCard({
   trade, isAdmin, myBalance, onJoin, onSetEntry, onSetClose, onCancel,
-  showJoin = true, hideAdminActions = false,
+  showJoin = true, hideAdminActions = false, livePrice = null,
 }: {
   trade: LiveTrade
   isAdmin: boolean
@@ -904,6 +947,7 @@ function TradeCard({
   onCancel: () => void
   showJoin?: boolean
   hideAdminActions?: boolean
+  livePrice?: number | null
 }) {
   const myPos = trade.positions.find(p => p.status === 'open') ?? trade.positions[0]
   // Joining is only allowed while the trade is 'pending' (admin has not yet
@@ -922,6 +966,28 @@ function TradeCard({
       trade.decision === 'BUY' ? 'bg-emerald-500/[0.04] border-emerald-500/25' :
                                   'bg-red-500/[0.04] border-red-500/25'
     }`}>
+      {/* Live P/L banner — only while the trade is in session (entry set, not closed) */}
+      {(() => {
+        if (trade.status !== 'open' || !trade.entryPrice || !livePrice) return null
+        const pct = trade.decision === 'BUY'
+          ? (livePrice - trade.entryPrice) / trade.entryPrice
+          : (trade.entryPrice - livePrice) / trade.entryPrice
+        const tone = pct > 0 ? 'emerald' : pct < 0 ? 'red' : 'gray'
+        const cls  = tone === 'emerald' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                   : tone === 'red'     ? 'bg-red-500/10 border-red-500/30 text-red-300'
+                                          : 'bg-white/5 border-white/10 text-gray-400'
+        return (
+          <div className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 mb-3 border ${cls}`}>
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+              <span className="text-[10px] uppercase font-bold tracking-wider">Live P/L</span>
+              <span className="text-[10px] text-gray-500 tabular-nums">@ {fmtPrice(livePrice)}</span>
+            </div>
+            <span className="text-base font-black tabular-nums">{pct >= 0 ? '+' : ''}{(pct * 100).toFixed(2)}%</span>
+          </div>
+        )
+      })()}
+
       {/* Top row */}
       <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
