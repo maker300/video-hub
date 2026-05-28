@@ -319,19 +319,31 @@ export async function GET(req: Request) {
         ? (closeAt - entry) / entry
         : (entry - closeAt) / entry
 
-      const leverage = lt.leverage ?? 300
+      const leverage    = lt.leverage    ?? 300
+      const slippagePct = lt.slippagePct ?? 0.0005
+      const feePct      = lt.feePct      ?? 0.10
       try {
         await prisma.$transaction(async tx => {
           for (const pos of lt.positions) {
-            const rawPnl = pos.amountBtc * pnlPct * leverage
-            const pnlBtc = Math.max(rawPnl, -pos.amountBtc)   // floor at -stake
+            // Settlement breakdown — Gross → Slippage → Fee → Net (floored at -stake)
+            const grossPnlBtc = pos.amountBtc * pnlPct * leverage
+            const slippageBtc = pos.amountBtc * slippagePct * leverage
+            const afterSlip   = grossPnlBtc - slippageBtc
+            const feeBtc      = afterSlip > 0 ? afterSlip * feePct : 0
+            const netRaw      = afterSlip - feeBtc
+            const pnlBtc      = Math.max(netRaw, -pos.amountBtc)
+
             await tx.user.update({
               where: { id: pos.userId },
               data:  { teamBalanceBtc: { increment: pos.amountBtc + pnlBtc } },
             })
             await tx.liveTradePosition.update({
               where: { id: pos.id },
-              data:  { status: 'closed', pnlBtc, closedAt: new Date() },
+              data:  {
+                status:      'closed',
+                grossPnlBtc, slippageBtc, feeBtc, pnlBtc,
+                closedAt:    new Date(),
+              },
             })
           }
           await tx.liveTrade.update({

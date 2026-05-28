@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getAdminSession, getSessionInfo } from '@/lib/adminAuth'
 import { notifyTeamUsers } from '@/lib/team-notify'
+import { slippagePctFor, PERFORMANCE_FEE_PCT } from '@/lib/slippage'
 
 export const dynamic = 'force-dynamic'
 
@@ -94,6 +95,10 @@ export async function POST(req: Request) {
         typeof body.leverage === 'number' && ALLOWED_LEVERAGE.includes(body.leverage)
           ? body.leverage
           : undefined,   // fall back to schema default (300)
+      // Stamp asset-class slippage + standard 10% performance fee on create
+      // so the rates used at settlement are reproducible from the trade row.
+      slippagePct: slippagePctFor(body.slug),
+      feePct:      PERFORMANCE_FEE_PCT,
       approvedBy:  admin.id,
     },
   })

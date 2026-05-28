@@ -35,7 +35,11 @@ export async function GET() {
     include: {
       positions: {
         where:  { userId: session.id },
-        select: { id: true, amountBtc: true, pnlBtc: true, status: true, openedAt: true, closedAt: true },
+        select: {
+          id: true, amountBtc: true,
+          grossPnlBtc: true, slippageBtc: true, feeBtc: true, pnlBtc: true,
+          status: true, openedAt: true, closedAt: true,
+        },
       },
       _count: { select: { positions: true } },
     },
@@ -50,8 +54,9 @@ export async function GET() {
     const all = await prisma.liveTradePosition.findMany({
       where:   { liveTradeId: { in: ids } },
       select: {
-        id: true, liveTradeId: true, amountBtc: true, pnlBtc: true, status: true,
-        openedAt: true, closedAt: true,
+        id: true, liveTradeId: true, amountBtc: true,
+        grossPnlBtc: true, slippageBtc: true, feeBtc: true, pnlBtc: true,
+        status: true, openedAt: true, closedAt: true,
         user: { select: { id: true, name: true, email: true } },
       },
       orderBy: { openedAt: 'desc' },

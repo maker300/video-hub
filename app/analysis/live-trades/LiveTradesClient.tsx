@@ -23,6 +23,9 @@ const SLUG_TO_YF: Record<string, string> = {
 interface MyPosition {
   id: string
   amountBtc: number
+  grossPnlBtc: number | null
+  slippageBtc: number | null
+  feeBtc: number | null
   pnlBtc: number | null
   status: 'open' | 'closed'
   openedAt: string
@@ -30,13 +33,16 @@ interface MyPosition {
 }
 
 interface AdminPosition {
-  id:        string
-  amountBtc: number
-  pnlBtc:    number | null
-  status:    'open' | 'closed'
-  openedAt:  string
-  closedAt:  string | null
-  user:      { id: string; name: string | null; email: string }
+  id:          string
+  amountBtc:   number
+  grossPnlBtc: number | null
+  slippageBtc: number | null
+  feeBtc:      number | null
+  pnlBtc:      number | null
+  status:      'open' | 'closed'
+  openedAt:    string
+  closedAt:    string | null
+  user:        { id: string; name: string | null; email: string }
 }
 
 interface LiveTrade {
@@ -54,6 +60,8 @@ interface LiveTrade {
   confidence:   number
   setupGrade:   string | null
   leverage:     number
+  slippagePct:  number
+  feePct:       number
   status:       'pending' | 'open' | 'closed' | 'cancelled'
   entryPrice:   number | null
   closePrice:   number | null
@@ -852,6 +860,11 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             <div className="text-xs text-gray-400">
               Available balance: <span className="font-bold text-amber-300 tabular-nums">{fmtBtc(me?.teamBalanceBtc ?? 0)} BTC</span>
             </div>
+            <div className="rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-[10px] text-gray-500 grid grid-cols-3 gap-2">
+              <div>Leverage <span className="text-amber-300 font-bold tabular-nums">1:{posModal.trade.leverage}</span></div>
+              <div>Slippage <span className="text-gray-300 font-bold tabular-nums">{(posModal.trade.slippagePct * 100).toFixed(2)}%</span></div>
+              <div>Perf fee <span className="text-gray-300 font-bold tabular-nums">{(posModal.trade.feePct * 100).toFixed(0)}%</span> <span className="text-[9px] text-gray-600">(profits only)</span></div>
+            </div>
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
                 Amount to stake (BTC)
@@ -1154,24 +1167,45 @@ function TradeCard({
 
       {/* My position */}
       {myPos && (
-        <div className={`flex items-center justify-between rounded-xl px-3 py-2.5 mb-3 border ${
+        <div className={`rounded-xl px-3 py-2.5 mb-3 border ${
           myPos.status === 'closed'
             ? (myPos.pnlBtc != null && myPos.pnlBtc > 0 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-red-500/10 border-red-500/30')
             : 'bg-white/5 border-white/10'
         }`}>
-          <div>
-            <div className="text-[10px] uppercase font-bold tracking-wider text-gray-400 mb-0.5">Your position</div>
-            <div className="text-xs text-gray-300">
-              Staked <span className="font-bold text-white tabular-nums">{fmtBtc(myPos.amountBtc)} BTC</span>
-              {myPos.status === 'closed' && myPos.pnlBtc != null && (
-                <> · P/L <span className={`font-bold tabular-nums ${myPos.pnlBtc > 0 ? 'text-emerald-300' : myPos.pnlBtc < 0 ? 'text-red-300' : 'text-gray-400'}`}>
-                  {myPos.pnlBtc >= 0 ? '+' : ''}{fmtBtc(myPos.pnlBtc)} BTC
-                </span></>
-              )}
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[10px] uppercase font-bold tracking-wider text-gray-400 mb-0.5">Your position</div>
+              <div className="text-xs text-gray-300">
+                Staked <span className="font-bold text-white tabular-nums">{fmtBtc(myPos.amountBtc)} BTC</span>
+                {myPos.status === 'closed' && myPos.pnlBtc != null && (
+                  <> · Net P/L <span className={`font-bold tabular-nums ${myPos.pnlBtc > 0 ? 'text-emerald-300' : myPos.pnlBtc < 0 ? 'text-red-300' : 'text-gray-400'}`}>
+                    {myPos.pnlBtc >= 0 ? '+' : ''}{fmtBtc(myPos.pnlBtc)} BTC
+                  </span></>
+                )}
+              </div>
             </div>
+            {myPos.status === 'closed' && (
+              <CheckCircle2 className={`w-5 h-5 ${myPos.pnlBtc != null && myPos.pnlBtc > 0 ? 'text-emerald-400' : 'text-red-400'}`} />
+            )}
           </div>
-          {myPos.status === 'closed' && (
-            <CheckCircle2 className={`w-5 h-5 ${myPos.pnlBtc != null && myPos.pnlBtc > 0 ? 'text-emerald-400' : 'text-red-400'}`} />
+          {/* Settlement breakdown — only on closed positions where we have all 4 fields */}
+          {myPos.status === 'closed' && myPos.grossPnlBtc != null && myPos.slippageBtc != null && myPos.feeBtc != null && (
+            <div className="mt-2 pt-2 border-t border-white/10 grid grid-cols-3 gap-2 text-[10px]">
+              <div>
+                <div className="text-gray-500 uppercase font-bold tracking-wider">Gross</div>
+                <div className={`tabular-nums font-bold ${myPos.grossPnlBtc > 0 ? 'text-emerald-300' : myPos.grossPnlBtc < 0 ? 'text-red-300' : 'text-gray-400'}`}>
+                  {myPos.grossPnlBtc >= 0 ? '+' : ''}{fmtBtc(myPos.grossPnlBtc)}
+                </div>
+              </div>
+              <div>
+                <div className="text-gray-500 uppercase font-bold tracking-wider">Slippage · {(trade.slippagePct * 100).toFixed(2)}%</div>
+                <div className="tabular-nums font-bold text-red-300">−{fmtBtc(myPos.slippageBtc)}</div>
+              </div>
+              <div>
+                <div className="text-gray-500 uppercase font-bold tracking-wider">Fee · {(trade.feePct * 100).toFixed(0)}%</div>
+                <div className="tabular-nums font-bold text-red-300">{myPos.feeBtc > 0 ? `−${fmtBtc(myPos.feeBtc)}` : '—'}</div>
+              </div>
+            </div>
           )}
         </div>
       )}

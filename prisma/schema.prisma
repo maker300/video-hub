@@ -426,6 +426,16 @@ model LiveTrade {
   // Leverage multiplier applied to PnL — default 300 (or 500 for crypto pairs).
   // Allowed values: 20, 50, 100, 300, 500. Loss capped at -stake (no negative balances).
   leverage           Int     @default(300)
+  // Round-trip slippage rate applied at close. Set per-asset-class on create:
+  //   forex/indices/stocks 0.0005 (0.05%)
+  //   commodities          0.0010 (0.10%)
+  //   crypto               0.0020 (0.20%)
+  // Stored on the trade row (not derived at close time) so historical audit
+  // is reproducible even if rates change in the future.
+  slippagePct        Float   @default(0.0005)
+  // Performance fee taken from POSITIVE net PnL only (after slippage).
+  // Defaults to 0.10 (10%). 0 on losing trades.
+  feePct             Float   @default(0.10)
   // Timing
   createdAt    DateTime @default(now())
   openedAt     DateTime?
@@ -452,7 +462,15 @@ model LiveTradePosition {
   liveTradeId String
   userId      String
   amountBtc   Float                                  // team user's stake (BTC) at open
-  pnlBtc      Float?                                 // amountBtc × pnlPct (computed at close)
+  // PnL breakdown captured at close. All values BTC.
+  //   grossPnlBtc = stake × pnlPct × leverage              (before fees)
+  //   slippageBtc = stake × slippagePct × leverage         (positive — reduces PnL)
+  //   feeBtc      = max(0, afterSlip) × feePct             (only on profitable closes)
+  //   pnlBtc      = max(grossPnlBtc - slippageBtc - feeBtc, -amountBtc)
+  grossPnlBtc Float?
+  slippageBtc Float?
+  feeBtc      Float?
+  pnlBtc      Float?
   status      String   @default("open")              // 'open' | 'closed'
   openedAt    DateTime @default(now())
   closedAt    DateTime?

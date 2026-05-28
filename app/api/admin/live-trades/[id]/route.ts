@@ -95,21 +95,31 @@ export async function PATCH(req: Request, { params }: Params) {
       ? (body.closePrice - entry) / entry
       : (entry - body.closePrice) / entry
     // Leveraged PnL multiplier: a 0.5% move at 1:500 leverage = 250% on stake
-    const leverage = trade.leverage ?? 300
+    const leverage    = trade.leverage    ?? 300
+    const slippagePct = trade.slippagePct ?? 0.0005
+    const feePct      = trade.feePct      ?? 0.10
 
     await prisma.$transaction(async tx => {
       for (const pos of trade.positions.filter(p => p.status === 'open')) {
-        // Cap loss at -stake — no negative balances even on liquidation moves
-        const rawPnl   = pos.amountBtc * pnlPct * leverage
-        const pnlBtc   = Math.max(rawPnl, -pos.amountBtc)
-        // Credit back stake + PnL (capped). If pnlBtc = -stake the credit is 0.
+        // Settlement breakdown — Gross → Slippage → Fee → Net (floored at -stake)
+        const grossPnlBtc = pos.amountBtc * pnlPct * leverage
+        const slippageBtc = pos.amountBtc * slippagePct * leverage       // always positive, always reduces PnL
+        const afterSlip   = grossPnlBtc - slippageBtc
+        const feeBtc      = afterSlip > 0 ? afterSlip * feePct : 0       // perf fee on profitable closes only
+        const netRaw      = afterSlip - feeBtc
+        const pnlBtc      = Math.max(netRaw, -pos.amountBtc)             // can't lose more than stake
+
         await tx.user.update({
           where: { id: pos.userId },
           data:  { teamBalanceBtc: { increment: pos.amountBtc + pnlBtc } },
         })
         await tx.liveTradePosition.update({
           where: { id: pos.id },
-          data:  { status: 'closed', pnlBtc, closedAt: new Date() },
+          data:  {
+            status:      'closed',
+            grossPnlBtc, slippageBtc, feeBtc, pnlBtc,
+            closedAt:    new Date(),
+          },
         })
       }
       await tx.liveTrade.update({
