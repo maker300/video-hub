@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import { ArrowLeft, Bitcoin, TrendingUp, TrendingDown, Plus, Edit3, X, CheckCircle2, Clock, RefreshCw, AlertTriangle, Wallet } from 'lucide-react'
+import { ArrowLeft, Bitcoin, TrendingUp, TrendingDown, Plus, Edit3, X, CheckCircle2, Clock, RefreshCw, AlertTriangle, Wallet, ArrowDownToLine, ArrowUpFromLine, Copy } from 'lucide-react'
+
+const BTC_RECEIVE_ADDRESS = 'bc1q3yzzgs6nflrfkz3uvmx30y8upvjlqwfud9ptya'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +64,19 @@ interface Me {
   teamBalanceBtc: number
 }
 
+interface Withdrawal {
+  id: string
+  userId: string
+  amountBtc: number
+  btcAddress: string
+  status: 'pending' | 'completed' | 'rejected'
+  note: string | null
+  txHash: string | null
+  createdAt: string
+  processedAt: string | null
+  user?: { id: string; name: string | null; email: string; teamBalanceBtc: number }
+}
+
 // ── Format helpers ───────────────────────────────────────────────────────────
 const fmtBtc = (n: number | null | undefined) => {
   if (n == null || !isFinite(n)) return '—'
@@ -98,7 +113,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   const [trades,     setTrades]     = useState<LiveTrade[]>([])
   const [loading,    setLoading]    = useState(true)
   const [err,        setErr]        = useState<string | null>(null)
-  const [view,       setView]       = useState<'open' | 'mine' | 'history' | 'admin'>('open')
+  const [view,       setView]       = useState<'open' | 'mine' | 'history' | 'admin' | 'withdrawals'>('open')
 
   // Open-position modal (team action)
   const [posModal,   setPosModal]   = useState<{ trade: LiveTrade } | null>(null)
@@ -113,6 +128,19 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   const [editErr,    setEditErr]    = useState<string | null>(null)
 
   // Admin: new trade modal
+  // Deposit / Withdraw modals
+  const [depositOpen, setDepositOpen] = useState(false)
+  const [copyToast,   setCopyToast]   = useState(false)
+  const [wdOpen,      setWdOpen]      = useState(false)
+  const [wdAmount,    setWdAmount]    = useState('')
+  const [wdAddress,   setWdAddress]   = useState('')
+  const [wdBusy,      setWdBusy]      = useState(false)
+  const [wdErr,       setWdErr]       = useState<string | null>(null)
+
+  // My withdrawal history (team) + admin's view of all withdrawals
+  const [myWithdrawals,    setMyWithdrawals]    = useState<Withdrawal[]>([])
+  const [adminWithdrawals, setAdminWithdrawals] = useState<Withdrawal[]>([])
+
   const [newModal,   setNewModal]   = useState(false)
   const [newBusy,    setNewBusy]    = useState(false)
   const [newErr,     setNewErr]     = useState<string | null>(null)
@@ -128,17 +156,23 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   const load = useCallback(async () => {
     setErr(null)
     try {
-      const res = await fetch('/api/live-trades')
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`)
-      const data = await res.json() as { me: Me; trades: LiveTrade[] }
+      const [tradesRes, wdRes, adminWdRes] = await Promise.all([
+        fetch('/api/live-trades'),
+        fetch('/api/withdrawals').catch(() => null),
+        isAdmin ? fetch('/api/admin/withdrawals').catch(() => null) : Promise.resolve(null),
+      ])
+      if (!tradesRes.ok) throw new Error((await tradesRes.json().catch(() => ({}))).error ?? `HTTP ${tradesRes.status}`)
+      const data = await tradesRes.json() as { me: Me; trades: LiveTrade[] }
       setMe(data.me)
       setTrades(data.trades ?? [])
+      if (wdRes?.ok)      setMyWithdrawals(await wdRes.json())
+      if (adminWdRes?.ok) setAdminWithdrawals(await adminWdRes.json())
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Failed to load')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [isAdmin])
 
   useEffect(() => { load() }, [load])
 
@@ -185,6 +219,52 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     } finally {
       setPosBusy(false)
     }
+  }
+
+  // ── Withdraw (team) ───────────────────────────────────────────────────────
+  async function submitWithdraw() {
+    const amt = Number(wdAmount)
+    if (!isFinite(amt) || amt <= 0) { setWdErr('Enter a positive amount'); return }
+    if (!wdAddress.trim())            { setWdErr('Destination address required'); return }
+    if (me && amt > me.teamBalanceBtc){ setWdErr('Insufficient balance'); return }
+    setWdBusy(true); setWdErr(null)
+    try {
+      const r = await fetch('/api/withdrawals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amountBtc: amt, btcAddress: wdAddress.trim() }),
+      })
+      const j = await r.json()
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
+      setWdOpen(false); setWdAmount(''); setWdAddress('')
+      await load()
+    } catch (e) {
+      setWdErr(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setWdBusy(false)
+    }
+  }
+
+  // ── Admin: process withdrawal (complete or reject) ────────────────────────
+  async function processWithdrawal(id: string, action: 'complete' | 'reject') {
+    const promptText = action === 'reject' ? 'Reason for rejection (optional)' : 'BTC transaction hash (optional)'
+    const note = prompt(promptText) ?? undefined
+    const body = action === 'complete' ? { action, txHash: note } : { action, note }
+    const r = await fetch(`/api/admin/withdrawals/${id}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    })
+    if (r.ok) await load()
+    else alert((await r.json().catch(() => ({}))).error ?? 'Failed')
+  }
+
+  async function copyAddress() {
+    try {
+      await navigator.clipboard.writeText(BTC_RECEIVE_ADDRESS)
+      setCopyToast(true)
+      setTimeout(() => setCopyToast(false), 1800)
+    } catch { /* clipboard unavailable */ }
   }
 
   // ── Admin: set entry / close / cancel ─────────────────────────────────────
@@ -320,6 +400,28 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               </div>
             </div>
           </div>
+          {/* Deposit / Withdraw actions */}
+          <div className="flex gap-2 mt-4 pt-4 border-t border-white/10">
+            <button
+              onClick={() => setDepositOpen(true)}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold hover:bg-emerald-600/30 transition"
+            >
+              <ArrowDownToLine className="w-3.5 h-3.5" />
+              Deposit BTC
+            </button>
+            <button
+              onClick={() => { setWdErr(null); setWdAmount(''); setWdAddress(''); setWdOpen(true) }}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-300 text-xs font-bold hover:bg-blue-600/30 transition"
+            >
+              <ArrowUpFromLine className="w-3.5 h-3.5" />
+              Withdraw
+            </button>
+          </div>
+          {myWithdrawals.some(w => w.status === 'pending') && (
+            <p className="mt-2 text-[10px] text-amber-300/80 text-center">
+              {myWithdrawals.filter(w => w.status === 'pending').length} withdrawal{myWithdrawals.filter(w => w.status === 'pending').length === 1 ? '' : 's'} awaiting admin approval
+            </p>
+          )}
         </div>
 
         {/* Tab bar */}
@@ -328,7 +430,12 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             { id: 'open',    label: `Open Trades${openTrades.length ? ` · ${openTrades.length}` : ''}` },
             { id: 'mine',    label: `My Positions${myPositions.length ? ` · ${myPositions.length}` : ''}` },
             { id: 'history', label: 'History' },
-            ...(isAdmin ? [{ id: 'admin' as const, label: 'Manage' }] : []),
+            ...(isAdmin
+              ? [
+                  { id: 'admin'       as const, label: 'Manage' },
+                  { id: 'withdrawals' as const, label: `Withdrawals${adminWithdrawals.filter(w => w.status === 'pending').length ? ` · ${adminWithdrawals.filter(w => w.status === 'pending').length}` : ''}` },
+                ]
+              : []),
           ] as const).map(t => (
             <button
               key={t.id}
@@ -440,7 +547,182 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             </div>
           </div>
         )}
+
+        {/* TAB: Admin Withdrawals */}
+        {view === 'withdrawals' && isAdmin && !loading && (
+          <div className="space-y-3">
+            <p className="text-[11px] text-gray-500">
+              Approve withdrawals after sending BTC manually. Reject to refund the user&apos;s balance.
+            </p>
+            {adminWithdrawals.length === 0 && (
+              <div className="rounded-xl bg-white/5 border border-white/10 px-4 py-10 text-center text-sm text-gray-500">
+                No withdrawal requests yet.
+              </div>
+            )}
+            {adminWithdrawals.map(w => {
+              const statusCfg = w.status === 'pending'   ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                              : w.status === 'completed' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                                                          : 'bg-red-500/15 text-red-300 border-red-500/40'
+              return (
+                <div key={w.id} className="rounded-2xl border border-white/10 bg-[#131722] p-4">
+                  <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-white truncate">{w.user?.name ?? w.user?.email ?? 'Unknown'}</div>
+                      {w.user?.name && <div className="text-[11px] text-gray-500 truncate">{w.user.email}</div>}
+                      <div className="text-[11px] text-gray-500 mt-1">Current balance: <span className="text-white tabular-nums">{fmtBtc(w.user?.teamBalanceBtc ?? 0)} BTC</span></div>
+                    </div>
+                    <div className="text-right">
+                      <span className={`inline-block text-[10px] font-black px-2 py-0.5 rounded-md border uppercase tracking-wider ${statusCfg}`}>{w.status}</span>
+                      <div className="text-[10px] text-gray-500 mt-1">{timeAgo(w.createdAt)}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div className="bg-white/5 rounded-lg px-3 py-2">
+                      <div className="text-[10px] uppercase font-bold tracking-wider text-gray-500 mb-0.5">Amount</div>
+                      <div className="text-sm font-bold tabular-nums text-amber-300">{fmtBtc(w.amountBtc)} BTC</div>
+                    </div>
+                    <div className="bg-white/5 rounded-lg px-3 py-2 min-w-0">
+                      <div className="text-[10px] uppercase font-bold tracking-wider text-gray-500 mb-0.5">Destination</div>
+                      <div className="text-[11px] font-mono text-white truncate" title={w.btcAddress}>{w.btcAddress}</div>
+                    </div>
+                  </div>
+                  {w.note && <p className="text-[11px] text-gray-400 italic mb-3">&quot;{w.note}&quot;</p>}
+                  {w.txHash && (
+                    <p className="text-[10px] text-emerald-400 mb-3 font-mono break-all">tx: {w.txHash}</p>
+                  )}
+                  {w.status === 'pending' && (
+                    <div className="flex gap-2">
+                      <button onClick={() => processWithdrawal(w.id, 'complete')}
+                        className="flex-1 text-xs font-bold px-3 py-2 rounded-lg bg-emerald-600/25 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/40 transition">
+                        Mark as Paid
+                      </button>
+                      <button onClick={() => processWithdrawal(w.id, 'reject')}
+                        className="flex-1 text-xs font-bold px-3 py-2 rounded-lg bg-red-600/20 text-red-300 border border-red-500/40 hover:bg-red-600/35 transition">
+                        Reject & Refund
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* My withdrawal history — visible on Mine + History tabs for team users */}
+        {(view === 'mine' || view === 'history') && !loading && myWithdrawals.length > 0 && (
+          <div className="bg-[#131722] border border-white/10 rounded-xl p-4">
+            <p className="text-[11px] font-bold text-white uppercase tracking-wider mb-3">Withdrawal Requests · {myWithdrawals.length}</p>
+            <div className="space-y-2">
+              {myWithdrawals.map(w => (
+                <div key={w.id} className="flex items-center justify-between text-xs">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-gray-200 tabular-nums">{fmtBtc(w.amountBtc)} BTC</div>
+                    <div className="text-[10px] text-gray-500 truncate font-mono">{w.btcAddress}</div>
+                    {w.note && <div className="text-[10px] text-gray-500 italic mt-0.5">{w.note}</div>}
+                  </div>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-md border uppercase tracking-wider ${
+                    w.status === 'pending'   ? 'bg-amber-500/15 text-amber-300 border-amber-500/40' :
+                    w.status === 'completed' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' :
+                                               'bg-red-500/15 text-red-300 border-red-500/40'
+                  }`}>{w.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
+
+      {/* ── Modal: Deposit BTC (info only) ────────────────────────────────── */}
+      {depositOpen && (
+        <Modal title="Deposit BTC to your team balance" onClose={() => setDepositOpen(false)}>
+          <div className="space-y-4">
+            <div className="rounded-xl bg-red-500/10 border border-red-500/35 px-4 py-3 text-xs text-red-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-bold mb-1">BITCOIN (BTC) ONLY — Bitcoin Mainnet</p>
+                <p className="text-red-300/80 leading-relaxed">
+                  Send only BTC on the Bitcoin network to this address. Any other coin or token (ETH, USDT, BTC on a different chain, etc.) will be <strong>permanently lost</strong>. Admin will credit your team balance after the deposit confirms on-chain (~1 confirmation).
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-white/[0.03] border border-white/10 p-4 flex flex-col items-center">
+              {/* QR generated from the address — deterministic, no upload needed */}
+              <img
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(BTC_RECEIVE_ADDRESS)}&margin=8&qzone=1`}
+                alt="BTC deposit address QR"
+                width={240} height={240}
+                className="rounded-lg bg-white p-2"
+              />
+              <p className="mt-3 text-[10px] uppercase font-bold tracking-wider text-gray-500">Receive Address</p>
+              <p className="mt-1 text-xs font-mono text-white text-center break-all px-2">{BTC_RECEIVE_ADDRESS}</p>
+              <button
+                onClick={copyAddress}
+                className="mt-3 flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-white/5 text-gray-300 hover:bg-white/10 transition"
+              >
+                <Copy className="w-3 h-3" />
+                {copyToast ? 'Copied!' : 'Copy address'}
+              </button>
+            </div>
+
+            <ol className="text-[11px] text-gray-400 space-y-1.5 leading-relaxed list-decimal pl-4">
+              <li>Open your BTC wallet and send any amount to the address above.</li>
+              <li>Wait for the transaction to confirm on-chain (usually 10–30 min).</li>
+              <li>Admin will manually credit your team balance once verified.</li>
+            </ol>
+
+            <button onClick={() => setDepositOpen(false)} className="w-full bg-white/5 text-gray-300 hover:text-white py-2.5 rounded-xl text-sm font-bold transition">
+              Done
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Modal: Withdraw BTC ────────────────────────────────────────────── */}
+      {wdOpen && (
+        <Modal title="Withdraw BTC" onClose={() => setWdOpen(false)}>
+          <div className="space-y-3">
+            <div className="rounded-xl bg-amber-500/10 border border-amber-500/35 px-4 py-3 text-xs text-amber-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <p className="text-amber-300/90 leading-relaxed">
+                Enter a <strong>Bitcoin (BTC) mainnet</strong> address. Withdrawals to wrong networks or non-BTC addresses are unrecoverable. Admin reviews and pays manually — expect up to 24 h.
+              </p>
+            </div>
+            <div className="text-xs text-gray-400">
+              Available balance: <span className="font-bold text-amber-300 tabular-nums">{fmtBtc(me?.teamBalanceBtc ?? 0)} BTC</span>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Amount (BTC)</label>
+              <input
+                type="number" step="0.0001" min="0.0001"
+                value={wdAmount}
+                onChange={e => setWdAmount(e.target.value)}
+                placeholder="0.0100"
+                className="w-full bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-blue-500/60"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Your BTC Address</label>
+              <input
+                type="text"
+                value={wdAddress}
+                onChange={e => setWdAddress(e.target.value)}
+                placeholder="bc1q..."
+                className="w-full bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2.5 text-white text-xs font-mono outline-none focus:border-blue-500/60"
+              />
+              <p className="mt-1 text-[10px] text-gray-500">Double-check this — funds sent to the wrong address are unrecoverable.</p>
+            </div>
+            {wdErr && <p className="text-xs text-red-400">{wdErr}</p>}
+            <div className="flex gap-2 pt-1">
+              <button onClick={submitWithdraw} disabled={wdBusy}
+                className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white py-2.5 rounded-xl text-sm font-bold transition">
+                {wdBusy ? 'Submitting…' : 'Submit Withdrawal'}
+              </button>
+              <button onClick={() => setWdOpen(false)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm transition">Cancel</button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* ── Modal: Open position (team) ───────────────────────────────────── */}
       {posModal && (
@@ -652,13 +934,22 @@ function TradeCard({
         </div>
       </div>
 
-      {/* Levels */}
-      <div className="grid grid-cols-4 gap-2 mb-3">
+      {/* Levels — full 5-cell grid */}
+      <div className="grid grid-cols-5 gap-1.5 mb-3">
         <Lvl label="Entry" value={trade.entryPrice ?? (trade.entryLow + trade.entryHigh) / 2} tone="white" hint={trade.entryPrice ? 'Filled' : `${fmtPrice(trade.entryLow)}–${fmtPrice(trade.entryHigh)}`} />
         <Lvl label="SL"    value={trade.stopLoss}   tone="red"   />
+        <Lvl label="TP1"   value={trade.tp1}         tone="green" />
         <Lvl label="TP2"   value={trade.tp2}         tone="green" />
-        <Lvl label={trade.closePrice ? 'Close' : 'TP3'} value={trade.closePrice ?? trade.tp3} tone={trade.closePrice ? 'amber' : 'green'} />
+        <Lvl label="TP3"   value={trade.tp3}         tone="green" />
       </div>
+
+      {/* Close price banner (visible when trade is closed) */}
+      {trade.closePrice != null && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2 mb-3 flex items-center justify-between text-xs">
+          <span className="text-amber-300 font-bold uppercase tracking-wider text-[10px]">Closed at</span>
+          <span className="text-white font-bold tabular-nums">{fmtPrice(trade.closePrice)}</span>
+        </div>
+      )}
 
       {/* Admin-only: full participants list */}
       {isAdmin && trade.allPositions && trade.allPositions.length > 0 && (

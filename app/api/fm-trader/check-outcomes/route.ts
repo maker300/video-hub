@@ -273,6 +273,81 @@ export async function GET(req: Request) {
 
   await Promise.allSettled(updates)
 
+  // ── 4b. Auto-close LiveTrades when matching FM Trader prediction hits TP1 ───
+  // When any FMPrediction resolves with outcome 'tp1_hit', mirror that to any
+  // OPEN LiveTrade on the same slug + decision. Settles all positions at the
+  // TP1 price (admins don't need to manually close — the underlying call
+  // hitting TP1 IS the close signal).
+  //
+  // Why only TP1 and not TP2/TP3: TP1 is the high-confidence target; TP2/TP3
+  // are stretch goals admins typically scale out of manually. Auto-close on
+  // TP1 captures the win cleanly.
+  for (const pred of pending) {
+    const newOutcomePred = await prisma.fMPrediction.findUnique({
+      where:  { id: pred.id },
+      select: { outcome: true },
+    })
+    if (newOutcomePred?.outcome !== 'tp1_hit') continue
+
+    const matches = await prisma.liveTrade.findMany({
+      where: {
+        slug:     pred.slug,
+        decision: pred.decision,
+        status:   'open',                       // must already have entry set
+      },
+      include: { positions: { where: { status: 'open' } } },
+    })
+    for (const lt of matches) {
+      const entry = lt.entryPrice
+      if (!entry || entry <= 0) continue
+      const closeAt = pred.tp1                  // fetched from prediction's TP1
+      const pnlPct = lt.decision === 'BUY'
+        ? (closeAt - entry) / entry
+        : (entry - closeAt) / entry
+
+      try {
+        await prisma.$transaction(async tx => {
+          for (const pos of lt.positions) {
+            const pnlBtc = pos.amountBtc * pnlPct
+            await tx.user.update({
+              where: { id: pos.userId },
+              data:  { teamBalanceBtc: { increment: pos.amountBtc + pnlBtc } },
+            })
+            await tx.liveTradePosition.update({
+              where: { id: pos.id },
+              data:  { status: 'closed', pnlBtc, closedAt: new Date() },
+            })
+          }
+          await tx.liveTrade.update({
+            where: { id: lt.id },
+            data:  {
+              closePrice: closeAt,
+              pnlPct,
+              status:     'closed',
+              closedAt:   new Date(),
+              note:       `Auto-closed when ${pred.display} ${pred.decision} hit TP1 (${closeAt})`,
+            },
+          })
+        })
+        // Fire-and-forget bell notification (mirrors the admin close path)
+        try {
+          const { notifyTeamUsers } = await import('@/lib/team-notify')
+          const pct  = (pnlPct * 100).toFixed(2)
+          const sign = pnlPct > 0 ? '+' : ''
+          void notifyTeamUsers({
+            email:   false,
+            subject: `${lt.decision} ${lt.display} auto-closed at TP1 (${sign}${pct}%)`,
+            message: `The underlying FM Trader signal for ${lt.display} hit TP1 (${closeAt}). The live trade was auto-closed and all positions settled. Outcome: ${sign}${pct}%. Open the Live Trade page to see your updated balance.`,
+          })
+        } catch (notifyErr) {
+          console.error('[check-outcomes] live-trade notify failed:', notifyErr)
+        }
+      } catch (e) {
+        console.error('[check-outcomes] live-trade auto-close failed:', e)
+      }
+    }
+  }
+
   // ── 5. Trade monitoring advisories for still-pending predictions ─────────────
   // For each pending prediction that was NOT just resolved, check price position
   // and emit advisories: cancel (urgent), move SL to breakeven, trail SL to profit.

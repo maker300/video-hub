@@ -34,6 +34,8 @@ model User {
   adminNotifications  AdminNotification[]
   liveTradePositions  LiveTradePosition[]
   liveTradesApproved  LiveTrade[]           @relation("LiveTradeApprover")
+  withdrawals         Withdrawal[]
+  withdrawalsProcessed Withdrawal[]         @relation("WithdrawalProcessor")
 }
 
 model Account {
@@ -452,4 +454,27 @@ model LiveTradePosition {
 
   @@unique([liveTradeId, userId])                    // one position per user per trade
   @@index([userId, status])
+}
+
+// ── Withdrawal — team user's BTC payout request, reviewed by admin ────────────
+// Flow: user submits → balance escrowed (decremented immediately) → admin
+// completes (paid out) OR rejects (balance refunded). Status is single-write
+// on admin action; no partial states.
+model Withdrawal {
+  id          String   @id @default(cuid())
+  userId      String
+  amountBtc   Float                                  // amount requested (BTC)
+  btcAddress  String                                 // destination wallet address
+  status      String   @default("pending")           // 'pending' | 'completed' | 'rejected'
+  note        String?                                // admin reason on reject / tx note on complete
+  txHash      String?                                // BTC transaction hash on completion
+  createdAt   DateTime @default(now())
+  processedAt DateTime?
+  processedBy String?
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  processor   User?    @relation("WithdrawalProcessor", fields: [processedBy], references: [id])
+
+  @@index([userId, status])
+  @@index([status, createdAt])
 }
