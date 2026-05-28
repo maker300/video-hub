@@ -434,8 +434,8 @@ model LiveTrade {
   // is reproducible even if rates change in the future.
   slippagePct        Float   @default(0.0005)
   // Performance fee taken from POSITIVE net PnL only (after slippage).
-  // Defaults to 0.10 (10%). 0 on losing trades.
-  feePct             Float   @default(0.10)
+  // Defaults to 0.25 (25%). 0 on losing trades.
+  feePct             Float   @default(0.25)
   // Timing
   createdAt    DateTime @default(now())
   openedAt     DateTime?
