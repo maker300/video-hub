@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Settings, ChevronDown, Shield, Bell, TrendingDown, Minus, Mail } from 'lucide-react'
+import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Settings, ChevronDown, Shield, Bell, TrendingDown, Minus, Mail, Zap } from 'lucide-react'
 import { useSession, signOut } from 'next-auth/react'
 import { getProgress } from '@/lib/progress'
 import { totalLessons } from '@/lib/courseData'
@@ -208,6 +208,12 @@ export default function Navbar() {
               <Link href="/analysis" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
                 <LineChart className="w-4 h-4" />
                 Analysis
+              </Link>
+            )}
+            {(session?.user?.role === 'team' || session?.user?.role === 'admin') && (
+              <Link href="/analysis/live-trades" className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition-colors text-sm font-medium">
+                <Zap className="w-4 h-4" />
+                Live Trade
               </Link>
             )}
             {session?.user?.role === 'admin' && (
@@ -662,6 +668,16 @@ export default function Navbar() {
               >
                 <LineChart className="w-4 h-4" />
                 <span className="text-sm font-medium">Analysis</span>
+              </Link>
+            )}
+            {(session?.user?.role === 'team' || session?.user?.role === 'admin') && (
+              <Link
+                href="/analysis/live-trades"
+                className="flex items-center gap-2 text-amber-300 hover:text-amber-200 px-2 py-1.5 rounded-lg hover:bg-amber-500/10 transition-all"
+                onClick={() => setMobileOpen(false)}
+              >
+                <Zap className="w-4 h-4" />
+                <span className="text-sm font-medium">Live Trade</span>
               </Link>
             )}
             {session?.user?.role === 'admin' && (

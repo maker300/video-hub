@@ -12,7 +12,7 @@ export async function PATCH(req: Request, { params }: Params) {
     if (!isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const { id } = await params
-    let body: { name?: string; email?: string; role?: string; password?: string } = {}
+    let body: { name?: string; email?: string; role?: string; password?: string; teamBalanceBtc?: number } = {}
     try { body = await req.json() } catch {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
     }
@@ -21,11 +21,18 @@ export async function PATCH(req: Request, { params }: Params) {
     if (body.name  !== undefined) data.name  = body.name?.trim() || null
     if (body.email !== undefined) data.email = body.email.trim().toLowerCase()
     if (body.role  !== undefined) {
-      const ALLOWED_ROLES = ['user', 'admin']
+      const ALLOWED_ROLES = ['user', 'team', 'admin']
       if (!ALLOWED_ROLES.includes(body.role)) {
         return NextResponse.json({ error: 'Invalid role' }, { status: 400 })
       }
       data.role = body.role
+    }
+    if (body.teamBalanceBtc !== undefined) {
+      const v = Number(body.teamBalanceBtc)
+      if (!Number.isFinite(v) || v < 0) {
+        return NextResponse.json({ error: 'teamBalanceBtc must be a non-negative number' }, { status: 400 })
+      }
+      data.teamBalanceBtc = v
     }
 
     if (body.password) {

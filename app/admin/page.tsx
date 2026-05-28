@@ -34,6 +34,7 @@ interface UserRow {
   name:          string | null
   email:         string
   role:          string
+  teamBalanceBtc?: number | null
   hasPassword:   boolean
   createdAt:     string
   emailVerified: string | null
@@ -548,7 +549,7 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
   const [pwdUser,    setPwdUser]    = useState<UserRow | null>(null)
   const [delUser,    setDelUser]    = useState<UserRow | null>(null)
   const [accessUser, setAccessUser] = useState<UserRow | null>(null)
-  const [editForm,   setEditForm]   = useState({ name: '', email: '', role: 'user' })
+  const [editForm,   setEditForm]   = useState({ name: '', email: '', role: 'user', teamBalanceBtc: '' })
   const [pwdForm,    setPwdForm]    = useState({ password: '', confirm: '', show: false })
   const [saving,     setSaving]     = useState(false)
   const [msg,        setMsg]        = useState('')
@@ -587,13 +588,32 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
     (u.name ?? '').toLowerCase().includes(search.toLowerCase())
   )
 
-  function openEdit(u: UserRow) { setEditing(u); setEditForm({ name: u.name ?? '', email: u.email, role: u.role }); setMsg('') }
+  function openEdit(u: UserRow) {
+    setEditing(u)
+    setEditForm({
+      name: u.name ?? '',
+      email: u.email,
+      role: u.role,
+      teamBalanceBtc: u.teamBalanceBtc != null ? String(u.teamBalanceBtc) : '0',
+    })
+    setMsg('')
+  }
 
   async function saveEdit() {
     if (!editing) return
     setSaving(true)
+    const balanceNum = Number(editForm.teamBalanceBtc)
+    const payload: Record<string, unknown> = {
+      name:  editForm.name,
+      email: editForm.email,
+      role:  editForm.role,
+    }
+    if (editForm.role === 'team' || editForm.role === 'admin') {
+      // Only set teamBalanceBtc for users who actually need it
+      payload.teamBalanceBtc = Number.isFinite(balanceNum) && balanceNum >= 0 ? balanceNum : 0
+    }
     const res = await fetch(`/api/admin/users/${editing.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editForm),
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     })
     setSaving(false)
     if (res.ok) { setMsg('Saved.'); load(true); setTimeout(() => setEditing(null), 800) }
@@ -752,10 +772,17 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
                     </td>
                     <td className="px-4 py-3">
                       <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                        u.role === 'admin' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-gray-400'
+                        u.role === 'admin' ? 'bg-amber-500/20 text-amber-300'
+                        : u.role === 'team'  ? 'bg-purple-500/20 text-purple-300'
+                                              : 'bg-white/10 text-gray-400'
                       }`}>
                         {u.role}
                       </span>
+                      {(u.role === 'team' || u.role === 'admin') && u.teamBalanceBtc != null && u.teamBalanceBtc > 0 && (
+                        <p className="text-[9px] text-amber-400/80 mt-0.5 tabular-nums font-bold">
+                          ₿ {u.teamBalanceBtc.toFixed(4)}
+                        </p>
+                      )}
                     </td>
                     {/* Analysis Access column */}
                     <td className="px-4 py-3">
@@ -851,9 +878,30 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
               <select value={editForm.role} onChange={e => setEditForm(f => ({ ...f, role: e.target.value }))}
                 className="w-full bg-[#0a0f1e] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500/50">
                 <option value="user">user</option>
+                <option value="team">team</option>
                 <option value="admin">admin</option>
               </select>
+              <p className="mt-1 text-[10px] text-gray-600">
+                {editForm.role === 'team' && 'Team users can access Live Trade and stake BTC into approved trades.'}
+                {editForm.role === 'admin' && 'Admin has full access — including Live Trade management.'}
+                {editForm.role === 'user' && 'Regular user — no Live Trade access.'}
+              </p>
             </div>
+            {(editForm.role === 'team' || editForm.role === 'admin') && (
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">Team Fund Balance (BTC)</label>
+                <input
+                  type="number" step="0.0001" min="0"
+                  value={editForm.teamBalanceBtc}
+                  onChange={e => setEditForm(f => ({ ...f, teamBalanceBtc: e.target.value }))}
+                  placeholder="0.0000"
+                  className="w-full bg-[#0a0f1e] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white tabular-nums focus:outline-none focus:border-amber-500/50"
+                />
+                <p className="mt-1 text-[10px] text-gray-600">
+                  Set this user&apos;s starting BTC balance for Live Trade. Decremented on open, credited back with PnL on close.
+                </p>
+              </div>
+            )}
             {msg && <p className={`text-xs ${msg === 'Saved.' ? 'text-emerald-400' : 'text-red-400'}`}>{msg}</p>}
             <div className="flex gap-3 pt-1">
               <button onClick={saveEdit} disabled={saving}

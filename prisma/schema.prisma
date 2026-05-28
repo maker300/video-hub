@@ -13,7 +13,9 @@ model User {
   emailVerified DateTime?
   image         String?
   password      String?
-  role          String    @default("user")
+  role          String    @default("user")    // 'user' | 'team' | 'admin'
+  // Team-fund BTC balance — set by admin, debited on position open, credited on close
+  teamBalanceBtc  Float    @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -30,6 +32,8 @@ model User {
   pairSubscriptions   PairSubscription[]
   tradeUpdates        TradeUpdate[]
   adminNotifications  AdminNotification[]
+  liveTradePositions  LiveTradePosition[]
+  liveTradesApproved  LiveTrade[]           @relation("LiveTradeApprover")
 }
 
 model Account {
@@ -384,4 +388,65 @@ model TradeUpdate {
   @@unique([predictionId, userId, type])
   @@index([userId, read])
   @@index([createdAt])
+}
+
+// ── Live Trade — admin-approved tradeable position open to Team users ─────────
+// Lifecycle: pending (just approved, no entry) → open (admin set entryPrice)
+//          → closed (admin set closePrice; positions auto-settle vs balances)
+model LiveTrade {
+  id           String   @id @default(cuid())
+  // Trade specs
+  slug         String
+  display      String
+  decision     String                                // 'BUY' | 'SELL'
+  entryLow     Float                                 // suggested zone (info only)
+  entryHigh    Float
+  stopLoss     Float
+  tp1          Float
+  tp2          Float
+  tp3          Float
+  rrRatio      String
+  confidence   Int
+  setupGrade   String?
+  // Status flow
+  status       String   @default("pending")          // 'pending' | 'open' | 'closed' | 'cancelled'
+  entryPrice   Float?                                // admin sets when trade is filled
+  closePrice   Float?                                // admin sets when trade is closed
+  pnlPct       Float?                                // (close - entry) / entry, signed by direction
+  // Timing
+  createdAt    DateTime @default(now())
+  openedAt     DateTime?
+  closedAt     DateTime?
+  // Audit
+  approvedBy   String
+  approver     User     @relation("LiveTradeApprover", fields: [approvedBy], references: [id])
+  // Optional link back to FM Trader prediction that generated this trade
+  predictionId String?
+  // Optional admin note shown to team users (context, instructions)
+  note         String?
+
+  positions    LiveTradePosition[]
+
+  @@index([status, createdAt])
+  @@index([slug, status])
+}
+
+// ── LiveTradePosition — a team user's stake in a LiveTrade ────────────────────
+// Amount is deducted from User.teamBalanceBtc at open. At close, the position's
+// PnL (amountBtc × pnlPct) plus the original stake are credited back to balance.
+model LiveTradePosition {
+  id          String   @id @default(cuid())
+  liveTradeId String
+  userId      String
+  amountBtc   Float                                  // team user's stake (BTC) at open
+  pnlBtc      Float?                                 // amountBtc × pnlPct (computed at close)
+  status      String   @default("open")              // 'open' | 'closed'
+  openedAt    DateTime @default(now())
+  closedAt    DateTime?
+
+  liveTrade LiveTrade @relation(fields: [liveTradeId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([liveTradeId, userId])                    // one position per user per trade
+  @@index([userId, status])
 }
