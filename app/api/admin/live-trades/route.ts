@@ -58,7 +58,10 @@ export async function POST(req: Request) {
     predictionId?: string
     note?:      string
     suggestedAmountBtc?: number
+    leverage?:  number
   }
+
+  const ALLOWED_LEVERAGE = [20, 50, 100, 300, 500]
 
   if (!body.slug || !body.display || !body.decision || !body.stopLoss || !body.tp1) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
@@ -87,6 +90,10 @@ export async function POST(req: Request) {
         typeof body.suggestedAmountBtc === 'number' && body.suggestedAmountBtc > 0
           ? body.suggestedAmountBtc
           : null,
+      leverage:
+        typeof body.leverage === 'number' && ALLOWED_LEVERAGE.includes(body.leverage)
+          ? body.leverage
+          : undefined,   // fall back to schema default (300)
       approvedBy:  admin.id,
     },
   })

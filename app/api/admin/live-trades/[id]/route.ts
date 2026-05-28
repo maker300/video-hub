@@ -90,14 +90,19 @@ export async function PATCH(req: Request, { params }: Params) {
     if (!entry || entry <= 0) {
       return NextResponse.json({ error: 'Entry price must be set before closing' }, { status: 400 })
     }
+    // Raw price-change % (unleveraged) — stored on the trade for reference
     const pnlPct = trade.decision === 'BUY'
       ? (body.closePrice - entry) / entry
       : (entry - body.closePrice) / entry
+    // Leveraged PnL multiplier: a 0.5% move at 1:500 leverage = 250% on stake
+    const leverage = trade.leverage ?? 300
 
     await prisma.$transaction(async tx => {
       for (const pos of trade.positions.filter(p => p.status === 'open')) {
-        const pnlBtc  = pos.amountBtc * pnlPct
-        // Credit back stake + PnL (so a 10% gain on 0.1 BTC returns 0.11 BTC)
+        // Cap loss at -stake — no negative balances even on liquidation moves
+        const rawPnl   = pos.amountBtc * pnlPct * leverage
+        const pnlBtc   = Math.max(rawPnl, -pos.amountBtc)
+        // Credit back stake + PnL (capped). If pnlBtc = -stake the credit is 0.
         await tx.user.update({
           where: { id: pos.userId },
           data:  { teamBalanceBtc: { increment: pos.amountBtc + pnlBtc } },
@@ -118,9 +123,11 @@ export async function PATCH(req: Request, { params }: Params) {
         },
       })
     })
-    // Bell-only notification — close summary
-    const pct = (pnlPct * 100).toFixed(2)
-    const sign = pnlPct > 0 ? '+' : ''
+    // Bell-only notification — close summary uses LEVERAGED % so user
+    // sees the impact on their actual stake (capped at -100%)
+    const leveragedPct = Math.max(pnlPct * leverage, -1)
+    const pct = (leveragedPct * 100).toFixed(2)
+    const sign = leveragedPct > 0 ? '+' : ''
     void notifyTeamUsers({
       email:   false,
       linkUrl: '/analysis/live-trades',

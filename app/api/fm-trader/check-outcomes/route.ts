@@ -319,10 +319,12 @@ export async function GET(req: Request) {
         ? (closeAt - entry) / entry
         : (entry - closeAt) / entry
 
+      const leverage = lt.leverage ?? 300
       try {
         await prisma.$transaction(async tx => {
           for (const pos of lt.positions) {
-            const pnlBtc = pos.amountBtc * pnlPct
+            const rawPnl = pos.amountBtc * pnlPct * leverage
+            const pnlBtc = Math.max(rawPnl, -pos.amountBtc)   // floor at -stake
             await tx.user.update({
               where: { id: pos.userId },
               data:  { teamBalanceBtc: { increment: pos.amountBtc + pnlBtc } },
@@ -343,11 +345,13 @@ export async function GET(req: Request) {
             },
           })
         })
-        // Fire-and-forget bell notification (mirrors the admin close path)
+        // Fire-and-forget bell notification — leveraged % so user sees the
+        // actual impact on their stake (capped at -100%)
         try {
           const { notifyTeamUsers } = await import('@/lib/team-notify')
-          const pct  = (pnlPct * 100).toFixed(2)
-          const sign = pnlPct > 0 ? '+' : ''
+          const leveragedPct = Math.max(pnlPct * leverage, -1)
+          const pct  = (leveragedPct * 100).toFixed(2)
+          const sign = leveragedPct > 0 ? '+' : ''
           void notifyTeamUsers({
             email:   false,
             linkUrl: '/analysis/live-trades',

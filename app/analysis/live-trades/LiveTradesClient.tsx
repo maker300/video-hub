@@ -53,6 +53,7 @@ interface LiveTrade {
   rrRatio:      string
   confidence:   number
   setupGrade:   string | null
+  leverage:     number
   status:       'pending' | 'open' | 'closed' | 'cancelled'
   entryPrice:   number | null
   closePrice:   number | null
@@ -176,6 +177,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     tp1: '', tp2: '', tp3: '',
     confidence: '70', setupGrade: 'B', note: '',
     suggestedAmountBtc: '',
+    leverage: 300 as 20 | 50 | 100 | 300 | 500,
   })
 
   // ── Load data ──────────────────────────────────────────────────────────────
@@ -408,12 +410,13 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
           setupGrade: f.setupGrade || undefined,
           note:       f.note.trim() || undefined,
           suggestedAmountBtc: Number.isFinite(suggested) && suggested > 0 ? suggested : undefined,
+          leverage:           f.leverage,
         }),
       })
       const j = await res.json()
       if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`)
       setNewModal(false)
-      setNewForm({ slug: '', display: '', decision: 'BUY', entryLow: '', entryHigh: '', stopLoss: '', tp1: '', tp2: '', tp3: '', confidence: '70', setupGrade: 'B', note: '', suggestedAmountBtc: '' })
+      setNewForm({ slug: '', display: '', decision: 'BUY', entryLow: '', entryHigh: '', stopLoss: '', tp1: '', tp2: '', tp3: '', confidence: '70', setupGrade: 'B', note: '', suggestedAmountBtc: '', leverage: 300 })
       await load()
     } catch (e) {
       setNewErr(e instanceof Error ? e.message : 'Failed')
@@ -950,6 +953,26 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               </Field>
             </div>
             <div className="col-span-2">
+              <Field label="Leverage — amplifies stake P/L by this multiplier (loss capped at -100% of stake). Default 1:500 for crypto, 1:300 otherwise.">
+                <div className="grid grid-cols-5 gap-1.5">
+                  {([20, 50, 100, 300, 500] as const).map(lv => (
+                    <button
+                      key={lv}
+                      type="button"
+                      onClick={() => setNewForm(f => ({ ...f, leverage: lv }))}
+                      className={`py-2 rounded-lg text-xs font-black tabular-nums transition border ${
+                        newForm.leverage === lv
+                          ? 'bg-amber-500/25 text-amber-200 border-amber-500/60'
+                          : 'bg-[#0b1322] text-gray-400 border-white/10 hover:text-white'
+                      }`}
+                    >
+                      1:{lv}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            </div>
+            <div className="col-span-2">
               <Field label="Note (optional)"><textarea value={newForm.note} onChange={e => setNewForm(f => ({ ...f, note: e.target.value }))} rows={2} className={inpCls + ' resize-none'} /></Field>
             </div>
           </div>
@@ -1029,9 +1052,12 @@ function TradeCard({
       {/* Live P/L banner — only while the trade is in session (entry set, not closed) */}
       {(() => {
         if (trade.status !== 'open' || !trade.entryPrice || !livePrice) return null
-        const pct = trade.decision === 'BUY'
+        const rawPct = trade.decision === 'BUY'
           ? (livePrice - trade.entryPrice) / trade.entryPrice
           : (trade.entryPrice - livePrice) / trade.entryPrice
+        // Apply leverage, then floor leveraged loss at -100% (can't lose more than stake)
+        const lev = trade.leverage ?? 300
+        const pct = Math.max(rawPct * lev, -1)
         const tone = pct > 0 ? 'emerald' : pct < 0 ? 'red' : 'gray'
         const cls  = tone === 'emerald' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                    : tone === 'red'     ? 'bg-red-500/10 border-red-500/30 text-red-300'
@@ -1041,7 +1067,7 @@ function TradeCard({
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
               <span className="text-[10px] uppercase font-bold tracking-wider">Live P/L</span>
-              <span className="text-[10px] text-gray-500 tabular-nums">@ {fmtPrice(livePrice)}</span>
+              <span className="text-[10px] text-gray-500 tabular-nums">@ {fmtPrice(livePrice)} · 1:{lev}</span>
             </div>
             <span className="text-base font-black tabular-nums">{pct >= 0 ? '+' : ''}{(pct * 100).toFixed(2)}%</span>
           </div>
@@ -1062,6 +1088,9 @@ function TradeCard({
           <span className="text-sm font-black text-white">{trade.display}</span>
           {trade.setupGrade && (
             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-white/5 text-gray-400 border border-white/10">G{trade.setupGrade}</span>
+          )}
+          {trade.leverage && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 tabular-nums">1:{trade.leverage}</span>
           )}
           <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md border ${statusCfg.cls}`}>{statusCfg.label}</span>
         </div>

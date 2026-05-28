@@ -423,6 +423,9 @@ model LiveTrade {
   // Admin's suggested starting stake (BTC) — team users see this pre-filled in the
   // open-position dialog and can accept it or add more before submitting.
   suggestedAmountBtc Float?
+  // Leverage multiplier applied to PnL — default 300 (or 500 for crypto pairs).
+  // Allowed values: 20, 50, 100, 300, 500. Loss capped at -stake (no negative balances).
+  leverage           Int     @default(300)
   // Timing
   createdAt    DateTime @default(now())
   openedAt     DateTime?

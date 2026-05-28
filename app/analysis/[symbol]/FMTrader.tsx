@@ -581,9 +581,12 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   const brokerTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── Send to Live Trade (admin only) ───────────────────────────────────────
+  // Default leverage: 500 for crypto pairs, 300 for everything else.
+  const defaultLeverage = data.category === 'crypto' ? 500 : 300
   const [liveModalOpen, setLiveModalOpen] = useState(false)
   const [liveAmount,    setLiveAmount]    = useState('')
   const [liveNote,      setLiveNote]      = useState('')
+  const [liveLeverage,  setLiveLeverage]  = useState<number>(defaultLeverage)
   const [liveSending,   setLiveSending]   = useState(false)
   const [liveToast,     setLiveToast]     = useState('')
   const [liveError,     setLiveError]     = useState('')
@@ -611,6 +614,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
           setupGrade:  analysis.setupGrade,
           note:        liveNote.trim() || undefined,
           suggestedAmountBtc: Number.isFinite(sug) && sug > 0 ? sug : undefined,
+          leverage:    liveLeverage,
         }),
       })
       const j = await r.json().catch(() => ({} as { error?: string }))
@@ -1369,7 +1373,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                         <p className="text-[10px] text-gray-500 mt-0.5">Push this analysis to the team workspace</p>
                       </div>
                       <button
-                        onClick={() => { setLiveModalOpen(true); setLiveAmount(''); setLiveNote(''); setLiveError('') }}
+                        onClick={() => { setLiveModalOpen(true); setLiveAmount(''); setLiveNote(''); setLiveError(''); setLiveLeverage(defaultLeverage) }}
                         className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-600/20 border border-amber-500/40 text-amber-300 hover:bg-amber-600/35 transition"
                       >
                         <Send className="w-3.5 h-3.5" />
@@ -1556,6 +1560,33 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                   />
                   <p className="mt-1 text-[10px] text-gray-500">
                     Team users see this pre-filled. If set, it becomes the minimum stake — they can accept or add more.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                    Leverage
+                    <span className="ml-2 normal-case text-amber-400/80">
+                      · default {defaultLeverage}× ({data.category === 'crypto' ? 'crypto' : 'fx/indices'})
+                    </span>
+                  </label>
+                  <div className="grid grid-cols-5 gap-1">
+                    {[20, 50, 100, 300, 500].map(lv => (
+                      <button
+                        key={lv}
+                        type="button"
+                        onClick={() => setLiveLeverage(lv)}
+                        className={`py-2 rounded-lg text-[11px] font-black tabular-nums transition border ${
+                          liveLeverage === lv
+                            ? 'bg-amber-500/25 text-amber-200 border-amber-500/60'
+                            : 'bg-white/[0.04] text-gray-400 border-white/10 hover:text-white hover:bg-white/[0.08]'
+                        }`}
+                      >
+                        1:{lv}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[10px] text-gray-500">
+                    Amplifies stake P/L by this multiplier (loss capped at -100% of stake).
                   </p>
                 </div>
                 <div>
