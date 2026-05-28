@@ -11,7 +11,7 @@ import {
   TrendingUp, BookOpen, Activity, UserCheck, EyeOff, Eye, Mail, Send,
   Lock, Unlock, Calendar, RotateCcw, LineChart, MessageSquare,
   ChevronDown, ChevronUp, Bot, Clock, Flag, CircleCheck, Inbox,
-  Video, Sparkles, ExternalLink, DatabaseZap, TriangleAlert,
+  Video, Sparkles, ExternalLink, DatabaseZap, TriangleAlert, Bitcoin, ArrowUpFromLine,
 } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1184,6 +1184,171 @@ function ContentTab() {
   )
 }
 
+// ── Pending Withdrawals Section ───────────────────────────────────────────────
+// Surfaces every pending withdrawal request with full details and the same
+// Mark Paid / Reject controls that exist on the Live Trade page, so admin
+// can resolve transactions without leaving the admin panel.
+
+interface PendingWithdrawal {
+  id:         string
+  amountBtc:  number
+  btcAddress: string
+  status:     'pending' | 'completed' | 'rejected'
+  note:       string | null
+  txHash:     string | null
+  createdAt:  string
+  user:       { id: string; name: string | null; email: string; teamBalanceBtc: number } | null
+}
+
+function PendingWithdrawalsSection() {
+  const [rows,    setRows]    = useState<PendingWithdrawal[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busyId,  setBusyId]  = useState<string | null>(null)
+  const [toast,   setToast]   = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/admin/withdrawals')
+      if (!r.ok) return
+      const data = await r.json() as PendingWithdrawal[]
+      setRows(data.filter(w => w.status === 'pending'))
+    } catch { /* silent */ }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function act(id: string, action: 'complete' | 'reject') {
+    const label = action === 'reject' ? 'Reason for rejection (optional)' : 'BTC transaction hash (optional)'
+    const note = prompt(label) ?? undefined
+    const body = action === 'complete' ? { action, txHash: note } : { action, note }
+    setBusyId(id)
+    try {
+      const r = await fetch(`/api/admin/withdrawals/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!r.ok) {
+        setToast((await r.json().catch(() => ({}))).error ?? 'Failed')
+        setTimeout(() => setToast(null), 4000)
+      } else {
+        setToast(action === 'complete' ? 'Marked as paid — user notified' : 'Rejected — balance refunded, user notified')
+        setTimeout(() => setToast(null), 4000)
+        await load()
+      }
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  async function copy(text: string) {
+    try { await navigator.clipboard.writeText(text); setToast('Copied'); setTimeout(() => setToast(null), 1500) } catch { /* ignore */ }
+  }
+
+  const fmtBtc = (n: number) =>
+    Math.abs(n) >= 1    ? n.toFixed(4)
+    : Math.abs(n) >= 0.01 ? n.toFixed(5)
+                          : n.toFixed(6)
+  const timeAgo = (iso: string) => {
+    const ms = Date.now() - new Date(iso).getTime()
+    const m = Math.floor(ms / 60_000)
+    if (m < 1) return 'just now'
+    if (m < 60) return `${m}m ago`
+    const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`
+    const d = Math.floor(h / 24); return `${d}d ago`
+  }
+
+  if (loading) return null
+  if (rows.length === 0) {
+    return (
+      <div className="bg-[#131722] border border-white/10 rounded-2xl p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <ArrowUpFromLine className="w-4 h-4 text-amber-400" />
+          <h3 className="text-sm font-bold text-white">Pending Withdrawals</h3>
+        </div>
+        <p className="text-xs text-gray-500">No pending withdrawal requests right now.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-[#131722] border border-amber-500/30 rounded-2xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ArrowUpFromLine className="w-4 h-4 text-amber-400" />
+          <h3 className="text-sm font-bold text-white">Pending Withdrawals</h3>
+          <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/40 uppercase tracking-wider">
+            {rows.length} awaiting
+          </span>
+        </div>
+        <button onClick={load} className="text-[11px] text-gray-400 hover:text-white transition flex items-center gap-1">
+          <RefreshCw className="w-3 h-3" /> Refresh
+        </button>
+      </div>
+
+      {toast && (
+        <div className="text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-1.5">
+          {toast}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {rows.map(w => (
+          <div key={w.id} className="bg-white/[0.03] border border-white/10 rounded-xl p-3 sm:p-4">
+            <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-white truncate">{w.user?.name ?? w.user?.email ?? 'Unknown user'}</p>
+                {w.user?.name && <p className="text-[11px] text-gray-500 truncate">{w.user.email}</p>}
+                <p className="text-[10px] text-gray-500 mt-0.5">
+                  Balance now: <span className="text-white tabular-nums">{fmtBtc(w.user?.teamBalanceBtc ?? 0)} BTC</span> · Requested {timeAgo(w.createdAt)}
+                </p>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="flex items-baseline gap-1">
+                  <Bitcoin className="w-4 h-4 text-amber-400" />
+                  <span className="text-xl font-black text-amber-300 tabular-nums">{fmtBtc(w.amountBtc)}</span>
+                  <span className="text-[10px] text-gray-500">BTC</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 mb-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-gray-500 mb-0.5">Destination address</p>
+                  <p className="text-xs font-mono text-white break-all">{w.btcAddress}</p>
+                </div>
+                <button onClick={() => copy(w.btcAddress)} className="shrink-0 text-[11px] font-bold px-2 py-1 rounded-lg bg-white/5 text-gray-300 hover:bg-white/10 transition">
+                  Copy
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                disabled={busyId === w.id}
+                onClick={() => act(w.id, 'complete')}
+                className="flex-1 text-xs font-bold px-3 py-2 rounded-lg bg-emerald-600/25 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/40 disabled:opacity-50 transition flex items-center justify-center gap-1.5"
+              >
+                {busyId === w.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                Mark as Paid
+              </button>
+              <button
+                disabled={busyId === w.id}
+                onClick={() => act(w.id, 'reject')}
+                className="flex-1 text-xs font-bold px-3 py-2 rounded-lg bg-red-600/20 text-red-300 border border-red-500/40 hover:bg-red-600/35 disabled:opacity-50 transition"
+              >
+                Reject &amp; Refund
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Signal Notify Section ─────────────────────────────────────────────────────
 
 interface SignalAlertRow {
@@ -1453,6 +1618,7 @@ function NotifyTab({ users }: { users: UserRow[] }) {
 
   return (
     <div className="space-y-5">
+      <PendingWithdrawalsSection />
       <SignalNotifySection users={users} />
 
       <div className="bg-[#131722] border border-white/10 rounded-2xl p-5 space-y-4">
