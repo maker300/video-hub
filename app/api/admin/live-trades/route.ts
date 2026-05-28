@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getAdminSession, getSessionInfo } from '@/lib/adminAuth'
+import { notifyTeamUsers } from '@/lib/team-notify'
 
 export const dynamic = 'force-dynamic'
 
@@ -88,6 +89,23 @@ export async function POST(req: Request) {
           : null,
       approvedBy:  admin.id,
     },
+  })
+
+  // Email + bell to all team users — only event that emails. Fire-and-forget.
+  const suggestion = body.suggestedAmountBtc && body.suggestedAmountBtc > 0
+    ? ` Suggested stake: ${body.suggestedAmountBtc} BTC.`
+    : ''
+  void notifyTeamUsers({
+    email:   true,
+    subject: `New Live Trade — ${body.decision} ${body.display}`,
+    message: [
+      `Admin has approved a new live trade: ${body.decision} ${body.display} (confidence ${body.confidence}%).`,
+      `Entry zone: ${body.entryLow} – ${body.entryHigh} · Stop: ${body.stopLoss} · TP1: ${body.tp1} · TP2: ${body.tp2} · TP3: ${body.tp3}`,
+      `Status: awaiting entry price.${suggestion}`,
+      ``,
+      `Open the Live Trade page to join: https://forexmastery.org/analysis/live-trades`,
+      body.note ? `\nNote from admin: ${body.note}` : '',
+    ].filter(Boolean).join('\n'),
   })
 
   return NextResponse.json({ id: trade.id, ok: true })

@@ -1,5 +1,9 @@
 // Team + Admin: list live trades visible to the current user.
 // Returns: open trades (joinable) + every trade the user has a position in.
+//   * Team:  trade.positions contains ONLY the user's own position.
+//   * Admin: trade.positions still contains only the admin's own position (for the
+//            "Your position" inline display); a separate `allPositions` array
+//            carries every participant with user details for admin visibility.
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getSessionInfo } from '@/lib/adminAuth'
@@ -12,26 +16,56 @@ export async function GET() {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  // Recent live trades (open + recently closed for history)
+  const isAdmin = session.role === 'admin'
+
+  // Recent live trades (open + recently closed for history).
+  // Admins see EVERY trade regardless of participation; team users see open
+  // trades + their own history.
   const trades = await prisma.liveTrade.findMany({
-    where:   {
-      OR: [
-        { status: { in: ['pending', 'open'] } },
-        // Show closed/cancelled trades the user had a position in (history)
-        { positions: { some: { userId: session.id } } },
-      ],
-    },
+    where: isAdmin
+      ? {}
+      : {
+          OR: [
+            { status: { in: ['pending', 'open'] } },
+            { positions: { some: { userId: session.id } } },
+          ],
+        },
     orderBy: { createdAt: 'desc' },
-    take:    50,
+    take:    100,
     include: {
       positions: {
-        // Only return THIS user's position to keep payload small
         where:  { userId: session.id },
         select: { id: true, amountBtc: true, pnlBtc: true, status: true, openedAt: true, closedAt: true },
       },
       _count: { select: { positions: true } },
     },
   })
+
+  // Admin-only second pass: fetch every position for these trades with user
+  // details, and attach as `allPositions`. Two queries instead of a single
+  // unfiltered include because the `positions` field is already filtered by
+  // userId in the first query.
+  if (isAdmin && trades.length > 0) {
+    const ids = trades.map(t => t.id)
+    const all = await prisma.liveTradePosition.findMany({
+      where:   { liveTradeId: { in: ids } },
+      select: {
+        id: true, liveTradeId: true, amountBtc: true, pnlBtc: true, status: true,
+        openedAt: true, closedAt: true,
+        user: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { openedAt: 'desc' },
+    })
+    const byTrade = new Map<string, typeof all>()
+    for (const p of all) {
+      const list = byTrade.get(p.liveTradeId) ?? []
+      list.push(p)
+      byTrade.set(p.liveTradeId, list)
+    }
+    for (const t of trades as unknown as Array<{ id: string; allPositions?: unknown }>) {
+      t.allPositions = byTrade.get(t.id) ?? []
+    }
+  }
 
   const me = await prisma.user.findUnique({
     where:  { id: session.id },

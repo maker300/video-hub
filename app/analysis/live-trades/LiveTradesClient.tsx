@@ -16,6 +16,16 @@ interface MyPosition {
   closedAt: string | null
 }
 
+interface AdminPosition {
+  id:        string
+  amountBtc: number
+  pnlBtc:    number | null
+  status:    'open' | 'closed'
+  openedAt:  string
+  closedAt:  string | null
+  user:      { id: string; name: string | null; email: string }
+}
+
 interface LiveTrade {
   id:           string
   slug:         string
@@ -39,7 +49,8 @@ interface LiveTrade {
   createdAt:    string
   openedAt:     string | null
   closedAt:     string | null
-  positions:    MyPosition[]
+  positions:    MyPosition[]            // current user's position only
+  allPositions?: AdminPosition[]        // admin-only: every participant
   _count:       { positions: number }
 }
 
@@ -648,6 +659,41 @@ function TradeCard({
         <Lvl label="TP2"   value={trade.tp2}         tone="green" />
         <Lvl label={trade.closePrice ? 'Close' : 'TP3'} value={trade.closePrice ?? trade.tp3} tone={trade.closePrice ? 'amber' : 'green'} />
       </div>
+
+      {/* Admin-only: full participants list */}
+      {isAdmin && trade.allPositions && trade.allPositions.length > 0 && (
+        <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">
+              Participants · {trade.allPositions.length}
+            </span>
+            <span className="text-[10px] text-gray-500 tabular-nums">
+              Total staked {fmtBtc(trade.allPositions.reduce((s, p) => s + p.amountBtc, 0))} BTC
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {trade.allPositions.map(p => (
+              <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
+                <div className="min-w-0 flex-1">
+                  <div className="text-gray-200 font-medium truncate">{p.user.name ?? p.user.email}</div>
+                  {p.user.name && <div className="text-[10px] text-gray-600 truncate">{p.user.email}</div>}
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-bold text-amber-300 tabular-nums">{fmtBtc(p.amountBtc)} BTC</div>
+                  {p.status === 'closed' && p.pnlBtc != null && (
+                    <div className={`text-[10px] font-bold tabular-nums ${p.pnlBtc > 0 ? 'text-emerald-300' : p.pnlBtc < 0 ? 'text-red-300' : 'text-gray-500'}`}>
+                      {p.pnlBtc >= 0 ? '+' : ''}{fmtBtc(p.pnlBtc)}
+                    </div>
+                  )}
+                  {p.status === 'open' && (
+                    <div className="text-[10px] text-blue-400">open</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* My position */}
       {myPos && (

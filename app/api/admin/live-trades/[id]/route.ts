@@ -11,6 +11,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getAdminSession } from '@/lib/adminAuth'
+import { notifyTeamUsers } from '@/lib/team-notify'
 
 export const dynamic = 'force-dynamic'
 
@@ -71,6 +72,12 @@ export async function PATCH(req: Request, { params }: Params) {
         note:       body.note ?? trade.note,
       },
     })
+    // Bell-only notification — no email this time
+    void notifyTeamUsers({
+      email:   false,
+      subject: `Trade in session — ${trade.decision} ${trade.display}`,
+      message: `Admin has set the entry price for ${trade.decision} ${trade.display} at ${body.entryPrice}. The trade is now in session and no longer accepts new participants. Existing positions will settle when the trade closes.`,
+    })
   }
 
   // Set close price (move to 'closed', settle all positions)
@@ -109,6 +116,14 @@ export async function PATCH(req: Request, { params }: Params) {
           note:       body.note ?? trade.note,
         },
       })
+    })
+    // Bell-only notification — close summary
+    const pct = (pnlPct * 100).toFixed(2)
+    const sign = pnlPct > 0 ? '+' : ''
+    void notifyTeamUsers({
+      email:   false,
+      subject: `${trade.decision} ${trade.display} closed at ${body.closePrice} (${sign}${pct}%)`,
+      message: `Admin has closed the ${trade.decision} ${trade.display} trade at ${body.closePrice}. Outcome: ${sign}${pct}%. All positions have been settled and balances updated. Open the Live Trade page to review your result.`,
     })
     return NextResponse.json({ ok: true, pnlPct })
   }
