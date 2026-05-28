@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import { useSession } from 'next-auth/react'
 import {
   X, TrendingUp, TrendingDown, Minus, Loader2, AlertTriangle,
@@ -553,6 +554,51 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   const [riskPct,        setRiskPct]        = useState('1')
   const [brokerCountdown, setBrokerCountdown] = useState('')
   const brokerTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Send to Live Trade (admin only) ───────────────────────────────────────
+  const [liveModalOpen, setLiveModalOpen] = useState(false)
+  const [liveAmount,    setLiveAmount]    = useState('')
+  const [liveNote,      setLiveNote]      = useState('')
+  const [liveSending,   setLiveSending]   = useState(false)
+  const [liveToast,     setLiveToast]     = useState('')
+  const [liveError,     setLiveError]     = useState('')
+
+  async function sendToLiveTrade() {
+    if (!analysis || analysis.decision === 'NO TRADE') return
+    setLiveSending(true); setLiveError('')
+    try {
+      const sug = Number(liveAmount)
+      const r = await fetch('/api/admin/live-trades', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug:        data.slug,
+          display:     data.display,
+          decision:    analysis.decision,
+          entryLow:    analysis.entryZone[0],
+          entryHigh:   analysis.entryZone[1],
+          stopLoss:    analysis.stopLoss,
+          tp1:         analysis.tp1,
+          tp2:         analysis.tp2,
+          tp3:         analysis.tp3,
+          rrRatio:     analysis.rrRatio,
+          confidence:  analysis.confidence,
+          setupGrade:  analysis.setupGrade,
+          note:        liveNote.trim() || undefined,
+          suggestedAmountBtc: Number.isFinite(sug) && sug > 0 ? sug : undefined,
+        }),
+      })
+      const j = await r.json().catch(() => ({} as { error?: string }))
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
+      setLiveToast(`Sent to Live Trade — ${analysis.decision} ${data.display} awaiting entry`)
+      setLiveModalOpen(false); setLiveAmount(''); setLiveNote('')
+      setTimeout(() => setLiveToast(''), 6000)
+    } catch (e) {
+      setLiveError(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setLiveSending(false)
+    }
+  }
 
   async function sendToBroker() {
     if (!analysis || analysis.decision === 'NO TRADE') return
@@ -1289,6 +1335,30 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                       </div>
                     </div>
                   )}
+                  {/* Admin: Send this analysis to the Live Trade workspace for team users */}
+                  {isAdmin && analysis.decision !== 'NO TRADE' && (
+                    <div className="flex items-center gap-3 bg-amber-500/[0.06] border border-amber-500/25 rounded-xl px-4 py-3">
+                      <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-amber-300">Live Trade</p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">Push this analysis to the team workspace</p>
+                      </div>
+                      <button
+                        onClick={() => { setLiveModalOpen(true); setLiveAmount(''); setLiveNote(''); setLiveError('') }}
+                        className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-600/20 border border-amber-500/40 text-amber-300 hover:bg-amber-600/35 transition"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        Send to Live Trade
+                      </button>
+                    </div>
+                  )}
+                  {liveToast && (
+                    <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-2.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <p className="text-xs text-emerald-300 flex-1">{liveToast}</p>
+                      <Link href="/analysis/live-trades" className="text-[11px] font-bold text-emerald-300 hover:text-emerald-200 underline">View →</Link>
+                    </div>
+                  )}
                   {analysis.decision === 'NO TRADE' && (
                     <div className="bg-[#131722] border border-white/10 rounded-xl p-6 text-center">
                       <Shield className="w-6 h-6 text-amber-400 mx-auto mb-2" />
@@ -1422,6 +1492,73 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
             Past performance does not guarantee future results. Trading involves substantial risk — never risk money you cannot afford to lose.
           </p>
         </div>
+
+        {/* ── Send to Live Trade Modal (admin) ─────────────────────────────── */}
+        {liveModalOpen && analysis && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm rounded-2xl p-4"
+            onClick={e => { if (e.target === e.currentTarget) setLiveModalOpen(false) }}
+          >
+            <div className="w-full max-w-sm bg-[#0b1322] border border-amber-500/30 rounded-2xl shadow-2xl overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 bg-[#0d1929]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-black text-white">Send to Live Trade</p>
+                    <p className="text-[10px] text-gray-500">
+                      {analysis.decision} {data.display} · Conf {analysis.confidence}%
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => setLiveModalOpen(false)} className="text-gray-500 hover:text-white transition"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="p-5 space-y-3">
+                <div className="bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-gray-400 space-y-0.5">
+                  <div className="flex justify-between"><span>Entry zone</span><span className="text-white tabular-nums">{fmt(analysis.entryZone[0], dec)} – {fmt(analysis.entryZone[1], dec)}</span></div>
+                  <div className="flex justify-between"><span>Stop loss</span><span className="text-red-300 tabular-nums">{fmt(analysis.stopLoss, dec)}</span></div>
+                  <div className="flex justify-between"><span>TP1 / TP2 / TP3</span><span className="text-emerald-300 tabular-nums">{fmt(analysis.tp1, dec)} / {fmt(analysis.tp2, dec)} / {fmt(analysis.tp3, dec)}</span></div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Suggested team stake (BTC)</label>
+                  <input
+                    type="number" step="0.0001" min="0" autoFocus
+                    value={liveAmount}
+                    onChange={e => setLiveAmount(e.target.value)}
+                    placeholder="0.05 (optional)"
+                    className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-amber-500/60"
+                  />
+                  <p className="mt-1 text-[10px] text-gray-500">
+                    Team users see this pre-filled. If set, it becomes the minimum stake — they can accept or add more.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Note (optional)</label>
+                  <textarea
+                    value={liveNote}
+                    onChange={e => setLiveNote(e.target.value)}
+                    rows={2}
+                    placeholder="Context, special instructions…"
+                    className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-amber-500/60 resize-none"
+                  />
+                </div>
+                {liveError && <p className="text-xs text-red-400">{liveError}</p>}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={sendToLiveTrade}
+                    disabled={liveSending}
+                    className="flex-1 flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white py-2.5 rounded-xl text-sm font-bold transition"
+                  >
+                    {liveSending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    {liveSending ? 'Sending…' : 'Send to Live Trade'}
+                  </button>
+                  <button onClick={() => setLiveModalOpen(false)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm transition">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Broker Approval Modal ───────────────────────────────────────── */}
         {brokerModal && analysis && (

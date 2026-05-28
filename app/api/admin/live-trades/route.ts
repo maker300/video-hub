@@ -48,6 +48,7 @@ export async function POST(req: Request) {
     setupGrade?: string
     predictionId?: string
     note?:      string
+    suggestedAmountBtc?: number
   }
 
   if (!body.slug || !body.display || !body.decision || !body.stopLoss || !body.tp1) {
@@ -73,6 +74,10 @@ export async function POST(req: Request) {
       setupGrade:  body.setupGrade,
       predictionId: body.predictionId,
       note:        body.note,
+      suggestedAmountBtc:
+        typeof body.suggestedAmountBtc === 'number' && body.suggestedAmountBtc > 0
+          ? body.suggestedAmountBtc
+          : null,
       approvedBy:  admin.id,
     },
   })

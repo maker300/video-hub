@@ -35,6 +35,7 @@ interface LiveTrade {
   closePrice:   number | null
   pnlPct:       number | null
   note:         string | null
+  suggestedAmountBtc: number | null
   createdAt:    string
   openedAt:     string | null
   closedAt:     string | null
@@ -109,6 +110,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     entryLow: '', entryHigh: '', stopLoss: '',
     tp1: '', tp2: '', tp3: '',
     confidence: '70', setupGrade: 'B', note: '',
+    suggestedAmountBtc: '',
   })
 
   // ── Load data ──────────────────────────────────────────────────────────────
@@ -220,6 +222,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
       const reward = f.decision === 'BUY' ? num(f.tp2) - num(f.entryHigh) : num(f.entryLow) - num(f.tp2)
       const rrRatio = risk > 0 ? `1:${(Math.abs(reward) / risk).toFixed(1)}` : '—'
 
+      const suggested = num(f.suggestedAmountBtc)
       const res = await fetch('/api/admin/live-trades', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -237,12 +240,13 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
           confidence: num(f.confidence),
           setupGrade: f.setupGrade || undefined,
           note:       f.note.trim() || undefined,
+          suggestedAmountBtc: Number.isFinite(suggested) && suggested > 0 ? suggested : undefined,
         }),
       })
       const j = await res.json()
       if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`)
       setNewModal(false)
-      setNewForm({ slug: '', display: '', decision: 'BUY', entryLow: '', entryHigh: '', stopLoss: '', tp1: '', tp2: '', tp3: '', confidence: '70', setupGrade: 'B', note: '' })
+      setNewForm({ slug: '', display: '', decision: 'BUY', entryLow: '', entryHigh: '', stopLoss: '', tp1: '', tp2: '', tp3: '', confidence: '70', setupGrade: 'B', note: '', suggestedAmountBtc: '' })
       await load()
     } catch (e) {
       setNewErr(e instanceof Error ? e.message : 'Failed')
@@ -353,7 +357,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 trade={t}
                 isAdmin={isAdmin}
                 myBalance={me?.teamBalanceBtc ?? 0}
-                onJoin={() => { setPosErr(null); setPosAmount(''); setPosModal({ trade: t }) }}
+                onJoin={() => { setPosErr(null); setPosAmount(t.suggestedAmountBtc ? String(t.suggestedAmountBtc) : ''); setPosModal({ trade: t }) }}
                 onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
                 onCancel={() => cancelTrade(t.id)}
@@ -439,15 +443,25 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               Available balance: <span className="font-bold text-amber-300 tabular-nums">{fmtBtc(me?.teamBalanceBtc ?? 0)} BTC</span>
             </div>
             <div>
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Amount to stake (BTC)</label>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                Amount to stake (BTC)
+                {posModal.trade.suggestedAmountBtc && (
+                  <span className="ml-2 normal-case text-amber-400">· Suggested {fmtBtc(posModal.trade.suggestedAmountBtc)}</span>
+                )}
+              </label>
               <input
                 type="number" step="0.0001" min="0"
                 autoFocus
                 value={posAmount}
                 onChange={e => setPosAmount(e.target.value)}
-                placeholder="0.0500"
+                placeholder={posModal.trade.suggestedAmountBtc ? String(posModal.trade.suggestedAmountBtc) : '0.0500'}
                 className="w-full bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-amber-500/60"
               />
+              {posModal.trade.suggestedAmountBtc && (
+                <p className="mt-1 text-[10px] text-gray-500">
+                  Admin suggested this starting stake. You can accept it or increase the amount.
+                </p>
+              )}
             </div>
             {posErr && <p className="text-xs text-red-400">{posErr}</p>}
             <div className="flex gap-2 pt-1">
@@ -529,6 +543,11 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             <Field label="TP2"><input type="number" step="0.00001" value={newForm.tp2} onChange={e => setNewForm(f => ({ ...f, tp2: e.target.value }))} className={inpCls} /></Field>
             <Field label="TP3"><input type="number" step="0.00001" value={newForm.tp3} onChange={e => setNewForm(f => ({ ...f, tp3: e.target.value }))} className={inpCls} /></Field>
             <div className="col-span-2">
+              <Field label="Suggested starting stake (BTC) — team users see this pre-filled, becomes the minimum stake">
+                <input type="number" step="0.0001" min="0" value={newForm.suggestedAmountBtc} onChange={e => setNewForm(f => ({ ...f, suggestedAmountBtc: e.target.value }))} placeholder="0.05 (optional)" className={inpCls} />
+              </Field>
+            </div>
+            <div className="col-span-2">
               <Field label="Note (optional)"><textarea value={newForm.note} onChange={e => setNewForm(f => ({ ...f, note: e.target.value }))} rows={2} className={inpCls + ' resize-none'} /></Field>
             </div>
           </div>
@@ -588,12 +607,15 @@ function TradeCard({
   hideAdminActions?: boolean
 }) {
   const myPos = trade.positions.find(p => p.status === 'open') ?? trade.positions[0]
-  const canJoin = showJoin && (trade.status === 'pending' || trade.status === 'open') && !trade.positions.length && myBalance > 0
+  // Joining is only allowed while the trade is 'pending' (admin has not yet
+  // set the entry price). Once status flips to 'open', the trade is in session
+  // and locked — no new participants until close.
+  const canJoin = showJoin && trade.status === 'pending' && !trade.positions.length && myBalance > 0
   const statusCfg = {
-    pending:   { label: 'PENDING ENTRY', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
-    open:      { label: 'OPEN',          cls: 'bg-blue-500/15 text-blue-300 border-blue-500/40' },
-    closed:    { label: 'CLOSED',        cls: 'bg-white/10 text-gray-400 border-white/15' },
-    cancelled: { label: 'CANCELLED',     cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
+    pending:   { label: 'AWAITING ENTRY',  cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+    open:      { label: 'TRADE IN SESSION', cls: 'bg-blue-500/15 text-blue-300 border-blue-500/40' },
+    closed:    { label: 'CLOSED',          cls: 'bg-white/10 text-gray-400 border-white/15' },
+    cancelled: { label: 'CANCELLED',       cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
   }[trade.status]
 
   return (
@@ -683,7 +705,17 @@ function TradeCard({
           {' · '}{trade._count.positions} stake{trade._count.positions === 1 ? '' : 's'}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {trade.suggestedAmountBtc && trade.status === 'pending' && (
+            <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 tabular-nums">
+              Suggested {fmtBtc(trade.suggestedAmountBtc)} BTC
+            </span>
+          )}
+          {trade.status === 'open' && showJoin && !trade.positions.length && (
+            <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-white/5 text-gray-500 border border-white/10 italic">
+              Locked — trade in session
+            </span>
+          )}
           {canJoin && (
             <button onClick={onJoin}
               className={`text-xs font-bold px-3 py-1.5 rounded-lg transition ${

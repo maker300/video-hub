@@ -413,6 +413,9 @@ model LiveTrade {
   entryPrice   Float?                                // admin sets when trade is filled
   closePrice   Float?                                // admin sets when trade is closed
   pnlPct       Float?                                // (close - entry) / entry, signed by direction
+  // Admin's suggested starting stake (BTC) — team users see this pre-filled in the
+  // open-position dialog and can accept it or add more before submitting.
+  suggestedAmountBtc Float?
   // Timing
   createdAt    DateTime @default(now())
   openedAt     DateTime?

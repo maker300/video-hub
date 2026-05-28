@@ -25,11 +25,25 @@ export async function POST(req: Request, { params }: Params) {
 
   const trade = await prisma.liveTrade.findUnique({
     where:   { id: liveTradeId },
-    select:  { id: true, status: true },
+    select:  { id: true, status: true, suggestedAmountBtc: true },
   })
   if (!trade) return NextResponse.json({ error: 'Trade not found' }, { status: 404 })
-  if (trade.status !== 'pending' && trade.status !== 'open') {
-    return NextResponse.json({ error: 'Trade is no longer joinable' }, { status: 400 })
+  // Locking rule: once admin sets entry price, the trade is in session and
+  // no new participants can join. Existing positions stay until close.
+  if (trade.status !== 'pending') {
+    const reason = trade.status === 'open'      ? 'Trade is now in session — entry price has been set'
+                 : trade.status === 'closed'    ? 'Trade has closed'
+                 : trade.status === 'cancelled' ? 'Trade was cancelled'
+                                                : 'Trade is no longer joinable'
+    return NextResponse.json({ error: reason }, { status: 400 })
+  }
+  // If admin set a suggested starting amount, enforce it as the MINIMUM stake —
+  // team users can accept or add more, but not go below.
+  if (trade.suggestedAmountBtc && amount < trade.suggestedAmountBtc) {
+    return NextResponse.json(
+      { error: `Minimum stake for this trade is ${trade.suggestedAmountBtc} BTC` },
+      { status: 400 },
+    )
   }
 
   try {
