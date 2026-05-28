@@ -457,11 +457,6 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 placeholder={posModal.trade.suggestedAmountBtc ? String(posModal.trade.suggestedAmountBtc) : '0.0500'}
                 className="w-full bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-amber-500/60"
               />
-              {posModal.trade.suggestedAmountBtc && (
-                <p className="mt-1 text-[10px] text-gray-500">
-                  Admin suggested this starting stake. You can accept it or increase the amount.
-                </p>
-              )}
             </div>
             {posErr && <p className="text-xs text-red-400">{posErr}</p>}
             <div className="flex gap-2 pt-1">
