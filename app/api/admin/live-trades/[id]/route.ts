@@ -25,6 +25,7 @@ export async function PATCH(req: Request, { params }: Params) {
   const body = await req.json() as {
     entryPrice?: number
     closePrice?: number
+    stopLoss?:   number
     note?:       string
     cancel?:     boolean
   }
@@ -78,6 +79,25 @@ export async function PATCH(req: Request, { params }: Params) {
       linkUrl: '/analysis/live-trades',
       subject: `Trade in session — ${trade.decision} ${trade.display}`,
       message: `Admin has set the entry price for ${trade.decision} ${trade.display} at ${body.entryPrice}. The trade is now in session and no longer accepts new participants. Existing positions will settle when the trade closes.`,
+    })
+  }
+
+  // Update stop loss — admin can adjust the SL on any live trade (pending or
+  // in-session) to tighten risk, trail to break-even, etc. Display-only —
+  // doesn't trigger an auto-close, but team users see the new level immediately.
+  if (typeof body.stopLoss === 'number' && body.stopLoss > 0) {
+    if (trade.status === 'closed' || trade.status === 'cancelled') {
+      return NextResponse.json({ error: 'Cannot adjust SL on a closed/cancelled trade' }, { status: 400 })
+    }
+    await prisma.liveTrade.update({
+      where: { id },
+      data:  { stopLoss: body.stopLoss, note: body.note ?? trade.note },
+    })
+    void notifyTeamUsers({
+      email:   false,
+      linkUrl: '/analysis/live-trades',
+      subject: `Stop loss updated — ${trade.decision} ${trade.display}`,
+      message: `Admin has moved the stop loss on ${trade.decision} ${trade.display} from ${trade.stopLoss} to ${body.stopLoss}. The trade is otherwise unchanged.`,
     })
   }
 

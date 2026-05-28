@@ -153,7 +153,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   const [posErr,     setPosErr]     = useState<string | null>(null)
 
   // Admin: edit trade modal (set entry / close / cancel)
-  const [editModal,  setEditModal]  = useState<{ trade: LiveTrade; action: 'entry' | 'close' } | null>(null)
+  const [editModal,  setEditModal]  = useState<{ trade: LiveTrade; action: 'entry' | 'close' | 'stopLoss' } | null>(null)
   const [editPrice,  setEditPrice]  = useState('')
   const [editBusy,   setEditBusy]   = useState(false)
   const [editErr,    setEditErr]    = useState<string | null>(null)
@@ -360,7 +360,9 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     if (!isFinite(p) || p <= 0) { setEditErr('Price must be a positive number'); return }
     setEditBusy(true); setEditErr(null)
     try {
-      const body = editModal.action === 'entry' ? { entryPrice: p } : { closePrice: p }
+      const body = editModal.action === 'entry'    ? { entryPrice: p }
+                 : editModal.action === 'stopLoss' ? { stopLoss:   p }
+                                                    : { closePrice: p }
       const res = await fetch(`/api/admin/live-trades/${editModal.trade.id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -565,6 +567,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 onJoin={() => { setPosErr(null); setPosAmount(t.suggestedAmountBtc ? String(t.suggestedAmountBtc) : ''); setPosModal({ trade: t }) }}
                 onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
+                onSetSL={() => { setEditErr(null); setEditPrice(String(t.stopLoss)); setEditModal({ trade: t, action: 'stopLoss' }) }}
                 onCancel={() => cancelTrade(t.id)}
               />
             ))}
@@ -584,6 +587,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 onJoin={() => null} showJoin={false}
                 onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
+                onSetSL={() => { setEditErr(null); setEditPrice(String(t.stopLoss)); setEditModal({ trade: t, action: 'stopLoss' }) }}
                 onCancel={() => cancelTrade(t.id)}
               />
             ))}
@@ -601,7 +605,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             {historyList.map(t => (
               <TradeCard key={t.id} trade={t} isAdmin={isAdmin} myBalance={me?.teamBalanceBtc ?? 0} livePrice={livePrices[t.slug] ?? null}
                 onJoin={() => null} showJoin={false}
-                onSetEntry={() => null} onSetClose={() => null} onCancel={() => null} hideAdminActions
+                onSetEntry={() => null} onSetClose={() => null} onSetSL={() => null} onCancel={() => null} hideAdminActions
               />
             ))}
           </div>
@@ -628,6 +632,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                   showJoin={false}
                   onSetEntry={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'entry' }) }}
                   onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
+                  onSetSL={() => { setEditErr(null); setEditPrice(String(t.stopLoss)); setEditModal({ trade: t, action: 'stopLoss' }) }}
                   onCancel={() => cancelTrade(t.id)}
                 />
               ))}
@@ -898,9 +903,11 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
       {/* ── Modal: Admin set entry / close ────────────────────────────────── */}
       {editModal && (
         <Modal
-          title={editModal.action === 'entry'
-            ? `Set entry price — ${editModal.trade.decision} ${editModal.trade.display}`
-            : `Set close price — ${editModal.trade.decision} ${editModal.trade.display}`}
+          title={
+            editModal.action === 'entry'    ? `Set entry price — ${editModal.trade.decision} ${editModal.trade.display}`
+            : editModal.action === 'stopLoss' ? `Move stop loss — ${editModal.trade.decision} ${editModal.trade.display}`
+            :                                   `Set close price — ${editModal.trade.decision} ${editModal.trade.display}`
+          }
           onClose={() => setEditModal(null)}
         >
           <div className="space-y-3">
@@ -910,9 +917,18 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 {editModal.trade._count.positions} position{editModal.trade._count.positions === 1 ? '' : 's'} will settle when you submit.
               </div>
             )}
+            {editModal.action === 'stopLoss' && (
+              <div className="text-xs text-gray-400">
+                Current stop loss: <span className="font-bold text-red-300">{fmtPrice(editModal.trade.stopLoss)}</span>.
+                {editModal.trade.entryPrice && <> Entry: <span className="font-bold text-white">{fmtPrice(editModal.trade.entryPrice)}</span>.</>}
+                {' '}Team users will see the new level immediately.
+              </div>
+            )}
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
-                {editModal.action === 'entry' ? 'Entry price' : 'Close price'}
+                {editModal.action === 'entry'    ? 'Entry price'
+                 : editModal.action === 'stopLoss' ? 'New stop loss'
+                 :                                   'Close price'}
               </label>
               <input
                 type="number" step="0.00001" min="0" autoFocus
@@ -1031,7 +1047,7 @@ function Modal({ title, onClose, wide = false, children }: { title: string; onCl
 }
 
 function TradeCard({
-  trade, isAdmin, myBalance, onJoin, onSetEntry, onSetClose, onCancel,
+  trade, isAdmin, myBalance, onJoin, onSetEntry, onSetClose, onSetSL, onCancel,
   showJoin = true, hideAdminActions = false, livePrice = null,
 }: {
   trade: LiveTrade
@@ -1040,6 +1056,7 @@ function TradeCard({
   onJoin: () => void
   onSetEntry: () => void
   onSetClose: () => void
+  onSetSL: () => void
   onCancel: () => void
   showJoin?: boolean
   hideAdminActions?: boolean
@@ -1265,6 +1282,9 @@ function TradeCard({
                   <Edit3 className="w-3 h-3" /> Set Entry
                 </button>
               )}
+              <button onClick={onSetSL} className="flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-red-600/15 text-red-300 border border-red-500/30 hover:bg-red-600/30 transition">
+                <Edit3 className="w-3 h-3" /> Set SL
+              </button>
               {trade.status === 'open' && (
                 <button onClick={onSetClose} className="flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600/35 transition">
                   <Edit3 className="w-3 h-3" /> Set Close
