@@ -127,7 +127,15 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   // Live prices per slug — refreshed every 60s while there are open trades
   const [livePrices, setLivePrices] = useState<Record<string, number>>({})
   const [err,        setErr]        = useState<string | null>(null)
-  const [view,       setView]       = useState<'open' | 'mine' | 'history' | 'admin' | 'withdrawals'>('open')
+  const [view,       setView]       = useState<'open' | 'mine' | 'history' | 'admin' | 'withdrawals'>(() => {
+    // Allow deep-linking via ?tab=withdrawals (used by admin alerts on withdrawal events)
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search)
+      const tab = sp.get('tab')
+      if (tab === 'mine' || tab === 'history' || tab === 'admin' || tab === 'withdrawals') return tab
+    }
+    return 'open'
+  })
 
   // Open-position modal (team action)
   const [posModal,   setPosModal]   = useState<{ trade: LiveTrade } | null>(null)
@@ -145,6 +153,10 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
   // Deposit / Withdraw modals
   const [depositOpen, setDepositOpen] = useState(false)
   const [copyToast,   setCopyToast]   = useState(false)
+  const [depNotifyAmount, setDepNotifyAmount] = useState('')
+  const [depNotifyTx,     setDepNotifyTx]     = useState('')
+  const [depNotifyBusy,   setDepNotifyBusy]   = useState(false)
+  const [depNotifyOk,     setDepNotifyOk]     = useState(false)
   const [wdOpen,      setWdOpen]      = useState(false)
   const [wdAmount,    setWdAmount]    = useState('')
   const [wdAddress,   setWdAddress]   = useState('')
@@ -309,6 +321,26 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
       setCopyToast(true)
       setTimeout(() => setCopyToast(false), 1800)
     } catch { /* clipboard unavailable */ }
+  }
+
+  async function notifyDepositSent() {
+    setDepNotifyBusy(true)
+    try {
+      const amt = Number(depNotifyAmount)
+      await fetch('/api/deposits/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amountBtc: Number.isFinite(amt) && amt > 0 ? amt : undefined,
+          txHash:    depNotifyTx.trim() || undefined,
+        }),
+      })
+      setDepNotifyOk(true)
+      setDepNotifyAmount('')
+      setDepNotifyTx('')
+      setTimeout(() => setDepNotifyOk(false), 4000)
+    } catch { /* swallow — admin will see it via on-chain anyway */ }
+    finally { setDepNotifyBusy(false) }
   }
 
   // ── Admin: set entry / close / cancel ─────────────────────────────────────
@@ -712,8 +744,36 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
             <ol className="text-[11px] text-gray-400 space-y-1.5 leading-relaxed list-decimal pl-4">
               <li>Open your BTC wallet and send any amount to the address above.</li>
               <li>Wait for the transaction to confirm on-chain (usually 10–30 min).</li>
-              <li>Admin will manually credit your team balance once verified.</li>
+              <li>Tap <strong>&quot;I&apos;ve sent it&quot;</strong> below so admin gets a Telegram alert immediately. Your balance will be credited after on-chain confirmation.</li>
             </ol>
+
+            {/* Notify admin block */}
+            <div className="rounded-xl bg-blue-500/[0.06] border border-blue-500/25 p-3 space-y-2">
+              <p className="text-[11px] font-bold text-blue-300 uppercase tracking-wider">Already sent? Let admin know</p>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="number" step="0.0001" min="0"
+                  value={depNotifyAmount}
+                  onChange={e => setDepNotifyAmount(e.target.value)}
+                  placeholder="Amount (BTC)"
+                  className="bg-[#0b1322] border border-white/15 rounded-lg px-2 py-1.5 text-white text-xs tabular-nums outline-none focus:border-blue-500/60"
+                />
+                <input
+                  type="text"
+                  value={depNotifyTx}
+                  onChange={e => setDepNotifyTx(e.target.value)}
+                  placeholder="Tx hash (optional)"
+                  className="bg-[#0b1322] border border-white/15 rounded-lg px-2 py-1.5 text-white text-[10px] font-mono outline-none focus:border-blue-500/60"
+                />
+              </div>
+              <button
+                onClick={notifyDepositSent}
+                disabled={depNotifyBusy}
+                className="w-full flex items-center justify-center gap-1.5 bg-blue-600/20 border border-blue-500/40 hover:bg-blue-600/35 disabled:opacity-50 text-blue-300 py-2 rounded-lg text-xs font-bold transition"
+              >
+                {depNotifyOk ? <><CheckCircle2 className="w-3.5 h-3.5" /> Admin notified</> : depNotifyBusy ? 'Sending…' : "I've sent it — notify admin"}
+              </button>
+            </div>
 
             <button onClick={() => setDepositOpen(false)} className="w-full bg-white/5 text-gray-300 hover:text-white py-2.5 rounded-xl text-sm font-bold transition">
               Done

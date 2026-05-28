@@ -25,6 +25,10 @@ export interface PriceNotification {
   type?:       'price' | 'signal' | 'subscription' | 'trade_update' | 'broadcast'
   confidence?: number
   rrRatio?:    string
+  // Optional deep-link target — when set, tapping the notification routes here.
+  // Used by broadcast notifications (e.g. live-trade lifecycle alerts) to
+  // jump straight to /analysis/live-trades.
+  linkUrl?:    string
 }
 
 const ALERTS_KEY = 'fm_price_alerts'

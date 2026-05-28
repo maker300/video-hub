@@ -13,6 +13,7 @@ export type CleanupKey =
   | 'readTradeUpdates'
   | 'draftScripts'
   | 'lessonAudio'
+  | 'liveTradeHistory'
 
 export interface CleanupItem {
   key:         CleanupKey
@@ -42,6 +43,7 @@ export async function GET() {
     readTradeUpdates,
     draftScripts,
     lessonAudio,
+    liveTradeHistory,
   ] = await Promise.all([
     prisma.passwordResetToken.count({ where: { expires: { lt: new Date() } } }),
     prisma.pageView.count({ where: { createdAt: { lt: NINETY_DAYS } } }),
@@ -53,6 +55,7 @@ export async function GET() {
     prisma.tradeUpdate.count({ where: { read: true } }),
     prisma.tradeScript.count({ where: { status: 'draft' } }),
     prisma.lessonAudio.count(),
+    prisma.liveTrade.count({ where: { status: { in: ['closed', 'cancelled'] } } }),
   ])
 
   const items: CleanupItem[] = [
@@ -115,6 +118,12 @@ export async function GET() {
       label: 'All Cached Lesson Audio',
       description: 'Forces re-generation of all lesson audio on next playback.',
       count: lessonAudio,
+    },
+    {
+      key: 'liveTradeHistory',
+      label: 'Live Trade History (closed + cancelled)',
+      description: 'Closed and cancelled live trades. Auto-purges after 7 days; this clears all of them now. Open and pending trades are untouched.',
+      count: liveTradeHistory,
     },
   ]
 
@@ -185,6 +194,14 @@ export async function DELETE(req: NextRequest) {
         }
         case 'lessonAudio': {
           const r = await prisma.lessonAudio.deleteMany()
+          results[key] = r.count
+          break
+        }
+        case 'liveTradeHistory': {
+          // Positions cascade-delete with their parent LiveTrade (onDelete: Cascade)
+          const r = await prisma.liveTrade.deleteMany({
+            where: { status: { in: ['closed', 'cancelled'] } },
+          })
           results[key] = r.count
           break
         }

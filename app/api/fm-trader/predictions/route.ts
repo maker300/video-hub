@@ -103,3 +103,38 @@ export async function GET(req: Request) {
 
   return NextResponse.json(predictions)
 }
+
+// ── DELETE /api/fm-trader/predictions — bulk-delete current user's history ────
+// Optional ?slug=eur-usd narrows the delete to a single pair; without it,
+// every prediction the user has made is wiped. Used by team users to reset
+// their FM Trader popup history.
+export async function DELETE(req: Request) {
+  const session = await getServerSession(authOptions)
+  if (!session?.user?.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const isAdmin = (session.user as { role?: string })?.role === 'admin'
+  const url     = new URL(req.url)
+  const slug    = url.searchParams.get('slug')
+
+  // Admin: support an optional ?userId to clear another user's history
+  if (isAdmin) {
+    const userId = url.searchParams.get('userId')
+    const where  = {
+      ...(userId ? { userId } : {}),
+      ...(slug   ? { slug   } : {}),
+    }
+    if (Object.keys(where).length === 0) {
+      return NextResponse.json({ error: 'Admin bulk delete requires ?userId or ?slug to avoid wiping every prediction.' }, { status: 400 })
+    }
+    const r = await prisma.fMPrediction.deleteMany({ where })
+    return NextResponse.json({ ok: true, deleted: r.count })
+  }
+
+  const user = await prisma.user.findUnique({ where: { email: session.user.email }, select: { id: true } })
+  if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+
+  const r = await prisma.fMPrediction.deleteMany({
+    where: { userId: user.id, ...(slug ? { slug } : {}) },
+  })
+  return NextResponse.json({ ok: true, deleted: r.count })
+}

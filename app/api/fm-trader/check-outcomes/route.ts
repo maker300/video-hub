@@ -127,9 +127,19 @@ export async function GET(req: Request) {
 
   // Rolling cleanup — runs on every tick so records disappear within an hour of
   // turning 5 hours old, regardless of when midnight housekeeping fires.
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
   await Promise.all([
     prisma.signalAlert.deleteMany({ where: { sentAt:    { lt: fiveHoursAgo } } }),
     prisma.brokerTrade.deleteMany({ where: { createdAt: { lt: fiveHoursAgo } } }),
+    // LiveTrade history: closed or cancelled trades older than 7 days. Positions
+    // cascade-delete via the FK so we don't need a separate query. Open/pending
+    // trades are never touched here regardless of age.
+    prisma.liveTrade.deleteMany({
+      where: {
+        status:   { in: ['closed', 'cancelled'] },
+        closedAt: { lt: sevenDaysAgo },
+      },
+    }),
   ])
 
   // ── 3. Fetch all pending non-expired predictions (with trade advisory updates) ─
@@ -340,6 +350,7 @@ export async function GET(req: Request) {
           const sign = pnlPct > 0 ? '+' : ''
           void notifyTeamUsers({
             email:   false,
+            linkUrl: '/analysis/live-trades',
             subject: `${lt.decision} ${lt.display} auto-closed at ${reason} (${sign}${pct}%)`,
             message: `The underlying FM Trader signal for ${lt.display} hit ${reason} (${closeAt}). The live trade was auto-closed and all positions settled. Outcome: ${sign}${pct}%. Open the Live Trade page to see your updated balance.`,
           })

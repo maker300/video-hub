@@ -97,6 +97,7 @@ export async function POST(req: Request) {
     : ''
   void notifyTeamUsers({
     email:   true,
+    linkUrl: '/analysis/live-trades',
     subject: `New Live Trade — ${body.decision} ${body.display}`,
     message: [
       `Admin has approved a new live trade: ${body.decision} ${body.display} (confidence ${body.confidence}%).`,

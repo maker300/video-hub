@@ -47,6 +47,15 @@ export async function PATCH(req: Request, { params }: Params) {
         processedBy: admin.id,
       },
     })
+    // Bell notification to the requester — transfer is now confirmed paid
+    void prisma.adminNotification.create({
+      data: {
+        userId:  w.userId,
+        subject: `✓ Withdrawal completed — ${w.amountBtc} BTC`,
+        message: `Your withdrawal of ${w.amountBtc} BTC to ${w.btcAddress} has been sent.${body.txHash ? ` Tx hash: ${body.txHash}` : ''}${body.note ? ` Note: ${body.note}` : ''} The funds should arrive after on-chain confirmation.`,
+        linkUrl: '/analysis/live-trades?tab=history',
+      },
+    }).catch(err => console.error('[withdrawal complete notify]', err))
     return NextResponse.json({ ok: true })
   }
 
@@ -67,6 +76,15 @@ export async function PATCH(req: Request, { params }: Params) {
         },
       })
     })
+    // Bell notification to the requester — balance has been refunded
+    void prisma.adminNotification.create({
+      data: {
+        userId:  w.userId,
+        subject: `Withdrawal rejected — ${w.amountBtc} BTC refunded`,
+        message: `Your withdrawal of ${w.amountBtc} BTC was not approved. The escrowed balance has been refunded to your team account.${body.note ? ` Reason: ${body.note}` : ''}`,
+        linkUrl: '/analysis/live-trades?tab=history',
+      },
+    }).catch(err => console.error('[withdrawal reject notify]', err))
     return NextResponse.json({ ok: true })
   }
 

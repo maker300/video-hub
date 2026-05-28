@@ -311,6 +311,9 @@ model AdminNotification {
   userId    String
   subject   String
   message   String
+  // Optional deep-link — when set, tapping the bell row navigates here
+  // (e.g. '/analysis/live-trades' for live-trade lifecycle alerts).
+  linkUrl   String?
   read      Boolean   @default(false)
   readAt    DateTime?
   createdAt DateTime  @default(now())

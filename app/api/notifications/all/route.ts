@@ -140,6 +140,7 @@ export async function GET() {
       id:        n.id,
       subject:   n.subject,
       message:   n.message,
+      linkUrl:   n.linkUrl,
       read:      n.read,
       createdAt: n.createdAt,
     }))

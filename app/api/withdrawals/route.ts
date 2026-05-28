@@ -7,6 +7,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getSessionInfo } from '@/lib/adminAuth'
+import { alertAdmins } from '@/lib/admin-alert'
 
 export const dynamic = 'force-dynamic'
 
@@ -73,6 +74,33 @@ export async function POST(req: Request) {
         },
       })
     })
+    // Notify admin — bell + telegram. Fire-and-forget.
+    void (async () => {
+      const requester = await prisma.user.findUnique({
+        where:  { id: session.id! },
+        select: { name: true, email: true, teamBalanceBtc: true },
+      })
+      const who = requester?.name ?? requester?.email ?? 'A team user'
+      const remaining = requester ? requester.teamBalanceBtc.toFixed(6) : '—'
+      void alertAdmins({
+        linkUrl: '/analysis/live-trades?tab=withdrawals',
+        subject: `⬆ Withdrawal request — ${amount} BTC`,
+        message: `${who} has requested a withdrawal of ${amount} BTC to ${address}. Remaining balance: ${remaining} BTC. Review and approve in the Live Trade → Withdrawals tab.`,
+        telegramHtml: [
+          `⬆ <b>Withdrawal Request</b>`,
+          ``,
+          `<b>${who}</b>`,
+          requester?.email && requester.name ? `<i>${requester.email}</i>` : '',
+          ``,
+          `Amount: <b>${amount} BTC</b>`,
+          `To: <code>${address}</code>`,
+          `Remaining balance: ${remaining} BTC`,
+          ``,
+          `🔗 https://forexmastery.org/analysis/live-trades`,
+        ].filter(Boolean).join('\n'),
+      })
+    })()
+
     return NextResponse.json({ ok: true, id: out.id })
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Unknown'

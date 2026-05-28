@@ -75,6 +75,7 @@ export async function PATCH(req: Request, { params }: Params) {
     // Bell-only notification — no email this time
     void notifyTeamUsers({
       email:   false,
+      linkUrl: '/analysis/live-trades',
       subject: `Trade in session — ${trade.decision} ${trade.display}`,
       message: `Admin has set the entry price for ${trade.decision} ${trade.display} at ${body.entryPrice}. The trade is now in session and no longer accepts new participants. Existing positions will settle when the trade closes.`,
     })
@@ -122,6 +123,7 @@ export async function PATCH(req: Request, { params }: Params) {
     const sign = pnlPct > 0 ? '+' : ''
     void notifyTeamUsers({
       email:   false,
+      linkUrl: '/analysis/live-trades',
       subject: `${trade.decision} ${trade.display} closed at ${body.closePrice} (${sign}${pct}%)`,
       message: `Admin has closed the ${trade.decision} ${trade.display} trade at ${body.closePrice}. Outcome: ${sign}${pct}%. All positions have been settled and balances updated. Open the Live Trade page to review your result.`,
     })

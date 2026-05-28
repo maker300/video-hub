@@ -7,9 +7,10 @@ import { sendBulkEmail } from '@/lib/email'
 import { buildBroadcastEmail, buildBroadcastText } from '@/lib/email-templates'
 
 export interface TeamNotifyOpts {
-  subject: string
-  message: string
-  email?:  boolean   // default false — bell only
+  subject:  string
+  message:  string
+  email?:   boolean   // default false — bell only
+  linkUrl?: string    // optional deep-link target for the bell row
 }
 
 /**
@@ -33,6 +34,7 @@ export async function notifyTeamUsers(opts: TeamNotifyOpts): Promise<void> {
         userId:  u.id,
         subject: opts.subject,
         message: opts.message,
+        linkUrl: opts.linkUrl,
       })),
       skipDuplicates: true,
     }).catch(err => console.error('[team-notify] bell failed:', err))

@@ -71,7 +71,7 @@ export default function Navbar() {
             suggestedSL: number | null; read: boolean; createdAt: string
           }>
           adminNotifications: Array<{
-            id: string; subject: string; message: string; read: boolean; createdAt: string
+            id: string; subject: string; message: string; linkUrl?: string | null; read: boolean; createdAt: string
           }>
         }
 
@@ -134,6 +134,7 @@ export default function Navbar() {
             read:        false,
             type:        'broadcast',
             rrRatio:     n.message,
+            linkUrl:     n.linkUrl ?? undefined,
           })
         }
         if (freshBC.length > 0) markBroadcastsSeen(freshBC.map(n => n.id))
@@ -289,7 +290,12 @@ export default function Navbar() {
                           return (
                             <button
                               key={n.id}
-                              onClick={() => { setNotifOpen(false); if (!isSub && !isBroadcast) router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`) }}
+                              onClick={() => {
+                                setNotifOpen(false)
+                                if (isSub) return
+                                if (isBroadcast) { if (n.linkUrl) router.push(n.linkUrl); return }
+                                router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`)
+                              }}
                               className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-white/5 active:bg-white/10 border-b border-white/5 transition"
                             >
                               <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${isSub ? 'bg-blue-500/20' : isTradeUpdate ? 'bg-amber-500/20' : isBroadcast ? 'bg-violet-500/20' : n.decision === 'BUY' ? 'bg-emerald-500/20' : 'bg-red-500/20'}`}>
@@ -558,7 +564,12 @@ export default function Navbar() {
                             return (
                               <button
                                 key={n.id}
-                                onClick={() => { setNotifOpen(false); if (!isSub && !isBroadcast) router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`) }}
+                                onClick={() => {
+                                setNotifOpen(false)
+                                if (isSub) return
+                                if (isBroadcast) { if (n.linkUrl) router.push(n.linkUrl); return }
+                                router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`)
+                              }}
                                 className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-white/5 active:bg-white/10 border-b border-white/5 transition"
                               >
                                 <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${isSub ? 'bg-blue-500/20' : isTradeUpdate ? 'bg-amber-500/20' : isBroadcast ? 'bg-violet-500/20' : n.decision === 'BUY' ? 'bg-emerald-500/20' : 'bg-red-500/20'}`}>

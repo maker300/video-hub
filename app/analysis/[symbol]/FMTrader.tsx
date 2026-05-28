@@ -367,6 +367,18 @@ function TradeHistoryPanel({ isAdmin }: { isAdmin: boolean }) {
     setRecords(prev => prev.filter(r => r.id !== id))
   }
 
+  async function resetHistory() {
+    const ok = confirm('Reset your FM Trader history? This permanently deletes every prediction you have made. This cannot be undone.')
+    if (!ok) return
+    const r = await fetch('/api/fm-trader/predictions', { method: 'DELETE' })
+    if (r.ok) {
+      setRecords([])
+      setUpdates([])
+    } else {
+      alert((await r.json().catch(() => ({}))).error ?? 'Failed to reset history')
+    }
+  }
+
   const resolved = records.filter(r => r.outcome && r.outcome !== 'pending' && r.outcome !== 'expired')
   const wins     = resolved.filter(r => r.outcome === 'tp1_hit' || r.outcome === 'tp2_hit' || r.outcome === 'tp3_hit')
   const losses   = resolved.filter(r => r.outcome === 'sl_hit')
@@ -401,6 +413,19 @@ function TradeHistoryPanel({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="p-5 space-y-4">
+      {/* Top action row — reset history (everyone) */}
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] text-gray-500">
+          Your FM Trader history · {records.length} record{records.length === 1 ? '' : 's'}
+        </p>
+        <button
+          onClick={resetHistory}
+          className="flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:text-red-300 hover:bg-red-500/10 hover:border-red-500/30 transition"
+        >
+          <Trash2 className="w-3 h-3" />
+          Reset history
+        </button>
+      </div>
       {/* Stats bar */}
       <div className="grid grid-cols-4 gap-2">
         {[
