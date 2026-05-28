@@ -120,6 +120,30 @@ export function addNotification(notif: PriceNotification) {
   window.dispatchEvent(new CustomEvent('fm-notification-update'))
 }
 
+/**
+ * Patch existing localStorage notifications with newer fields from the server
+ * (e.g. linkUrl, which was added after some notifications were already stored).
+ * Matches by id. No-op for notifications that don't exist locally.
+ */
+export function patchNotifications(patches: Array<{ id: string; linkUrl?: string | null }>) {
+  if (patches.length === 0) return
+  const byId  = new Map(patches.map(p => [p.id, p]))
+  const list  = getNotifications()
+  let changed = false
+  for (const n of list) {
+    const p = byId.get(n.id)
+    if (!p) continue
+    if (p.linkUrl && n.linkUrl !== p.linkUrl) {
+      n.linkUrl = p.linkUrl
+      changed = true
+    }
+  }
+  if (changed) {
+    localStorage.setItem(NOTIFS_KEY, JSON.stringify(list))
+    window.dispatchEvent(new CustomEvent('fm-notification-update'))
+  }
+}
+
 export function markAllRead() {
   const now  = Date.now()
   const list = getNotifications().map(n =>

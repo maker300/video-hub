@@ -7,7 +7,7 @@ import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Sett
 import { useSession, signOut } from 'next-auth/react'
 import { getProgress } from '@/lib/progress'
 import { totalLessons } from '@/lib/courseData'
-import { getNotifications, markAllRead, addNotification, fireSignalBrowserNotification, firePairBrowserNotification, getSeenSignalIds, markSignalsSeen, getPairSubscriptions, type PriceNotification } from '@/lib/price-alerts'
+import { getNotifications, markAllRead, addNotification, patchNotifications, fireSignalBrowserNotification, firePairBrowserNotification, getSeenSignalIds, markSignalsSeen, getPairSubscriptions, type PriceNotification } from '@/lib/price-alerts'
 
 export default function Navbar() {
   const router = useRouter()
@@ -138,6 +138,15 @@ export default function Navbar() {
           })
         }
         if (freshBC.length > 0) markBroadcastsSeen(freshBC.map(n => n.id))
+
+        // Backfill linkUrl on already-stored broadcasts. Older notifications
+        // stored before the linkUrl feature existed had no link — this brings
+        // them in line with the latest server data so tapping them navigates.
+        patchNotifications(
+          adminNotifications
+            .filter(n => n.linkUrl)
+            .map(n => ({ id: `bc_${n.id}`, linkUrl: n.linkUrl })),
+        )
 
       } catch { /* non-critical */ }
     }
