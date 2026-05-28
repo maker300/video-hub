@@ -30,8 +30,16 @@ export async function POST(req: Request) {
   const session = await getSessionInfo()
   if (!session.email) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const admin = await prisma.user.findUnique({ where: { email: session.email }, select: { id: true } })
-  if (!admin) return NextResponse.json({ error: 'Admin record not found' }, { status: 500 })
+  // The env-based admin (ADMIN_EMAIL) doesn't have a DB user row by default.
+  // Upsert one so we have a stable userId to record on approvedBy. This also
+  // handles regular admin users who do have a row — both paths produce the
+  // same record.
+  const admin = await prisma.user.upsert({
+    where:  { email: session.email },
+    create: { email: session.email, name: 'Admin', role: 'admin' },
+    update: {},
+    select: { id: true },
+  })
 
   const body = await req.json() as {
     slug:       string
