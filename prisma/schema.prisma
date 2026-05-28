@@ -16,6 +16,8 @@ model User {
   role          String    @default("user")    // 'user' | 'team' | 'admin'
   // Team-fund BTC balance — set by admin, debited on position open, credited on close
   teamBalanceBtc  Float    @default(0)
+  // Saved BTC receive address — pre-fills the withdraw form on subsequent withdrawals
+  btcWithdrawalAddress String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

@@ -62,6 +62,7 @@ interface Me {
   email: string
   role: 'admin' | 'team' | 'user'
   teamBalanceBtc: number
+  btcWithdrawalAddress: string | null
 }
 
 interface Withdrawal {
@@ -410,7 +411,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               Deposit BTC
             </button>
             <button
-              onClick={() => { setWdErr(null); setWdAmount(''); setWdAddress(''); setWdOpen(true) }}
+              onClick={() => { setWdErr(null); setWdAmount(''); setWdAddress(me?.btcWithdrawalAddress ?? ''); setWdOpen(true) }}
               className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-blue-600/20 border border-blue-500/40 text-blue-300 text-xs font-bold hover:bg-blue-600/30 transition"
             >
               <ArrowUpFromLine className="w-3.5 h-3.5" />
@@ -702,7 +703,12 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               />
             </div>
             <div>
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Your BTC Address</label>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                Your BTC Receive Address
+                {me?.btcWithdrawalAddress && me.btcWithdrawalAddress === wdAddress && (
+                  <span className="ml-2 normal-case text-emerald-400">· saved</span>
+                )}
+              </label>
               <input
                 type="text"
                 value={wdAddress}
@@ -710,7 +716,12 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 placeholder="bc1q..."
                 className="w-full bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2.5 text-white text-xs font-mono outline-none focus:border-blue-500/60"
               />
-              <p className="mt-1 text-[10px] text-gray-500">Double-check this — funds sent to the wrong address are unrecoverable.</p>
+              <p className="mt-1 text-[10px] text-gray-500">
+                Double-check this — funds sent to the wrong address are unrecoverable.{' '}
+                {me?.btcWithdrawalAddress
+                  ? 'We saved this from your last withdrawal — edit it any time and the new one will be remembered.'
+                  : 'We&apos;ll remember this address for next time.'}
+              </p>
             </div>
             {wdErr && <p className="text-xs text-red-400">{wdErr}</p>}
             <div className="flex gap-2 pt-1">

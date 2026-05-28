@@ -69,7 +69,10 @@ export async function GET() {
 
   const me = await prisma.user.findUnique({
     where:  { id: session.id },
-    select: { id: true, name: true, email: true, role: true, teamBalanceBtc: true },
+    select: {
+      id: true, name: true, email: true, role: true,
+      teamBalanceBtc: true, btcWithdrawalAddress: true,
+    },
   })
 
   return NextResponse.json({ me, trades })

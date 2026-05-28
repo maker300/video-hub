@@ -55,9 +55,14 @@ export async function POST(req: Request) {
       if (user.teamBalanceBtc < amount) throw new Error('INSUFFICIENT_BALANCE')
 
       // Escrow: decrement immediately. Refund happens only on admin rejection.
+      // Also save the address on the user's profile so the next withdrawal
+      // pre-fills with it (saves the user from re-typing).
       await tx.user.update({
         where: { id: session.id! },
-        data:  { teamBalanceBtc: { decrement: amount } },
+        data:  {
+          teamBalanceBtc:       { decrement: amount },
+          btcWithdrawalAddress: address,
+        },
       })
 
       return tx.withdrawal.create({
