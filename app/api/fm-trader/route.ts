@@ -2266,29 +2266,47 @@ function recalcLevels(
   const patternCandleLow  = signalCandle && signalCandle.l > 0 ? signalCandle.l : entryLowFb
   const patternCandleHigh = signalCandle && signalCandle.h > 0 ? signalCandle.h : entryHghFb
 
-  // SL multiplier — swing gets a wider buffer to survive normal daily noise
+  // SL multiplier — both horizons widened to give the stop realistic structural
+  // breathing room. Previously intraday stops were ~0.2× ATR (too tight, kept
+  // getting knocked out by normal session wicks). New values place SL behind
+  // the pattern candle by ~0.4–0.6× ATR for intraday and ~0.7–0.9× ATR for swing.
   const slMult = swing
-    ? (setupGrade === 'A' ? 0.40 : setupGrade === 'B' ? 0.55 : 0.75)
-    : (setupGrade === 'A' ? 0.18 : setupGrade === 'B' ? 0.22 : 0.28)
+    ? (setupGrade === 'A' ? 0.55 : setupGrade === 'B' ? 0.70 : 0.90)
+    : (setupGrade === 'A' ? 0.35 : setupGrade === 'B' ? 0.45 : 0.60)
 
-  // Max-width SL cap — swing allows 2.5–3× ATR (vs 1.5× for intraday) so the
-  // stop genuinely lives at structural distance, not at session-noise distance.
-  const slCapMult = swing ? 3.0 : 1.5
+  // Max-width SL cap — widened so the cap doesn't override pattern-anchored
+  // stops on volatile pairs. Intraday now caps at 2.5× ATR (was 1.5×), swing
+  // at 3.5× ATR (was 3.0×) — gives genuine structural distance.
+  const slCapMult = swing ? 3.5 : 2.5
 
   // Entry-zone width — swing zones are wider so price has room to retest
   const entryWidthLow  = swing ? ewp * 1.6 : ewp
   const entryWidthHigh = swing ? ewp * 0.7 : ewp * 0.4
 
-  // R-multiples — swing trades aim for far bigger targets to justify the longer hold
+  // R-multiples — realistic structural distances that match how institutional
+  // desks actually scale out. Key relationship: SWING TP1 == INTRADAY TP2
+  // (a swing trade's first target is what an intraday trader's second target
+  // would be, since the swing trader is willing to hold longer for more move).
+  //
+  //                       INTRADAY                  SWING
+  //   Grade A · TP1     2.0 R                    3.5 R   (= intraday TP2 A)
+  //   Grade A · TP2     3.5 R                    6.0 R
+  //   Grade A · TP3     5.0 R                    9.0 R
+  //   Grade B · TP1     1.75R                    3.0 R   (= intraday TP2 B)
+  //   Grade B · TP2     3.0 R                    5.0 R
+  //   Grade B · TP3     4.5 R                    8.0 R
+  //   Grade C · TP1     1.5 R                    2.5 R   (= intraday TP2 C)
+  //   Grade C · TP2     2.5 R                    4.0 R
+  //   Grade C · TP3     3.5 R                    6.0 R
   const tp1R = swing
-    ? (setupGrade === 'A' ? 2.5 : setupGrade === 'B' ? 2.0 : 1.5)
-    : 1.5
+    ? (setupGrade === 'A' ? 3.5  : setupGrade === 'B' ? 3.0  : 2.5)
+    : (setupGrade === 'A' ? 2.0  : setupGrade === 'B' ? 1.75 : 1.5)
   const tp2R = swing
-    ? (setupGrade === 'A' ? 4.5 : setupGrade === 'B' ? 3.5 : 2.5)
-    : (setupGrade === 'A' ? 3.0 : setupGrade === 'B' ? 2.5 : 2.0)
+    ? (setupGrade === 'A' ? 6.0  : setupGrade === 'B' ? 5.0  : 4.0)
+    : (setupGrade === 'A' ? 3.5  : setupGrade === 'B' ? 3.0  : 2.5)
   const tp3R = swing
-    ? (setupGrade === 'A' ? 8.0 : setupGrade === 'B' ? 6.0 : 4.5)
-    : (setupGrade === 'A' ? 5.0 : setupGrade === 'B' ? 4.0 : 3.0)
+    ? (setupGrade === 'A' ? 9.0  : setupGrade === 'B' ? 8.0  : 6.0)
+    : (setupGrade === 'A' ? 5.0  : setupGrade === 'B' ? 4.5  : 3.5)
 
   // Swing-mode TP anchors — pull from Daily and Weekly fractal swing extremes
   // (these are the levels institutions actually target on multi-day holds).
