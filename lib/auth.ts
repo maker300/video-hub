@@ -120,7 +120,28 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id   = user.id
         token.role = (user as { role?: string }).role ?? 'user'
+        token.roleRefreshedAt = Date.now()
+        return token
       }
+
+      // Re-fetch role from the DB at most once a minute so admin-driven role
+      // changes propagate without forcing the user to log out and back in.
+      // Skip for the env-based admin (id='admin', no DB row).
+      const lastRefresh = (token.roleRefreshedAt as number | undefined) ?? 0
+      const id = token.id as string | undefined
+      if (id && id !== 'admin' && Date.now() - lastRefresh > 60_000) {
+        try {
+          const u = await prisma.user.findUnique({
+            where:  { id },
+            select: { role: true },
+          })
+          if (u?.role) {
+            token.role = u.role
+            token.roleRefreshedAt = Date.now()
+          }
+        } catch { /* keep cached role on DB error */ }
+      }
+
       return token
     },
 
