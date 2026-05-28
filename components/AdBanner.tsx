@@ -2,7 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { TrendingUp, Zap, Clock, ShieldCheck, Star, ArrowRight, X } from 'lucide-react'
+
+// Routes where the marketing carousel doesn't belong (workspace / dashboard pages)
+const HIDE_ON = ['/analysis/live-trades', '/admin']
 
 const SLIDES = [
   {
@@ -60,9 +64,13 @@ const SLIDES = [
 const INTERVAL_MS = 30000
 
 export default function AdBanner() {
+  const pathname = usePathname()
   const [current,   setCurrent]   = useState(0)
   const [animDir,   setAnimDir]   = useState<'in' | 'out'>('in')
   const [dismissed, setDismissed] = useState(false)
+  // Hide on workspace pages where marketing slides are out of place.
+  // Early return AFTER all hooks have been called to respect Rules of Hooks.
+  const hideOnThisRoute = !!pathname && HIDE_ON.some(p => pathname.startsWith(p))
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   function startTimer() {
@@ -92,7 +100,7 @@ export default function AdBanner() {
     }, 250)
   }
 
-  if (dismissed) return null
+  if (dismissed || hideOnThisRoute) return null
 
   const slide = SLIDES[current]
 
