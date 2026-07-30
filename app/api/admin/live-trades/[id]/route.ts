@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getAdminSession } from '@/lib/adminAuth'
 import { notifyTeamUsers } from '@/lib/team-notify'
+import { notifyPositionOwners } from '@/lib/position-notify'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,6 +29,8 @@ export async function PATCH(req: Request, { params }: Params) {
     stopLoss?:   number
     note?:       string
     cancel?:     boolean
+    approve?:    boolean          // approve a team-initiated 'awaiting_approval' request
+    reject?:     boolean          // reject + refund the requester
   }
 
   const trade = await prisma.liveTrade.findUnique({
@@ -36,26 +39,107 @@ export async function PATCH(req: Request, { params }: Params) {
   })
   if (!trade) return NextResponse.json({ error: 'Trade not found' }, { status: 404 })
 
-  // Cancel the trade — refund any open positions at face value
+  // ── Approve a team-initiated trade request ─────────────────────────────────
+  // Moves status from 'awaiting_approval' → 'pending' AND auto-opens the
+  // requester's position with their reserved stake. Other team users can then
+  // join the same trade normally once it's pending.
+  if (body.approve) {
+    if (trade.status !== 'awaiting_approval') {
+      return NextResponse.json({ error: 'Only awaiting_approval trades can be approved' }, { status: 400 })
+    }
+    if (!trade.requestedByUserId || !trade.requestedAmountBtc) {
+      return NextResponse.json({ error: 'Trade has no requester data' }, { status: 400 })
+    }
+    const lev         = trade.leverage    ?? 1
+    const slippagePct = trade.slippagePct ?? 0.0005
+    const slippageBtc = trade.requestedAmountBtc * slippagePct * lev
+    await prisma.$transaction(async tx => {
+      await tx.liveTrade.update({
+        where: { id },
+        data:  { status: 'pending', approvedBy: trade.approvedBy ?? null },
+      })
+      // Auto-create the requester's position. Stake was already debited at
+      // request time, so we just record the position row here.
+      await tx.liveTradePosition.create({
+        data: {
+          liveTradeId: id,
+          userId:      trade.requestedByUserId!,
+          amountBtc:   trade.requestedAmountBtc!,
+          slippageBtc,
+        },
+      })
+    })
+    void notifyTeamUsers({
+      email:   false,
+      linkUrl: '/analysis/live-trades',
+      subject: `${trade.decision} ${trade.display} now open for participation`,
+      message: `A team member's ${trade.decision} ${trade.display} request was approved. Their position is locked in; you can join the same trade until admin sets the entry price.`,
+    })
+    return NextResponse.json({ ok: true, approved: true })
+  }
+
+  // ── Reject a team-initiated trade request ──────────────────────────────────
+  // Refunds the requester's debited stake + slippage, marks trade 'rejected'.
+  if (body.reject) {
+    if (trade.status !== 'awaiting_approval') {
+      return NextResponse.json({ error: 'Only awaiting_approval trades can be rejected' }, { status: 400 })
+    }
+    if (trade.requestedByUserId && trade.requestedAmountBtc) {
+      const lev         = trade.leverage    ?? 1
+      const slippagePct = trade.slippagePct ?? 0.0005
+      const refund      = trade.requestedAmountBtc + (trade.requestedAmountBtc * slippagePct * lev)
+      await prisma.$transaction(async tx => {
+        await tx.user.update({
+          where: { id: trade.requestedByUserId! },
+          data:  { teamBalanceBtc: { increment: refund } },
+        })
+        await tx.liveTrade.update({
+          where: { id },
+          data:  { status: 'rejected', closedAt: new Date(), note: body.note ?? trade.note },
+        })
+      })
+    } else {
+      await prisma.liveTrade.update({
+        where: { id },
+        data:  { status: 'rejected', closedAt: new Date() },
+      })
+    }
+    return NextResponse.json({ ok: true, rejected: true })
+  }
+
+  // Cancel the trade — refund stake + upfront slippage on any open positions
   if (body.cancel) {
     if (trade.status === 'closed') return NextResponse.json({ error: 'Already closed' }, { status: 400 })
+    const refunded: Array<{ userId: string; amountBtc: number }> = []
     await prisma.$transaction(async tx => {
-      // Refund every open position at zero PnL
+      // Refund every open position at zero PnL. Includes the upfront slippage
+      // debit since the round-trip cost was never actually incurred.
       for (const pos of trade.positions.filter(p => p.status === 'open')) {
+        const refund = pos.amountBtc + (pos.slippageBtc ?? 0)
         await tx.user.update({
           where: { id: pos.userId },
-          data:  { teamBalanceBtc: { increment: pos.amountBtc } },
+          data:  { teamBalanceBtc: { increment: refund } },
         })
         await tx.liveTradePosition.update({
           where: { id: pos.id },
           data:  { status: 'closed', pnlBtc: 0, closedAt: new Date() },
         })
+        refunded.push({ userId: pos.userId, amountBtc: pos.amountBtc })
       }
       await tx.liveTrade.update({
         where: { id },
         data:  { status: 'cancelled', closedAt: new Date() },
       })
     })
+    // Targeted refund notification for each participant.
+    if (refunded.length > 0) {
+      void notifyPositionOwners({
+        tradeDisplay: trade.display,
+        decision:     trade.decision as 'BUY' | 'SELL',
+        kind:         'cancelled',
+        positions:    refunded.map(r => ({ ...r, pnlBtc: null })),
+      })
+    }
     return NextResponse.json({ ok: true, cancelled: true })
   }
 
@@ -114,19 +198,21 @@ export async function PATCH(req: Request, { params }: Params) {
     const pnlPct = trade.decision === 'BUY'
       ? (body.closePrice - entry) / entry
       : (entry - body.closePrice) / entry
-    // Leveraged PnL multiplier: a 0.5% move at 1:500 leverage = 250% on stake
-    const leverage    = trade.leverage    ?? 300
-    const slippagePct = trade.slippagePct ?? 0.0005
-    const feePct      = trade.feePct      ?? 0.10
+    // Leveraged PnL multiplier. Slippage was already charged upfront at
+    // position-open time, so close math only computes Gross → Fee → Net.
+    // leverage null = spot trade (1×, no amplification)
+    const leverage = trade.leverage ?? 1
+    const feePct   = trade.feePct   ?? 0.10
 
+    // Settled positions captured out of the transaction so we can send
+    // per-position targeted notifications afterwards.
+    const settled: Array<{ userId: string; amountBtc: number; pnlBtc: number }> = []
     await prisma.$transaction(async tx => {
       for (const pos of trade.positions.filter(p => p.status === 'open')) {
-        // Settlement breakdown — Gross → Slippage → Fee → Net (floored at -stake)
+        // Settlement: Gross → Fee (profit only) → Net (floored at -stake)
         const grossPnlBtc = pos.amountBtc * pnlPct * leverage
-        const slippageBtc = pos.amountBtc * slippagePct * leverage       // always positive, always reduces PnL
-        const afterSlip   = grossPnlBtc - slippageBtc
-        const feeBtc      = afterSlip > 0 ? afterSlip * feePct : 0       // perf fee on profitable closes only
-        const netRaw      = afterSlip - feeBtc
+        const feeBtc      = grossPnlBtc > 0 ? grossPnlBtc * feePct : 0   // perf fee on PROFIT only — losses pay nothing
+        const netRaw      = grossPnlBtc - feeBtc
         const pnlBtc      = Math.max(netRaw, -pos.amountBtc)             // can't lose more than stake
 
         await tx.user.update({
@@ -137,10 +223,11 @@ export async function PATCH(req: Request, { params }: Params) {
           where: { id: pos.id },
           data:  {
             status:      'closed',
-            grossPnlBtc, slippageBtc, feeBtc, pnlBtc,
+            grossPnlBtc, feeBtc, pnlBtc,
             closedAt:    new Date(),
           },
         })
+        settled.push({ userId: pos.userId, amountBtc: pos.amountBtc, pnlBtc })
       }
       await tx.liveTrade.update({
         where: { id },
@@ -153,16 +240,32 @@ export async function PATCH(req: Request, { params }: Params) {
         },
       })
     })
-    // Bell-only notification — close summary uses LEVERAGED % so user
-    // sees the impact on their actual stake (capped at -100%)
+
+    // Bell notifications — close summary uses LEVERAGED % so user sees the
+    // impact on their actual stake (capped at -100%).
     const leveragedPct = Math.max(pnlPct * leverage, -1)
-    const pct = (leveragedPct * 100).toFixed(2)
+    const pct  = (leveragedPct * 100).toFixed(2)
     const sign = leveragedPct > 0 ? '+' : ''
+
+    // Targeted per-position notification for participants — each gets their
+    // own P/L in BTC, not just the "trade closed" broadcast.
+    const notified = await notifyPositionOwners({
+      tradeDisplay: trade.display,
+      decision:     trade.decision as 'BUY' | 'SELL',
+      kind:         'manual_close',
+      positions:    settled,
+      leveragedPct,
+      closePrice:   body.closePrice,
+    })
+
+    // Broadcast to non-participants (so team users watching the market from
+    // the sidelines still see the close event on their bell).
     void notifyTeamUsers({
-      email:   false,
-      linkUrl: '/analysis/live-trades',
-      subject: `${trade.decision} ${trade.display} closed at ${body.closePrice} (${sign}${pct}%)`,
-      message: `Admin has closed the ${trade.decision} ${trade.display} trade at ${body.closePrice}. Outcome: ${sign}${pct}%. All positions have been settled and balances updated. Open the Live Trade page to review your result.`,
+      email:       false,
+      linkUrl:     '/analysis/live-trades',
+      subject:     `${trade.decision} ${trade.display} closed at ${body.closePrice} (${sign}${pct}%)`,
+      message:     `Admin has closed the ${trade.decision} ${trade.display} trade at ${body.closePrice}. Outcome: ${sign}${pct}%. All positions have been settled and balances updated.`,
+      skipUserIds: notified,
     })
     return NextResponse.json({ ok: true, pnlPct })
   }

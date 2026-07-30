@@ -1,7 +1,9 @@
 // Team + Admin: open a position in a LiveTrade.
 //   POST body: { amountBtc: number }
-//   Deducts amountBtc from User.teamBalanceBtc atomically — one position per
-//   user per trade (enforced by @@unique).
+//   Deducts (amountBtc + slippageBtc) from User.teamBalanceBtc atomically —
+//   slippage is charged ONCE upfront (round-trip cost), so settlement at close
+//   only computes gross PnL and the performance fee. One position per user per
+//   trade (enforced by @@unique).
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getSessionInfo } from '@/lib/adminAuth'
@@ -25,7 +27,7 @@ export async function POST(req: Request, { params }: Params) {
 
   const trade = await prisma.liveTrade.findUnique({
     where:   { id: liveTradeId },
-    select:  { id: true, status: true, suggestedAmountBtc: true },
+    select:  { id: true, status: true, suggestedAmountBtc: true, slippagePct: true, leverage: true },
   })
   if (!trade) return NextResponse.json({ error: 'Trade not found' }, { status: 404 })
   // Locking rule: once admin sets entry price, the trade is in session and
@@ -46,26 +48,41 @@ export async function POST(req: Request, { params }: Params) {
     )
   }
 
+  // Round-trip slippage charged ONCE at open. Same formula as the old close-time
+  // math (stake × rate × leverage) — just moved upfront so the close path stays
+  // simple and the user sees a single, predictable cost when they enter.
+  // leverage null = spot (1×) — slippage scales with exposure, so a no-leverage
+  // trade pays minimal slippage.
+  const lev         = trade.leverage ?? 1
+  const slippageBtc = amount * trade.slippagePct * lev
+  const totalDebit  = amount + slippageBtc
+
   try {
     const result = await prisma.$transaction(async tx => {
-      // Re-fetch with lock semantics: read current balance, then conditionally update.
-      const user = await tx.user.findUnique({
-        where:  { id: session.id! },
-        select: { teamBalanceBtc: true },
-      })
-      if (!user) throw new Error('USER_NOT_FOUND')
-      if (user.teamBalanceBtc < amount) throw new Error('INSUFFICIENT_BALANCE')
-
       // Create the position (unique constraint guarantees no duplicate)
       const position = await tx.liveTradePosition.create({
-        data: { liveTradeId, userId: session.id!, amountBtc: amount },
+        data: { liveTradeId, userId: session.id!, amountBtc: amount, slippageBtc },
       })
 
-      // Atomic decrement (decrement vs set to avoid races with admin balance edits)
-      await tx.user.update({
-        where: { id: session.id! },
-        data:  { teamBalanceBtc: { decrement: amount } },
+      // Debit stake + upfront slippage. The balance check is part of the same
+      // statement rather than a preceding read: under Read Committed, a
+      // read-then-write lets two concurrent requests (on two different trades,
+      // where the @@unique doesn't apply) both pass the check and both
+      // decrement, overdrawing the account. Matching zero rows means the
+      // balance was insufficient at write time.
+      const debited = await tx.user.updateMany({
+        where: { id: session.id!, teamBalanceBtc: { gte: totalDebit } },
+        data:  { teamBalanceBtc: { decrement: totalDebit } },
       })
+
+      if (debited.count === 0) {
+        const exists = await tx.user.findUnique({
+          where:  { id: session.id! },
+          select: { id: true },
+        })
+        // Throwing rolls back the position created above.
+        throw new Error(exists ? 'INSUFFICIENT_BALANCE' : 'USER_NOT_FOUND')
+      }
 
       return position
     })
@@ -74,7 +91,10 @@ export async function POST(req: Request, { params }: Params) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Unknown error'
     if (msg === 'INSUFFICIENT_BALANCE') {
-      return NextResponse.json({ error: 'Insufficient BTC balance' }, { status: 400 })
+      return NextResponse.json(
+        { error: `Insufficient BTC balance — stake ${amount} + slippage ${slippageBtc.toFixed(6)} requires ${totalDebit.toFixed(6)} BTC` },
+        { status: 400 },
+      )
     }
     if (msg === 'USER_NOT_FOUND') {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })

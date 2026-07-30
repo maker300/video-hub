@@ -627,8 +627,12 @@ export async function GET(
 ) {
   const session    = await getServerSession(authOptions)
   const cronHeader = req.headers.get('x-cron-secret')
-  const cronSecret = process.env.CRON_SECRET ?? 'dev'
-  if (!session && cronHeader !== cronSecret) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // No 'dev' fallback — an unset CRON_SECRET must not leave a guessable string
+  // standing in as a valid credential.
+  const cronSecret = process.env.CRON_SECRET
+  if (!session && (!cronSecret || cronHeader !== cronSecret)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
 
   const { symbol: slugRaw } = await params
   const slug   = slugRaw.toLowerCase()

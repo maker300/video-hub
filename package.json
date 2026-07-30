@@ -22,6 +22,7 @@
     "@remotion/cli": "^4.0.445",
     "@remotion/lambda": "^4.0.445",
     "@remotion/player": "^4.0.445",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/bcryptjs": "^2.4.6",
     "@types/nodemailer": "^8.0.0",
     "bcryptjs": "^3.0.3",
@@ -37,6 +38,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "remotion": "^4.0.445",
+    "roughjs": "^4.6.6",
     "stripe": "^22.0.2",
     "yahoo-finance2": "^3.14.0",
     "zod": "^4.3.6"

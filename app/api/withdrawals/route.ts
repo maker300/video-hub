@@ -48,23 +48,32 @@ export async function POST(req: Request) {
 
   try {
     const out = await prisma.$transaction(async tx => {
-      const user = await tx.user.findUnique({
-        where:  { id: session.id! },
-        select: { teamBalanceBtc: true },
-      })
-      if (!user) throw new Error('USER_NOT_FOUND')
-      if (user.teamBalanceBtc < amount) throw new Error('INSUFFICIENT_BALANCE')
-
       // Escrow: decrement immediately. Refund happens only on admin rejection.
       // Also save the address on the user's profile so the next withdrawal
       // pre-fills with it (saves the user from re-typing).
-      await tx.user.update({
-        where: { id: session.id! },
+      //
+      // The balance check lives in the `where` clause rather than a preceding
+      // read: under Read Committed, a read-then-write lets two concurrent
+      // requests both observe the same balance, both pass the check, and both
+      // decrement — overdrawing the account. Here the guard and the decrement
+      // are one statement, so the second request matches zero rows.
+      const debited = await tx.user.updateMany({
+        where: { id: session.id!, teamBalanceBtc: { gte: amount } },
         data:  {
           teamBalanceBtc:       { decrement: amount },
           btcWithdrawalAddress: address,
         },
       })
+
+      if (debited.count === 0) {
+        // Either the user is gone or the balance moved under us. Distinguish
+        // the two so the caller still gets an accurate error.
+        const exists = await tx.user.findUnique({
+          where:  { id: session.id! },
+          select: { id: true },
+        })
+        throw new Error(exists ? 'INSUFFICIENT_BALANCE' : 'USER_NOT_FOUND')
+      }
 
       return tx.withdrawal.create({
         data: {

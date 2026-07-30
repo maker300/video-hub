@@ -35,51 +35,62 @@ export async function POST(req: Request) {
     const now = new Date()
 
     try {
-      const db = prisma as any
-      const existing = await db.analysisAccess.findUnique({ where: { userId } })
+      // Claim the event and grant access in one transaction. Stripe retries on
+      // any non-2xx and does not guarantee exactly-once delivery, so a repeat
+      // of this event would otherwise re-run the extend branch below and give
+      // the buyer a second period of access for one payment.
+      //
+      // Claiming inside the transaction (rather than before it) means a failed
+      // grant rolls the claim back too, so Stripe's retry still works.
+      const granted = await prisma.$transaction(async tx => {
+        const db = tx as any
 
-      // If the user has active access that hasn't expired yet, extend from their
-      // current endDate so they don't lose remaining time. Otherwise start fresh.
-      const baseDate = (existing?.active && existing.endDate && new Date(existing.endDate) > now)
-        ? new Date(existing.endDate)
-        : now
-
-      const startDate = now
-      const endDate   = new Date(baseDate)
-      endDate.setDate(endDate.getDate() + days)
-
-      const extendedFrom = baseDate > now
-        ? `extended from ${baseDate.toISOString().split('T')[0]}`
-        : 'started fresh'
-
-      if (existing) {
-        await db.analysisAccess.update({
-          where: { userId },
-          data: {
-            type:      duration,
-            startDate,
-            endDate,
-            active:    true,
-            grantedAt: now,
-            note:      `Purchased via Stripe — ${meta.planId} (${extendedFrom})`,
-          },
+        await db.stripeEvent.create({
+          data: { eventId: event.id, type: event.type },
         })
-      } else {
-        await db.analysisAccess.create({
-          data: {
-            userId,
-            type:      duration,
-            startDate,
-            endDate,
-            active:    true,
-            grantedAt: now,
-            note:      `Purchased via Stripe — ${meta.planId} (${extendedFrom})`,
-          },
-        })
-      }
 
-      console.log(`[stripe/webhook] Access granted: userId=${userId} plan=${duration} days=${days} endDate=${endDate.toISOString()} (${extendedFrom})`)
+        const existing = await db.analysisAccess.findUnique({ where: { userId } })
+
+        // If the user has active access that hasn't expired yet, extend from their
+        // current endDate so they don't lose remaining time. Otherwise start fresh.
+        const baseDate = (existing?.active && existing.endDate && new Date(existing.endDate) > now)
+          ? new Date(existing.endDate)
+          : now
+
+        const startDate = now
+        const endDate   = new Date(baseDate)
+        endDate.setDate(endDate.getDate() + days)
+
+        const extendedFrom = baseDate > now
+          ? `extended from ${baseDate.toISOString().split('T')[0]}`
+          : 'started fresh'
+
+        const data = {
+          type:      duration,
+          startDate,
+          endDate,
+          active:    true,
+          grantedAt: now,
+          note:      `Purchased via Stripe — ${meta.planId} (${extendedFrom})`,
+        }
+
+        if (existing) {
+          await db.analysisAccess.update({ where: { userId }, data })
+        } else {
+          await db.analysisAccess.create({ data: { userId, ...data } })
+        }
+
+        return { endDate, extendedFrom }
+      })
+
+      console.log(`[stripe/webhook] Access granted: userId=${userId} plan=${duration} days=${days} endDate=${granted.endDate.toISOString()} (${granted.extendedFrom})`)
     } catch (err) {
+      // P2002 on stripeEvent.eventId — we have already handled this delivery.
+      // Acknowledge with a 2xx so Stripe stops retrying.
+      if ((err as { code?: string })?.code === 'P2002') {
+        console.log(`[stripe/webhook] Duplicate delivery ignored: ${event.id}`)
+        return NextResponse.json({ received: true, duplicate: true })
+      }
       console.error('[stripe/webhook] DB error:', err)
       return NextResponse.json({ error: 'Database error' }, { status: 500 })
     }

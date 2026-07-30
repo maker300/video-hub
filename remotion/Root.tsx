@@ -1,5 +1,6 @@
 import { Composition } from 'remotion'
 import { LessonVideo } from './compositions/LessonVideo'
+import { LessonVideoFromManifest, type LessonManifest, type LessonVideoFromManifestProps } from './compositions/LessonVideoFromManifest'
 import { buildNarrationSegments, estimateFrames } from '../lib/lessonParser'
 import { CandlestickAnatomy } from './stills/CandlestickAnatomy'
 import { CandleTypes } from './stills/CandleTypes'
@@ -73,6 +74,20 @@ const demoScript = buildNarrationSegments(
 
 const STILL = { width: 1200, height: 675, durationInFrames: 1, fps: 30 }
 
+// Placeholder manifest — replaced at render time via --props=<manifest.json>
+// or Studio's "Props" panel. Just here so the Composition has valid defaults.
+const PLACEHOLDER_MANIFEST: LessonManifest = {
+  lessonId:        'placeholder',
+  moduleId:        'placeholder',
+  title:           'Placeholder Lesson',
+  moduleTitle:     'Placeholder Module',
+  totalDurationMs: 4000,
+  brandPalette:    { primary: '#0d1b2a', accent: '#10b981', background: '#fafaf6', ink: '#1a2233' },
+  segments: [
+    { segmentIndex: 0, startMs: 0,    durationMs: 4000, heading: 'Pass --props with a real manifest', spokenText: '', asset: { type: 'title', heading: 'Pass --props with a real manifest' }, rationale: '' },
+  ],
+}
+
 export const RemotionRoot: React.FC = () => (
   <>
     <Composition
@@ -91,6 +106,28 @@ export const RemotionRoot: React.FC = () => (
         keyPoints:    DEMO_KEY_POINTS,
         terms:        DEMO_TERMS,
       }}
+    />
+    <Composition
+      id="LessonVideoFromManifest"
+      // Remotion's <Composition> generic insists on AnyZodObject for schemas
+      // or fully-open prop typing — easier to cast the component itself.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      component={LessonVideoFromManifest as any}
+      fps={30}
+      width={1920}
+      height={1080}
+      durationInFrames={Math.round((PLACEHOLDER_MANIFEST.totalDurationMs / 1000) * 30)}
+      defaultProps={{
+        manifest: PLACEHOLDER_MANIFEST,
+        baseUrl:  'https://forexmastery.org',
+        apiKey:   '',
+        fps:      30,
+      }}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      calculateMetadata={({ props }: { props: any }) => ({
+        durationInFrames: Math.max(1, Math.round(((props as LessonVideoFromManifestProps).manifest.totalDurationMs / 1000) * 30)),
+        props,
+      })}
     />
     <Composition id="CandlestickAnatomy"   component={CandlestickAnatomy}   {...STILL} defaultProps={{}} />
     <Composition id="CandleTypes"          component={CandleTypes}           {...STILL} defaultProps={{}} />

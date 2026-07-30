@@ -19,8 +19,11 @@ export async function GET() {
   const isAdmin = session.role === 'admin'
 
   // Recent live trades (open + recently closed for history).
-  // Admins see EVERY trade regardless of participation; team users see open
-  // trades + their own history.
+  // Admins see EVERY trade regardless of participation; team users see:
+  //   • broadcast trades (pending / open)
+  //   • their own positions (any status)
+  //   • their own awaiting_approval / rejected requests (so they know where
+  //     a buy/sell they just placed sits in the admin queue)
   const trades = await prisma.liveTrade.findMany({
     where: isAdmin
       ? {}
@@ -28,6 +31,7 @@ export async function GET() {
           OR: [
             { status: { in: ['pending', 'open'] } },
             { positions: { some: { userId: session.id } } },
+            { requestedByUserId: session.id },
           ],
         },
     orderBy: { createdAt: 'desc' },
@@ -39,6 +43,7 @@ export async function GET() {
           id: true, amountBtc: true,
           grossPnlBtc: true, slippageBtc: true, feeBtc: true, pnlBtc: true,
           status: true, openedAt: true, closedAt: true,
+          closeRequestedAt: true, closeRequestReason: true,
         },
       },
       _count: { select: { positions: true } },
@@ -57,6 +62,7 @@ export async function GET() {
         id: true, liveTradeId: true, amountBtc: true,
         grossPnlBtc: true, slippageBtc: true, feeBtc: true, pnlBtc: true,
         status: true, openedAt: true, closedAt: true,
+        closeRequestedAt: true, closeRequestReason: true,
         user: { select: { id: true, name: true, email: true } },
       },
       orderBy: { openedAt: 'desc' },

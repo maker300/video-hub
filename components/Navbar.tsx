@@ -151,9 +151,17 @@ export default function Navbar() {
       } catch { /* non-critical */ }
     }
 
-    syncAll()
-    const t = setInterval(syncAll, 10 * 60 * 1000)
-    return () => clearInterval(t)
+    // Pause polling when the tab is hidden — saves Neon egress on long-open tabs.
+    // On visibility return, fire an immediate catch-up sync.
+    const tick = () => { if (!document.hidden) void syncAll() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const t = setInterval(tick, 10 * 60 * 1000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [status])
 
   const unread = notifications.filter(n => !n.read).length

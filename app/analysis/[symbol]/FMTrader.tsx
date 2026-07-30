@@ -548,7 +548,9 @@ const REFRESH_UNLOCK_MS = 30 * 60 * 1000  // refresh button unlocks 30 min after
 
 export default function FMTrader({ data, currentPrice, onClose, initialShowHistory = false }: Props) {
   const { data: session } = useSession()
-  const isAdmin = (session?.user as { role?: string })?.role === 'admin'
+  const role    = (session?.user as { role?: string })?.role
+  const isAdmin = role === 'admin'
+  const isTeam  = role === 'team'
 
   const [slot,          setSlot]          = useState<SessionSlotId>(() => detectCurrentSlot(data.category))
   const [horizon,       setHorizon]       = useState<'intraday' | 'swing'>('intraday')
@@ -581,15 +583,68 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   const brokerTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── Send to Live Trade (admin only) ───────────────────────────────────────
-  // Default leverage: 500 for crypto pairs, 300 for everything else.
-  const defaultLeverage = data.category === 'crypto' ? 500 : 300
+  // Default leverage: 10 for crypto pairs, 30 for everything else.
+  // null = no-leverage / spot trade (1×, no amplification).
+  const defaultLeverage: number | null = data.category === 'crypto' ? 10 : 30
   const [liveModalOpen, setLiveModalOpen] = useState(false)
   const [liveAmount,    setLiveAmount]    = useState('')
   const [liveNote,      setLiveNote]      = useState('')
-  const [liveLeverage,  setLiveLeverage]  = useState<number>(defaultLeverage)
+  const [liveLeverage,  setLiveLeverage]  = useState<number | null>(defaultLeverage)
   const [liveSending,   setLiveSending]   = useState(false)
   const [liveToast,     setLiveToast]     = useState('')
   const [liveError,     setLiveError]     = useState('')
+
+  // ── Team: Buy/Sell directly ───────────────────────────────────────────────
+  // Opens a request modal. On submit, calls /api/live-trades/request which
+  // creates an 'awaiting_approval' LiveTrade + Telegram alert to admin.
+  // Default leverage for team requests: 1:10 (conservative starter).
+  const TEAM_DEFAULT_LEVERAGE = 10
+  const [teamModalOpen,  setTeamModalOpen]  = useState(false)
+  const [teamSide,       setTeamSide]       = useState<'BUY' | 'SELL'>('BUY')
+  const [teamAmount,     setTeamAmount]     = useState('')
+  const [teamLeverage,   setTeamLeverage]   = useState<number | null>(TEAM_DEFAULT_LEVERAGE)
+  const [teamNote,       setTeamNote]       = useState('')
+  const [teamSending,    setTeamSending]    = useState(false)
+  const [teamError,      setTeamError]      = useState('')
+
+  async function placeTeamTrade() {
+    if (!analysis || analysis.decision === 'NO TRADE') return
+    const amt = Number(teamAmount)
+    if (!Number.isFinite(amt) || amt <= 0) { setTeamError('Enter a positive BTC amount'); return }
+    setTeamSending(true); setTeamError('')
+    try {
+      const r = await fetch('/api/live-trades/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug:        data.slug,
+          display:     data.display,
+          decision:    teamSide,
+          entryLow:    analysis.entryZone[0],
+          entryHigh:   analysis.entryZone[1],
+          stopLoss:    analysis.stopLoss,
+          tp1:         analysis.tp1,
+          tp2:         analysis.tp2,
+          tp3:         analysis.tp3,
+          rrRatio:     analysis.rrRatio,
+          confidence:  analysis.confidence,
+          setupGrade:  analysis.setupGrade,
+          note:        teamNote.trim() || undefined,
+          amountBtc:   amt,
+          leverage:    teamLeverage,
+        }),
+      })
+      const j = await r.json().catch(() => ({} as { error?: string }))
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
+      setLiveToast(`Trade request sent — ${teamSide} ${data.display} awaiting admin approval`)
+      setTeamModalOpen(false); setTeamAmount(''); setTeamNote('')
+      setTimeout(() => setLiveToast(''), 6000)
+    } catch (e) {
+      setTeamError(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setTeamSending(false)
+    }
+  }
 
   async function sendToLiveTrade() {
     if (!analysis || analysis.decision === 'NO TRADE') return
@@ -733,7 +788,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
         read:        false,
         type:        'subscription',
       })
-      setAlertToast(`Subscribed to ${data.display} — you'll receive notifications for every BUY/SELL signal.`)
+      setAlertToast(`Subscribed to ${data.display} — you'll receive email + bell notifications for every BUY/SELL signal. Check your inbox for the confirmation.`)
     } else {
       fetch('/api/subscriptions/pairs', {
         method: 'DELETE',
@@ -955,7 +1010,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
               onClick={handlePairSubscribe}
               title={pairSubscribed
                 ? `Unsubscribe from ${data.display} signals`
-                : `Subscribe — get notified for every BUY/SELL signal on ${data.display}`}
+                : `Subscribe — get email + bell notifications for every BUY/SELL signal on ${data.display}`}
               className={`w-8 h-8 sm:w-auto sm:h-auto flex items-center justify-center sm:gap-1.5 sm:px-3 sm:py-1.5 rounded-lg border transition ${
                 pairSubscribed
                   ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
@@ -1381,6 +1436,31 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                       </button>
                     </div>
                   )}
+                  {/* Team: Buy / Sell directly — creates an awaiting_approval LiveTrade
+                      + alerts admin via Telegram. Trade fills once admin approves. */}
+                  {isTeam && analysis.decision !== 'NO TRADE' && (
+                    <div className="flex items-center gap-3 bg-emerald-500/[0.06] border border-emerald-500/25 rounded-xl px-4 py-3">
+                      <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-emerald-300">Place a trade</p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">Sent to admin for fulfillment · default 1:10 leverage</p>
+                      </div>
+                      <button
+                        onClick={() => { setTeamSide('BUY'); setTeamLeverage(TEAM_DEFAULT_LEVERAGE); setTeamAmount(''); setTeamNote(''); setTeamError(''); setTeamModalOpen(true) }}
+                        className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/35 transition"
+                      >
+                        <TrendingUp className="w-3.5 h-3.5" />
+                        Buy
+                      </button>
+                      <button
+                        onClick={() => { setTeamSide('SELL'); setTeamLeverage(TEAM_DEFAULT_LEVERAGE); setTeamAmount(''); setTeamNote(''); setTeamError(''); setTeamModalOpen(true) }}
+                        className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-red-600/20 border border-red-500/40 text-red-300 hover:bg-red-600/35 transition"
+                      >
+                        <TrendingDown className="w-3.5 h-3.5" />
+                        Sell
+                      </button>
+                    </div>
+                  )}
                   {liveToast && (
                     <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-2.5">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -1569,10 +1649,10 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                       · default {defaultLeverage}× ({data.category === 'crypto' ? 'crypto' : 'fx/indices'})
                     </span>
                   </label>
-                  <div className="grid grid-cols-5 gap-1">
-                    {[20, 50, 100, 300, 500].map(lv => (
+                  <div className="grid grid-cols-4 gap-1">
+                    {([null, 2, 5, 10, 30, 50, 100, 200] as const).map(lv => (
                       <button
-                        key={lv}
+                        key={lv ?? 'none'}
                         type="button"
                         onClick={() => setLiveLeverage(lv)}
                         className={`py-2 rounded-lg text-[11px] font-black tabular-nums transition border ${
@@ -1581,12 +1661,12 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                             : 'bg-white/[0.04] text-gray-400 border-white/10 hover:text-white hover:bg-white/[0.08]'
                         }`}
                       >
-                        1:{lv}
+                        {lv == null ? 'None' : `1:${lv}`}
                       </button>
                     ))}
                   </div>
                   <p className="mt-1 text-[10px] text-gray-500">
-                    Amplifies stake P/L by this multiplier (loss capped at -100% of stake).
+                    Amplifies stake P/L by this multiplier (loss capped at -100% of stake). Pick None for a spot trade — P/L tracks raw price moves.
                   </p>
                 </div>
                 <div>
@@ -1610,6 +1690,124 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                     {liveSending ? 'Sending…' : 'Send to Live Trade'}
                   </button>
                   <button onClick={() => setLiveModalOpen(false)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm transition">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Team: Buy / Sell request modal ──────────────────────────────── */}
+        {teamModalOpen && analysis && (
+          <div
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm rounded-2xl"
+            onClick={e => { if (e.target === e.currentTarget) setTeamModalOpen(false) }}
+          >
+            <div className="w-full max-w-md mx-4 bg-[#0b1322] border border-white/15 rounded-2xl shadow-2xl overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 bg-[#0d1929]">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                    teamSide === 'BUY' ? 'bg-emerald-500/20' : 'bg-red-500/20'
+                  }`}>
+                    {teamSide === 'BUY'
+                      ? <TrendingUp   className="w-4 h-4 text-emerald-400" />
+                      : <TrendingDown className="w-4 h-4 text-red-400" />}
+                  </div>
+                  <div>
+                    <p className="text-sm font-black text-white">{teamSide} {data.display}</p>
+                    <p className="text-[10px] text-gray-500">Request will be sent to admin for approval</p>
+                  </div>
+                </div>
+                <button onClick={() => setTeamModalOpen(false)} className="text-gray-500 hover:text-white transition"><X className="w-4 h-4" /></button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                {/* BUY/SELL toggle */}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(['BUY', 'SELL'] as const).map(side => (
+                    <button
+                      key={side}
+                      onClick={() => setTeamSide(side)}
+                      className={`py-2 rounded-lg text-xs font-black tabular-nums transition border ${
+                        teamSide === side
+                          ? side === 'BUY' ? 'bg-emerald-500/25 text-emerald-200 border-emerald-500/60'
+                                           : 'bg-red-500/25 text-red-200 border-red-500/60'
+                          : 'bg-[#0a0f1e] text-gray-400 border-white/10 hover:text-white'
+                      }`}
+                    >
+                      {side}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Amount */}
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                    Stake (BTC)
+                  </label>
+                  <input
+                    type="number" step="0.0001" min="0"
+                    value={teamAmount}
+                    onChange={e => setTeamAmount(e.target.value)}
+                    placeholder="0.0500"
+                    autoFocus
+                    className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-emerald-500/60"
+                  />
+                </div>
+
+                {/* Leverage — hidden in a dropdown, default 1:10 for team */}
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                    Leverage <span className="ml-1 normal-case text-gray-600">(default 1:10)</span>
+                  </label>
+                  <select
+                    value={teamLeverage === null ? 'spot' : String(teamLeverage)}
+                    onChange={e => setTeamLeverage(e.target.value === 'spot' ? null : Number(e.target.value))}
+                    className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-emerald-500/60"
+                  >
+                    <option value="spot">None (spot · 1×)</option>
+                    <option value="2">1:2</option>
+                    <option value="5">1:5</option>
+                    <option value="10">1:10</option>
+                    <option value="30">1:30</option>
+                    <option value="50">1:50</option>
+                    <option value="100">1:100</option>
+                    <option value="200">1:200</option>
+                  </select>
+                </div>
+
+                {/* Note (optional) */}
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Note (optional)</label>
+                  <textarea
+                    value={teamNote}
+                    onChange={e => setTeamNote(e.target.value)}
+                    rows={2}
+                    placeholder="Any context for the admin…"
+                    className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2 text-white text-xs outline-none resize-none focus:border-emerald-500/60"
+                  />
+                </div>
+
+                {teamError && (
+                  <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-[11px] text-red-300">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{teamError}</span>
+                  </div>
+                )}
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    onClick={placeTeamTrade}
+                    disabled={teamSending || !teamAmount}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-bold transition disabled:opacity-50 ${
+                      teamSide === 'BUY'
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-red-600 hover:bg-red-500 text-white'
+                    }`}
+                  >
+                    {teamSending ? <Loader2 className="w-4 h-4 animate-spin" /> : (teamSide === 'BUY' ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />)}
+                    {teamSending ? 'Sending…' : `Place ${teamSide}`}
+                  </button>
+                  <button onClick={() => setTeamModalOpen(false)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm transition">Cancel</button>
                 </div>
               </div>
             </div>

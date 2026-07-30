@@ -290,7 +290,12 @@ export default function CoursePlayerClient({
                 {/* Tab content */}
                 <div>
                   {activeTab === 'content' && (
-                    <LessonContent content={lesson.content} title={lesson.title} />
+                    <LessonContent
+                      content={lesson.content}
+                      title={lesson.title}
+                      lesson={lesson}
+                      moduleTitle={module.title}
+                    />
                   )}
                   {activeTab === 'quiz' && (
                     <Quiz

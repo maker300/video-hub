@@ -11,6 +11,13 @@ export interface TeamNotifyOpts {
   message:  string
   email?:   boolean   // default false — bell only
   linkUrl?: string    // optional deep-link target for the bell row
+  /**
+   * User ids to omit from the broadcast (both bell and email). Live Trade
+   * close paths pass the set of position holders here so they aren't
+   * double-notified — they already got a targeted per-position bell with
+   * their own P/L.
+   */
+  skipUserIds?: Set<string> | string[]
 }
 
 /**
@@ -28,9 +35,14 @@ export async function notifyTeamUsers(opts: TeamNotifyOpts): Promise<void> {
     })
     if (recipients.length === 0) return
 
+    // Skip participants who already got a targeted per-position notification
+    const skip = new Set(Array.isArray(opts.skipUserIds) ? opts.skipUserIds : opts.skipUserIds ?? [])
+    const nonParticipants = recipients.filter(u => !skip.has(u.id))
+    if (nonParticipants.length === 0) return
+
     // Bell notifications — always
     await prisma.adminNotification.createMany({
-      data: recipients.map(u => ({
+      data: nonParticipants.map(u => ({
         userId:  u.id,
         subject: opts.subject,
         message: opts.message,
@@ -43,7 +55,7 @@ export async function notifyTeamUsers(opts: TeamNotifyOpts): Promise<void> {
     if (opts.email && process.env.RESEND_API_KEY) {
       // Filter out the env-based admin (no real email) — only deliver to real
       // inboxes. The internal admin email exists for FK integrity, not delivery.
-      const emailRecipients = recipients.filter(r => !r.email.endsWith('@forexmastery.internal'))
+      const emailRecipients = nonParticipants.filter(r => !r.email.endsWith('@forexmastery.internal'))
       if (emailRecipients.length > 0) {
         await sendBulkEmail(
           emailRecipients,

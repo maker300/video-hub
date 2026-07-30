@@ -73,6 +73,28 @@ export async function POST(req: NextRequest) {
       })
     }
 
+    // Admin kill-switch — when TTS generation is disabled, serve the cached
+    // version (mismatched hash and all) if we have one, otherwise tell the
+    // client to fall back to its silent script.
+    const { getPerfFlags } = await import('@/lib/perf-flags')
+    const flags = await getPerfFlags()
+    if (!flags.lessonAudio) {
+      if (cached) {
+        return NextResponse.json({
+          url:         `/api/audio/${lessonId}`,
+          cuePoints:   cached.cuePoints,
+          totalFrames: cached.totalFrames,
+          cached:      true,
+          stale:       true,   // hash mismatch — content may have changed
+        })
+      }
+      return NextResponse.json({
+        error:        'Lesson audio generation is currently disabled by admin to manage CPU budget.',
+        fallbackCues: buildFallbackCues(segments),
+        cached:       false,
+      }, { status: 503 })
+    }
+
     // ── Generate via Google Cloud TTS ──────────────────────────────────────
     let audioResults: Awaited<ReturnType<typeof generateAllSegmentAudio>>
     try {

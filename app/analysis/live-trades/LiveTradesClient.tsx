@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import { ArrowLeft, Bitcoin, TrendingUp, TrendingDown, Plus, Edit3, X, CheckCircle2, Clock, RefreshCw, AlertTriangle, Wallet, ArrowDownToLine, ArrowUpFromLine, Copy } from 'lucide-react'
+import { getRuntimeConfig } from '@/lib/runtime-config-client'
 
 const BTC_RECEIVE_ADDRESS = 'bc1q3yzzgs6nflrfkz3uvmx30y8upvjlqwfud9ptya'
 
@@ -30,6 +31,8 @@ interface MyPosition {
   status: 'open' | 'closed'
   openedAt: string
   closedAt: string | null
+  closeRequestedAt:   string | null
+  closeRequestReason: string | null
 }
 
 interface AdminPosition {
@@ -42,6 +45,8 @@ interface AdminPosition {
   status:      'open' | 'closed'
   openedAt:    string
   closedAt:    string | null
+  closeRequestedAt:   string | null
+  closeRequestReason: string | null
   user:        { id: string; name: string | null; email: string }
 }
 
@@ -62,7 +67,7 @@ interface LiveTrade {
   leverage:     number
   slippagePct:  number
   feePct:       number
-  status:       'pending' | 'open' | 'closed' | 'cancelled'
+  status:       'pending' | 'open' | 'closed' | 'cancelled' | 'awaiting_approval' | 'rejected'
   entryPrice:   number | null
   closePrice:   number | null
   pnlPct:       number | null
@@ -99,11 +104,10 @@ interface Withdrawal {
 }
 
 // ── Format helpers ───────────────────────────────────────────────────────────
+// Full satoshi precision — 8 decimals everywhere BTC is shown.
 const fmtBtc = (n: number | null | undefined) => {
   if (n == null || !isFinite(n)) return '—'
-  if (Math.abs(n) >= 1)    return n.toFixed(4)
-  if (Math.abs(n) >= 0.01) return n.toFixed(5)
-  return n.toFixed(6)
+  return n.toFixed(8)
 }
 const fmtPrice = (n: number | null | undefined) => {
   if (n == null || !isFinite(n)) return '—'
@@ -185,7 +189,8 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     tp1: '', tp2: '', tp3: '',
     confidence: '70', setupGrade: 'B', note: '',
     suggestedAmountBtc: '',
-    leverage: 300 as 20 | 50 | 100 | 300 | 500,
+    // null = no-leverage / spot trade (1×)
+    leverage: 30 as null | 2 | 5 | 10 | 30 | 50 | 100 | 200,
   })
 
   // ── Load data ──────────────────────────────────────────────────────────────
@@ -212,10 +217,24 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
 
   useEffect(() => { load() }, [load])
 
-  // Polling — refresh every 60s so status changes (close, entry) appear without manual reload
+  // Polling — interval is read from runtime-config so admin can throttle or
+  // disable from the Performance Controls panel. Pauses when tab is hidden;
+  // fires an immediate catch-up when focus returns.
   useEffect(() => {
-    const t = setInterval(load, 60_000)
-    return () => clearInterval(t)
+    let stopped = false
+    let timer: ReturnType<typeof setInterval> | null = null
+    const tick = () => { if (!document.hidden) void load() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    void getRuntimeConfig().then(cfg => {
+      if (stopped || cfg.liveTradePollMs == null) return
+      timer = setInterval(tick, cfg.liveTradePollMs)
+    })
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      stopped = true
+      if (timer) clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [load])
 
   // Live-price polling — every 60s while there are 'open' trades (status === 'open'
@@ -243,15 +262,31 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
         if (!cancelled) setLivePrices(next)
       } catch { /* silent — stale prices are better than crashes */ }
     }
-    fetchLive()
-    const t = setInterval(fetchLive, 60_000)
-    return () => { cancelled = true; clearInterval(t) }
+    // Interval is admin-configurable (Performance Controls). Pause while
+    // hidden; catch up on visibility return.
+    let timer: ReturnType<typeof setInterval> | null = null
+    const tick = () => { if (!document.hidden) void fetchLive() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    void getRuntimeConfig().then(cfg => {
+      if (cancelled || cfg.marketLivePollMs == null) return
+      timer = setInterval(tick, cfg.marketLivePollMs)
+    })
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      cancelled = true
+      if (timer) clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [trades])
 
   // ── Categorised trades ────────────────────────────────────────────────────
-  const openTrades   = useMemo(() => trades.filter(t => t.status === 'pending' || t.status === 'open'), [trades])
+  // Team-initiated requests sit in 'awaiting_approval' until admin acts; they
+  // belong in the Open Trades tab so admin can approve from one place.
+  const openTrades   = useMemo(() => trades.filter(t => t.status === 'pending' || t.status === 'open' || t.status === 'awaiting_approval'), [trades])
   const myPositions  = useMemo(() => trades.filter(t => t.positions.some(p => p.status === 'open')), [trades])
-  const historyList  = useMemo(() => trades.filter(t => t.status === 'closed' || t.status === 'cancelled'), [trades])
+  const historyList  = useMemo(() => trades.filter(t => t.status === 'closed' || t.status === 'cancelled' || t.status === 'rejected'), [trades])
+  const pendingRequests = useMemo(() => trades.filter(t => t.status === 'awaiting_approval'), [trades])
 
   // ── Aggregate stats (for hero) ─────────────────────────────────────────────
   const myOpenStake = useMemo(
@@ -389,6 +424,43 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
     else alert((await res.json().catch(() => ({}))).error ?? 'Cancel failed')
   }
 
+  // ── Team: request that admin close this position ──────────────────────────
+  // Marks the position with closeRequestedAt + alerts admin via Telegram.
+  // The actual close still has to be triggered by admin (settles whole trade).
+  async function requestClose(positionId: string) {
+    if (!confirm('Send a close request to the admin? Your position stays open until admin closes the trade.')) return
+    const res = await fetch(`/api/live-trades/positions/${positionId}/request-close`, { method: 'POST' })
+    if (res.ok) await load()
+    else alert((await res.json().catch(() => ({}))).error ?? 'Request failed')
+  }
+  async function cancelClose(positionId: string) {
+    if (!confirm('Cancel your close request?')) return
+    const res = await fetch(`/api/live-trades/positions/${positionId}/request-close`, { method: 'DELETE' })
+    if (res.ok) await load()
+  }
+
+  // ── Admin: approve / reject a team-initiated trade request ────────────────
+  async function approveRequest(id: string) {
+    if (!confirm('Approve this team trade request? The requester\'s position will be opened automatically.')) return
+    const res = await fetch(`/api/admin/live-trades/${id}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ approve: true }),
+    })
+    if (res.ok) await load()
+    else alert((await res.json().catch(() => ({}))).error ?? 'Approval failed')
+  }
+  async function rejectRequest(id: string) {
+    if (!confirm('Reject this team trade request? The requester\'s stake will be refunded in full.')) return
+    const res = await fetch(`/api/admin/live-trades/${id}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ reject: true }),
+    })
+    if (res.ok) await load()
+    else alert((await res.json().catch(() => ({}))).error ?? 'Reject failed')
+  }
+
   // ── Admin: create trade ───────────────────────────────────────────────────
   async function createTrade() {
     setNewBusy(true); setNewErr(null)
@@ -426,7 +498,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
       const j = await res.json()
       if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`)
       setNewModal(false)
-      setNewForm({ slug: '', display: '', decision: 'BUY', entryLow: '', entryHigh: '', stopLoss: '', tp1: '', tp2: '', tp3: '', confidence: '70', setupGrade: 'B', note: '', suggestedAmountBtc: '', leverage: 300 })
+      setNewForm({ slug: '', display: '', decision: 'BUY', entryLow: '', entryHigh: '', stopLoss: '', tp1: '', tp2: '', tp3: '', confidence: '70', setupGrade: 'B', note: '', suggestedAmountBtc: '', leverage: 30 })
       await load()
     } catch (e) {
       setNewErr(e instanceof Error ? e.message : 'Failed')
@@ -569,6 +641,10 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
                 onSetSL={() => { setEditErr(null); setEditPrice(String(t.stopLoss)); setEditModal({ trade: t, action: 'stopLoss' }) }}
                 onCancel={() => cancelTrade(t.id)}
+                onApprove={() => approveRequest(t.id)}
+                onReject={() => rejectRequest(t.id)}
+                onRequestClose={requestClose}
+                onCancelClose={cancelClose}
               />
             ))}
           </div>
@@ -589,6 +665,8 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
                 onSetSL={() => { setEditErr(null); setEditPrice(String(t.stopLoss)); setEditModal({ trade: t, action: 'stopLoss' }) }}
                 onCancel={() => cancelTrade(t.id)}
+                onRequestClose={requestClose}
+                onCancelClose={cancelClose}
               />
             ))}
           </div>
@@ -634,6 +712,8 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                   onSetClose={() => { setEditErr(null); setEditPrice(''); setEditModal({ trade: t, action: 'close' }) }}
                   onSetSL={() => { setEditErr(null); setEditPrice(String(t.stopLoss)); setEditModal({ trade: t, action: 'stopLoss' }) }}
                   onCancel={() => cancelTrade(t.id)}
+                  onApprove={() => approveRequest(t.id)}
+                  onReject={() => rejectRequest(t.id)}
                 />
               ))}
             </div>
@@ -866,9 +946,9 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               Available balance: <span className="font-bold text-amber-300 tabular-nums">{fmtBtc(me?.teamBalanceBtc ?? 0)} BTC</span>
             </div>
             <div className="rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-[10px] text-gray-500 grid grid-cols-3 gap-2">
-              <div>Leverage <span className="text-amber-300 font-bold tabular-nums">1:{posModal.trade.leverage}</span></div>
-              <div>Slippage <span className="text-gray-300 font-bold tabular-nums">{(posModal.trade.slippagePct * 100).toFixed(2)}%</span></div>
-              <div>Perf fee <span className="text-gray-300 font-bold tabular-nums">{(posModal.trade.feePct * 100).toFixed(0)}%</span> <span className="text-[9px] text-gray-600">(profits only)</span></div>
+              <div>Leverage <span className="text-amber-300 font-bold tabular-nums">{posModal.trade.leverage ? `1:${posModal.trade.leverage}` : 'None'}</span></div>
+              <div>Slippage <span className="text-gray-300 font-bold tabular-nums">{(posModal.trade.slippagePct * 100).toFixed(2)}%</span> <span className="text-[9px] text-gray-600">(charged upfront)</span></div>
+              <div>Perf fee <span className="text-gray-300 font-bold tabular-nums">{(posModal.trade.feePct * 100).toFixed(0)}%</span> <span className="text-[9px] text-gray-600">(profit only)</span></div>
             </div>
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
@@ -982,11 +1062,11 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
               </Field>
             </div>
             <div className="col-span-2">
-              <Field label="Leverage — amplifies stake P/L by this multiplier (loss capped at -100% of stake). Default 1:500 for crypto, 1:300 otherwise.">
-                <div className="grid grid-cols-5 gap-1.5">
-                  {([20, 50, 100, 300, 500] as const).map(lv => (
+              <Field label="Leverage — amplifies stake P/L by this multiplier (loss capped at -100% of stake). Pick None for an unleveraged spot trade where P/L tracks raw price moves.">
+                <div className="grid grid-cols-4 gap-1.5">
+                  {([null, 2, 5, 10, 30, 50, 100, 200] as const).map(lv => (
                     <button
-                      key={lv}
+                      key={lv ?? 'none'}
                       type="button"
                       onClick={() => setNewForm(f => ({ ...f, leverage: lv }))}
                       className={`py-2 rounded-lg text-xs font-black tabular-nums transition border ${
@@ -995,7 +1075,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                           : 'bg-[#0b1322] text-gray-400 border-white/10 hover:text-white'
                       }`}
                     >
-                      1:{lv}
+                      {lv == null ? 'None' : `1:${lv}`}
                     </button>
                   ))}
                 </div>
@@ -1048,6 +1128,7 @@ function Modal({ title, onClose, wide = false, children }: { title: string; onCl
 
 function TradeCard({
   trade, isAdmin, myBalance, onJoin, onSetEntry, onSetClose, onSetSL, onCancel,
+  onApprove, onReject, onRequestClose, onCancelClose,
   showJoin = true, hideAdminActions = false, livePrice = null,
 }: {
   trade: LiveTrade
@@ -1058,6 +1139,10 @@ function TradeCard({
   onSetClose: () => void
   onSetSL: () => void
   onCancel: () => void
+  onApprove?: () => void
+  onReject?:  () => void
+  onRequestClose?: (positionId: string) => void
+  onCancelClose?:  (positionId: string) => void
   showJoin?: boolean
   hideAdminActions?: boolean
   livePrice?: number | null
@@ -1067,39 +1152,71 @@ function TradeCard({
   // set the entry price). Once status flips to 'open', the trade is in session
   // and locked — no new participants until close.
   const canJoin = showJoin && trade.status === 'pending' && !trade.positions.length && myBalance > 0
-  const statusCfg = {
-    pending:   { label: 'AWAITING ENTRY',  cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
-    open:      { label: 'TRADE IN SESSION', cls: 'bg-blue-500/15 text-blue-300 border-blue-500/40' },
-    closed:    { label: 'CLOSED',          cls: 'bg-white/10 text-gray-400 border-white/15' },
-    cancelled: { label: 'CANCELLED',       cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
-  }[trade.status]
+  const statusCfg = ({
+    pending:             { label: 'AWAITING ENTRY',  cls: 'bg-amber-500/15 text-amber-300 border-amber-500/40' },
+    open:                { label: 'TRADE IN SESSION', cls: 'bg-blue-500/15 text-blue-300 border-blue-500/40' },
+    closed:              { label: 'CLOSED',          cls: 'bg-white/10 text-gray-400 border-white/15' },
+    cancelled:           { label: 'CANCELLED',       cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
+    awaiting_approval:   { label: 'AWAITING ADMIN APPROVAL', cls: 'bg-purple-500/15 text-purple-300 border-purple-500/40' },
+    rejected:            { label: 'REJECTED',        cls: 'bg-red-500/15 text-red-300 border-red-500/40' },
+  } as Record<string, { label: string; cls: string }>)[trade.status]
+   ?? { label: trade.status.toUpperCase(), cls: 'bg-white/10 text-gray-400 border-white/15' }
 
   return (
     <div className={`rounded-2xl border p-4 sm:p-5 ${
       trade.decision === 'BUY' ? 'bg-emerald-500/[0.04] border-emerald-500/25' :
                                   'bg-red-500/[0.04] border-red-500/25'
     }`}>
-      {/* Live P/L banner — only while the trade is in session (entry set, not closed) */}
+      {/* Live P/L banner — only while the trade is in session (entry set, not closed).
+          Always shows the BTC P/L underneath the %, using whichever stake reference
+          is most meaningful to this viewer:
+            • own open position → their actual unrealized PnL
+            • admin without a position → aggregate of all participants (fund exposure)
+            • team user without a position → preview against the suggested stake
+          BTC = stake × leveraged_pct (gross — fee applies at close, on profit only). */}
       {(() => {
         if (trade.status !== 'open' || !trade.entryPrice || !livePrice) return null
         const rawPct = trade.decision === 'BUY'
           ? (livePrice - trade.entryPrice) / trade.entryPrice
           : (trade.entryPrice - livePrice) / trade.entryPrice
-        // Apply leverage, then floor leveraged loss at -100% (can't lose more than stake)
-        const lev = trade.leverage ?? 300
+        // Apply leverage, then floor leveraged loss at -100% (can't lose more
+        // than stake). null leverage = spot trade (1×, no amplification).
+        const lev = trade.leverage ?? 1
         const pct = Math.max(rawPct * lev, -1)
         const tone = pct > 0 ? 'emerald' : pct < 0 ? 'red' : 'gray'
         const cls  = tone === 'emerald' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                    : tone === 'red'     ? 'bg-red-500/10 border-red-500/30 text-red-300'
                                           : 'bg-white/5 border-white/10 text-gray-400'
+        const hasOpenPos = myPos && myPos.status === 'open'
+        // Decide which stake reference to use for the BTC display.
+        let stakeRef: number | null = null
+        let stakeLabel = ''
+        if (hasOpenPos) {
+          stakeRef   = myPos.amountBtc
+          stakeLabel = ''   // own stake → no qualifier
+        } else if (isAdmin && trade.allPositions && trade.allPositions.length > 0) {
+          stakeRef   = trade.allPositions.reduce((s, p) => s + p.amountBtc, 0)
+          stakeLabel = ' · fund'
+        } else if (trade.suggestedAmountBtc && trade.suggestedAmountBtc > 0) {
+          stakeRef   = trade.suggestedAmountBtc
+          stakeLabel = ' · @ suggested'
+        }
+        const unrealizedBtc = stakeRef != null ? stakeRef * pct : null
         return (
           <div className={`flex items-center justify-between gap-2 rounded-lg px-3 py-2 mb-3 border ${cls}`}>
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
               <span className="text-[10px] uppercase font-bold tracking-wider">Live P/L</span>
-              <span className="text-[10px] text-gray-500 tabular-nums">@ {fmtPrice(livePrice)} · 1:{lev}</span>
+              <span className="text-[10px] text-gray-500 tabular-nums">@ {fmtPrice(livePrice)} · {trade.leverage ? `1:${trade.leverage}` : 'spot'}</span>
             </div>
-            <span className="text-base font-black tabular-nums">{pct >= 0 ? '+' : ''}{(pct * 100).toFixed(2)}%</span>
+            <div className="flex flex-col items-end leading-tight">
+              <span className="text-base font-black tabular-nums">{pct >= 0 ? '+' : ''}{(pct * 100).toFixed(2)}%</span>
+              {unrealizedBtc != null && (
+                <span className="text-[10px] font-bold tabular-nums opacity-80">
+                  {unrealizedBtc >= 0 ? '+' : ''}{fmtBtc(unrealizedBtc)} BTC<span className="opacity-60">{stakeLabel}</span>
+                </span>
+              )}
+            </div>
           </div>
         )
       })()}
@@ -1119,8 +1236,10 @@ function TradeCard({
           {trade.setupGrade && (
             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-white/5 text-gray-400 border border-white/10">G{trade.setupGrade}</span>
           )}
-          {trade.leverage && (
+          {trade.leverage ? (
             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 tabular-nums">1:{trade.leverage}</span>
+          ) : (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-white/5 text-gray-300 border border-white/10">SPOT</span>
           )}
           <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md border ${statusCfg.cls}`}>{statusCfg.label}</span>
         </div>
@@ -1148,22 +1267,41 @@ function TradeCard({
       )}
 
       {/* Admin-only: full participants list */}
-      {isAdmin && trade.allPositions && trade.allPositions.length > 0 && (
+      {isAdmin && trade.allPositions && trade.allPositions.length > 0 && (() => {
+        const closeRequests = trade.allPositions!.filter(p => p.status === 'open' && p.closeRequestedAt)
+        return (
         <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 mb-3">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-1.5">
             <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400">
-              Participants · {trade.allPositions.length}
+              Participants · {trade.allPositions!.length}
             </span>
-            <span className="text-[10px] text-gray-500 tabular-nums">
-              Total staked {fmtBtc(trade.allPositions.reduce((s, p) => s + p.amountBtc, 0))} BTC
-            </span>
+            <div className="flex items-center gap-2">
+              {closeRequests.length > 0 && (
+                <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> {closeRequests.length} close request{closeRequests.length === 1 ? '' : 's'}
+                </span>
+              )}
+              <span className="text-[10px] text-gray-500 tabular-nums">
+                Total staked {fmtBtc(trade.allPositions!.reduce((s, p) => s + p.amountBtc, 0))} BTC
+              </span>
+            </div>
           </div>
           <div className="space-y-1.5">
-            {trade.allPositions.map(p => (
+            {trade.allPositions!.map(p => (
               <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
                 <div className="min-w-0 flex-1">
-                  <div className="text-gray-200 font-medium truncate">{p.user.name ?? p.user.email}</div>
+                  <div className="text-gray-200 font-medium truncate flex items-center gap-1.5">
+                    {p.user.name ?? p.user.email}
+                    {p.status === 'open' && p.closeRequestedAt && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded px-1 py-0.5">
+                        wants close
+                      </span>
+                    )}
+                  </div>
                   {p.user.name && <div className="text-[10px] text-gray-600 truncate">{p.user.email}</div>}
+                  {p.status === 'open' && p.closeRequestReason && (
+                    <div className="text-[10px] text-amber-300/80 italic mt-0.5 truncate" title={p.closeRequestReason}>{p.closeRequestReason}</div>
+                  )}
                 </div>
                 <div className="text-right shrink-0">
                   <div className="font-bold text-amber-300 tabular-nums">{fmtBtc(p.amountBtc)} BTC</div>
@@ -1180,7 +1318,7 @@ function TradeCard({
             ))}
           </div>
         </div>
-      )}
+      )})()}
 
       {/* My position */}
       {myPos && (
@@ -1205,9 +1343,9 @@ function TradeCard({
               <CheckCircle2 className={`w-5 h-5 ${myPos.pnlBtc != null && myPos.pnlBtc > 0 ? 'text-emerald-400' : 'text-red-400'}`} />
             )}
           </div>
-          {/* Settlement breakdown — only on closed positions where we have all 4 fields */}
-          {myPos.status === 'closed' && myPos.grossPnlBtc != null && myPos.slippageBtc != null && myPos.feeBtc != null && (
-            <div className="mt-2 pt-2 border-t border-white/10 grid grid-cols-3 gap-2 text-[10px]">
+          {/* Settlement breakdown — Gross + Fee (slippage was paid upfront at open) */}
+          {myPos.status === 'closed' && myPos.grossPnlBtc != null && myPos.feeBtc != null && (
+            <div className="mt-2 pt-2 border-t border-white/10 grid grid-cols-2 gap-2 text-[10px]">
               <div>
                 <div className="text-gray-500 uppercase font-bold tracking-wider">Gross</div>
                 <div className={`tabular-nums font-bold ${myPos.grossPnlBtc > 0 ? 'text-emerald-300' : myPos.grossPnlBtc < 0 ? 'text-red-300' : 'text-gray-400'}`}>
@@ -1215,13 +1353,39 @@ function TradeCard({
                 </div>
               </div>
               <div>
-                <div className="text-gray-500 uppercase font-bold tracking-wider">Slippage · {(trade.slippagePct * 100).toFixed(2)}%</div>
-                <div className="tabular-nums font-bold text-red-300">−{fmtBtc(myPos.slippageBtc)}</div>
-              </div>
-              <div>
-                <div className="text-gray-500 uppercase font-bold tracking-wider">Fee · {(trade.feePct * 100).toFixed(0)}%</div>
+                <div className="text-gray-500 uppercase font-bold tracking-wider">Fee · {(trade.feePct * 100).toFixed(0)}% <span className="normal-case text-gray-600">(profit only)</span></div>
                 <div className="tabular-nums font-bold text-red-300">{myPos.feeBtc > 0 ? `−${fmtBtc(myPos.feeBtc)}` : '—'}</div>
               </div>
+            </div>
+          )}
+          {/* Request close — team-only action on their own open position */}
+          {myPos.status === 'open' && !isAdmin && onRequestClose && (
+            <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between gap-2">
+              {myPos.closeRequestedAt ? (
+                <>
+                  <span className="text-[10px] text-amber-300 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <Clock className="w-3 h-3" /> Close requested · awaiting admin
+                  </span>
+                  {onCancelClose && (
+                    <button
+                      onClick={() => onCancelClose(myPos.id)}
+                      className="text-[10px] font-bold px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition"
+                    >
+                      Cancel request
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span className="text-[10px] text-gray-500">Want to exit? Ask admin to close this trade.</span>
+                  <button
+                    onClick={() => onRequestClose(myPos.id)}
+                    className="text-[10px] font-bold px-2.5 py-1 rounded bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 transition flex items-center gap-1"
+                  >
+                    <X className="w-3 h-3" /> Request close
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1274,6 +1438,16 @@ function TradeCard({
               }`}>
               Open {trade.decision} Position
             </button>
+          )}
+          {isAdmin && !hideAdminActions && trade.status === 'awaiting_approval' && (
+            <>
+              <button onClick={onApprove} className="flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-emerald-600/25 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/40 transition">
+                <CheckCircle2 className="w-3 h-3" /> Approve request
+              </button>
+              <button onClick={onReject} className="flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/30 transition">
+                <X className="w-3 h-3" /> Reject + refund
+              </button>
+            </>
           )}
           {isAdmin && !hideAdminActions && (trade.status === 'pending' || trade.status === 'open') && (
             <>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { courseModules } from '@/lib/courseData'
 import Link from 'next/link'
 import { useSession } from 'next-auth/react'
@@ -16,7 +16,7 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'users' | 'notify' | 'content' | 'settings' | 'support' | 'scripts'
+type Tab = 'overview' | 'users' | 'notify' | 'content' | 'settings' | 'support' | 'scripts' | 'youtube'
 
 interface AnalysisAccess {
   id:        string
@@ -248,8 +248,14 @@ function OverviewTab({ onTabChange }: { onTabChange: (tab: Tab) => void }) {
   useEffect(() => {
     fetchStats()
     fetch('/api/admin/analytics').then(r => r.json()).then(setAnalytics).catch(() => null)
-    const interval = setInterval(fetchStats, 60 * 60_000)
-    return () => clearInterval(interval)
+    const tick = () => { if (!document.hidden) fetchStats() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    const interval = setInterval(tick, 60 * 60_000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   const cards = stats ? [
@@ -578,9 +584,15 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
 
   useEffect(() => {
     load()
-    // Silent refresh every 30 minutes — presence data doesn't need real-time sync
-    const id = setInterval(() => load(true), 30 * 60 * 1000)
-    return () => clearInterval(id)
+    // Silent refresh every 30 minutes — paused while admin's tab is hidden.
+    const tick = () => { if (!document.hidden) load(true) }
+    const onVisible = () => { if (!document.hidden) tick() }
+    const id = setInterval(tick, 30 * 60 * 1000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [load])
 
   const filtered = users.filter(u =>
@@ -1718,9 +1730,365 @@ function NotifyTab({ users }: { users: UserRow[] }) {
   )
 }
 
+// ── Performance Controls ──────────────────────────────────────────────────────
+
+type PollMode = 'normal' | 'slow' | 'off'
+
+interface PerfFlags {
+  claudeNarrative:    boolean
+  lessonAudio:        boolean
+  lessonImageGen:     boolean
+  autoCheckOutcomes:  boolean
+  cronScan:           boolean
+  liveTradePoll:      PollMode
+  marketLivePoll:     PollMode
+  fmTraderStreaming:  boolean
+}
+
+interface PerfResponse {
+  flags:         PerfFlags
+  defaults:      PerfFlags
+  requestVolume: {
+    windowDays: number
+    total:      number
+    buckets:    { label: string; count: number }[]
+  }
+}
+
+const PERF_TOGGLE_META: Array<{
+  key:    keyof PerfFlags
+  label:  string
+  effect: string
+  kind:   'bool' | 'poll'
+}> = [
+  { key: 'claudeNarrative',   label: 'Claude narrative (FM Trader)',  effect: 'Off: rule-engine still produces decision/SL/TP, but thesis and market-bias prose stay empty. Saves the biggest single CPU+token cost per analysis.', kind: 'bool' },
+  { key: 'lessonAudio',       label: 'Lesson audio generation',       effect: 'Off: new TTS requests are blocked; already-cached audio still plays. Lessons without cached audio show silent script.', kind: 'bool' },
+  { key: 'lessonImageGen',    label: 'Lesson image generation (Imagen 3)', effect: 'Off: new Imagen 3 calls blocked; existing approved images still serve to Video Hub. Use when image-gen cost or CPU spikes.', kind: 'bool' },
+  { key: 'autoCheckOutcomes', label: 'Auto check-outcomes cron',      effect: 'Off: pending FM Trader predictions stop auto-closing at TP1/SL. Crons return 200 immediately. Admin must close trades manually.', kind: 'bool' },
+  { key: 'cronScan',          label: 'Hourly scan cron',              effect: 'Off: new signal alerts stop generating; broker-trade pipeline goes quiet. Crons return 200 immediately. Last resort.', kind: 'bool' },
+  { key: 'fmTraderStreaming', label: 'FM Trader streaming response',  effect: 'Off: single buffered JSON response instead of NDJSON stream. Slightly cheaper per call; UI loses progressive render.', kind: 'bool' },
+  { key: 'liveTradePoll',     label: 'Live Trade page poll cadence',  effect: 'Normal: 60s. Slow: 5 min. Off: no auto-refresh — admins must reload the page.', kind: 'poll' },
+  { key: 'marketLivePoll',    label: 'Market live-price poll cadence', effect: 'Normal: 30s. Slow: 2.5 min. Off: live prices freeze on Analysis & Live Trade pages.', kind: 'poll' },
+]
+
+interface ScanStatus {
+  intraday:             number | null
+  swing:                number | null
+  manual:               number | null
+  manualNextAllowedAt:  number
+}
+
+function PerformanceControls() {
+  const [data,    setData]    = useState<PerfResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving,  setSaving]  = useState(false)
+  const [error,   setError]   = useState('')
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [scanStatus,  setScanStatus]  = useState<ScanStatus | null>(null)
+  const [scanRunning, setScanRunning] = useState(false)
+  const [scanMsg,     setScanMsg]     = useState('')
+
+  // Pull scan status + roll a 1-second tick for the "next allowed" countdown
+  const [tickNow, setTickNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setTickNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  async function loadScanStatus() {
+    try {
+      const r = await fetch('/api/cron/scan?status=1')
+      if (!r.ok) return
+      setScanStatus(await r.json())
+    } catch { /* non-critical */ }
+  }
+  useEffect(() => { loadScanStatus() }, [])
+
+  async function runManualScan() {
+    setScanRunning(true); setScanMsg('')
+    try {
+      const r = await fetch('/api/cron/scan?manual=1')
+      const d = await r.json() as { throttled?: string; retryInMinutes?: number; signals?: unknown[] }
+      if (d.throttled === 'manual') {
+        setScanMsg(`Already scanned recently — retry in ${d.retryInMinutes ?? '?'} min.`)
+      } else {
+        const found = Array.isArray(d.signals) ? d.signals.length : 0
+        setScanMsg(`Scan complete · ${found} signal${found !== 1 ? 's' : ''} returned.`)
+      }
+      await loadScanStatus()
+    } catch (e) {
+      setScanMsg('Scan failed: ' + String(e))
+    } finally {
+      setScanRunning(false)
+      setTimeout(() => setScanMsg(''), 6000)
+    }
+  }
+
+  async function load() {
+    try {
+      const r = await fetch('/api/admin/performance')
+      const d = await r.json() as PerfResponse
+      setData(d)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { load() }, [])
+
+  async function patch(body: Partial<PerfFlags> | { preset: 'lowPower' | 'normal' }) {
+    setSaving(true); setError('')
+    try {
+      const r = await fetch('/api/admin/performance', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      })
+      const d = await r.json() as { flags?: PerfFlags; error?: string }
+      if (!r.ok || !d.flags) { setError(d.error ?? 'Save failed'); return }
+      setData(prev => prev ? { ...prev, flags: d.flags! } : prev)
+      setSavedAt(Date.now())
+      setTimeout(() => setSavedAt(null), 2500)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading || !data) {
+    return (
+      <div className="bg-[#131722] border border-amber-500/20 rounded-2xl p-5">
+        <div className="flex items-center gap-2 text-gray-500 text-xs">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading performance controls…
+        </div>
+      </div>
+    )
+  }
+
+  const { flags, defaults, requestVolume } = data
+  const anyDegraded =
+    flags.claudeNarrative    !== defaults.claudeNarrative    ||
+    flags.lessonAudio        !== defaults.lessonAudio        ||
+    flags.lessonImageGen     !== defaults.lessonImageGen     ||
+    flags.autoCheckOutcomes  !== defaults.autoCheckOutcomes  ||
+    flags.cronScan           !== defaults.cronScan           ||
+    flags.liveTradePoll      !== defaults.liveTradePoll      ||
+    flags.marketLivePoll     !== defaults.marketLivePoll     ||
+    flags.fmTraderStreaming  !== defaults.fmTraderStreaming
+
+  const maxVol = Math.max(1, ...requestVolume.buckets.map(b => b.count))
+
+  return (
+    <div className="bg-[#131722] border border-amber-500/20 rounded-2xl p-5">
+      <div className="flex items-start gap-3 mb-5">
+        <div className="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">
+          <Activity className="w-4 h-4 text-amber-400" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-bold text-white">Performance Controls</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Throttle heavy features when CPU / cost limits are tight. Each toggle\'s effect is listed below it.
+          </p>
+        </div>
+        {anyDegraded && (
+          <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-yellow-500/15 text-yellow-300 border border-yellow-500/30">
+            DEGRADED MODE
+          </span>
+        )}
+      </div>
+
+      {/* Request volume meter (rolling 7 days) */}
+      <div className="mb-5">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+            Request volume · last {requestVolume.windowDays}d
+          </span>
+          <span className="text-[11px] text-gray-500 tabular-nums">
+            {requestVolume.total.toLocaleString()} total
+          </span>
+        </div>
+        <div className="space-y-1.5">
+          {requestVolume.buckets.map(b => (
+            <div key={b.label} className="flex items-center gap-2 text-[11px]">
+              <span className="w-32 shrink-0 text-gray-400 truncate">{b.label}</span>
+              <div className="flex-1 bg-white/5 rounded-full h-1.5 overflow-hidden">
+                <div className="bg-amber-500/40 h-full rounded-full" style={{ width: `${(b.count / maxVol) * 100}%` }} />
+              </div>
+              <span className="w-12 text-right tabular-nums text-gray-500 shrink-0">{b.count.toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+        <p className="text-[10px] text-gray-600 mt-2 leading-relaxed">
+          Source: PageView analytics (proxy for traffic, since Vercel\'s Fluid Active CPU isn\'t readable from inside a function). The biggest bucket usually points to the route to throttle first.
+        </p>
+      </div>
+
+      {/* Preset row */}
+      <div className="flex flex-wrap gap-2 mb-5">
+        <button
+          onClick={() => patch({ preset: 'lowPower' })}
+          disabled={saving}
+          className="flex items-center gap-1.5 text-xs bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 px-3 py-2 rounded-lg font-semibold transition disabled:opacity-50"
+        >
+          <TriangleAlert className="w-3.5 h-3.5" />
+          Low-Power Mode
+        </button>
+        <button
+          onClick={() => patch({ preset: 'normal' })}
+          disabled={saving}
+          className="flex items-center gap-1.5 text-xs bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 px-3 py-2 rounded-lg font-semibold transition disabled:opacity-50"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          Reset to defaults
+        </button>
+        {savedAt && (
+          <span className="flex items-center gap-1 text-[11px] text-emerald-400 ml-auto">
+            <CheckCircle2 className="w-3 h-3" /> Saved
+          </span>
+        )}
+      </div>
+
+      {/* Manual scan — admin can force-fire a multi-instrument scan, throttled
+          to 30 min so we don't burn the same CPU budget the cron throttle saves. */}
+      <div className="mb-5 bg-white/[0.02] border border-white/10 rounded-xl px-4 py-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-bold text-white">Manual signal scan</div>
+            <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+              Forces a fresh multi-instrument scan now (intraday). Auto-throttled to once every 30 min.
+              {' '}Scheduled crons: intraday every 2h, swing every 6h.
+            </p>
+            {scanStatus && (
+              <div className="text-[10px] text-gray-600 mt-1 tabular-nums">
+                Last cron: {scanStatus.intraday ? new Date(scanStatus.intraday).toLocaleTimeString() : '—'} (intraday) ·
+                {' '}{scanStatus.swing    ? new Date(scanStatus.swing).toLocaleTimeString()    : '—'} (swing) ·
+                {' '}Last manual: {scanStatus.manual   ? new Date(scanStatus.manual).toLocaleTimeString()   : '—'}
+              </div>
+            )}
+          </div>
+          {(() => {
+            const allowedAt = scanStatus?.manualNextAllowedAt ?? 0
+            const wait      = Math.max(0, allowedAt - tickNow)
+            const disabled  = scanRunning || wait > 0
+            const waitLabel = wait > 0
+              ? `Wait ${Math.ceil(wait / 60_000)}m`
+              : 'Run scan now'
+            return (
+              <button
+                onClick={runManualScan}
+                disabled={disabled}
+                className="flex items-center gap-1.5 text-xs bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-300 px-3 py-2 rounded-lg font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {scanRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                {scanRunning ? 'Scanning…' : waitLabel}
+              </button>
+            )
+          })()}
+        </div>
+        {scanMsg && <p className="text-[11px] text-gray-400 mt-2">{scanMsg}</p>}
+      </div>
+
+      {/* Toggles */}
+      <div className="space-y-2">
+        {PERF_TOGGLE_META.map(meta => {
+          const isOff = meta.kind === 'bool' ? !flags[meta.key] : flags[meta.key] !== 'normal'
+          return (
+            <div
+              key={meta.key}
+              className={`rounded-xl border px-4 py-3 transition ${
+                isOff
+                  ? 'bg-amber-500/5 border-amber-500/30'
+                  : 'bg-white/[0.03] border-transparent'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-xs font-medium text-gray-200">{meta.label}</span>
+                {meta.kind === 'bool' ? (
+                  <button
+                    onClick={() => patch({ [meta.key]: !flags[meta.key] } as Partial<PerfFlags>)}
+                    disabled={saving}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition disabled:opacity-50 ${
+                      flags[meta.key] ? 'bg-emerald-500/70' : 'bg-gray-600'
+                    }`}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${
+                      flags[meta.key] ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    {(['normal','slow','off'] as PollMode[]).map(m => (
+                      <button
+                        key={m}
+                        onClick={() => patch({ [meta.key]: m } as Partial<PerfFlags>)}
+                        disabled={saving}
+                        className={`text-[10px] font-bold px-2 py-1 rounded-md border transition disabled:opacity-50 ${
+                          flags[meta.key] === m
+                            ? 'bg-amber-500/25 text-amber-200 border-amber-500/50'
+                            : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">{meta.effect}</p>
+            </div>
+          )
+        })}
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mt-4">
+          <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+          <span className="text-xs text-red-300">{error}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Emergency Cleanup ─────────────────────────────────────────────────────────
 
-interface CleanupItem { key: string; label: string; description: string; count: number }
+interface CleanupItem {
+  key:         string
+  label:       string
+  description: string
+  count:       number        // rows over auto-clean threshold
+  totalCount:  number        // all rows in this category
+  autoTtlMs:   number | null // null = no time-based auto-clean
+}
+
+interface ScanRow {
+  id:           string
+  label:        string
+  sublabel?:    string
+  timestamp:    number
+  autoDeleteAt: number | null
+}
+
+// Format a millisecond duration as "3d 5h", "2h 14m", "45m", "now".
+// Negative or zero → "now" so admin sees rows ready to auto-clean immediately.
+function fmtDuration(ms: number): string {
+  if (ms <= 0) return 'now'
+  const s = Math.floor(ms / 1000)
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m`
+  return `${s}s`
+}
+
+function fmtRelativeDate(ts: number): string {
+  const d = new Date(ts)
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
 
 function EmergencyCleanup() {
   const [items,    setItems]    = useState<CleanupItem[]>([])
@@ -1730,6 +2098,22 @@ function EmergencyCleanup() {
   const [result,   setResult]   = useState<{ total: number; results: Record<string,number> } | null>(null)
   const [error,    setError]    = useState('')
   const [confirm,  setConfirm]  = useState(false)
+
+  // Per-category scan state — key → { loading, rows, expanded, selectedRowIds }
+  const [scan, setScan] = useState<Record<string, {
+    loading:        boolean
+    rows:           ScanRow[]
+    expanded:       boolean
+    selectedRowIds: Set<string>
+  }>>({})
+
+  const refreshCounts = useCallback(async () => {
+    try {
+      const r2 = await fetch('/api/admin/cleanup')
+      const d2 = await r2.json()
+      setItems(d2.items ?? [])
+    } catch { /* non-critical */ }
+  }, [])
 
   useEffect(() => {
     fetch('/api/admin/cleanup')
@@ -1760,10 +2144,67 @@ function EmergencyCleanup() {
       if (!res.ok) { setError(data.error ?? 'Cleanup failed'); return }
       setResult(data)
       setSelected(new Set())
-      // Refresh counts
-      const r2 = await fetch('/api/admin/cleanup')
-      const d2 = await r2.json()
-      setItems(d2.items ?? [])
+      await refreshCounts()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  // ── Scan: load (or toggle) per-category row list ──────────────────────────
+  async function toggleScan(key: string) {
+    const current = scan[key]
+    // If we already have rows, just toggle visibility
+    if (current?.rows && current.rows.length >= 0 && current.loading === false) {
+      setScan(prev => ({ ...prev, [key]: { ...current, expanded: !current.expanded } }))
+      return
+    }
+    // Otherwise fetch
+    setScan(prev => ({ ...prev, [key]: { loading: true, rows: [], expanded: true, selectedRowIds: new Set() } }))
+    try {
+      const r  = await fetch(`/api/admin/cleanup?scan=${encodeURIComponent(key)}`)
+      const d  = await r.json() as { rows: ScanRow[] }
+      setScan(prev => ({ ...prev, [key]: { loading: false, rows: d.rows ?? [], expanded: true, selectedRowIds: new Set() } }))
+    } catch {
+      setScan(prev => ({ ...prev, [key]: { loading: false, rows: [], expanded: true, selectedRowIds: new Set() } }))
+    }
+  }
+
+  function toggleRow(key: string, rowId: string) {
+    setScan(prev => {
+      const s = prev[key]; if (!s) return prev
+      const n = new Set(s.selectedRowIds)
+      n.has(rowId) ? n.delete(rowId) : n.add(rowId)
+      return { ...prev, [key]: { ...s, selectedRowIds: n } }
+    })
+  }
+
+  function toggleAllRows(key: string) {
+    setScan(prev => {
+      const s = prev[key]; if (!s) return prev
+      const allSelected = s.selectedRowIds.size === s.rows.length
+      return { ...prev, [key]: { ...s, selectedRowIds: allSelected ? new Set() : new Set(s.rows.map(r => r.id)) } }
+    })
+  }
+
+  async function deleteSelectedRows(key: string) {
+    const s = scan[key]; if (!s || s.selectedRowIds.size === 0) return
+    setRunning(true); setError(''); setResult(null)
+    try {
+      const res = await fetch('/api/admin/cleanup', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: { [key]: Array.from(s.selectedRowIds) } }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.error ?? 'Cleanup failed'); return }
+      setResult(data)
+      // Refresh both: counts and the scanned row list
+      const r2 = await fetch(`/api/admin/cleanup?scan=${encodeURIComponent(key)}`)
+      const d2 = await r2.json() as { rows: ScanRow[] }
+      setScan(prev => ({ ...prev, [key]: { loading: false, rows: d2.rows ?? [], expanded: true, selectedRowIds: new Set() } }))
+      await refreshCounts()
     } catch (e) {
       setError(String(e))
     } finally {
@@ -1792,10 +2233,13 @@ function EmergencyCleanup() {
       ) : (
         <>
           {/* Select all / clear row */}
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs text-gray-500">{items.filter(i => i.count > 0).length} categories with data</span>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <span className="text-xs text-gray-500">
+              {items.filter(i => i.count > 0).length} categor{items.filter(i => i.count > 0).length !== 1 ? 'ies' : 'y'} with rows past auto-clean threshold ·{' '}
+              {items.filter(i => i.totalCount > 0).length} non-empty total
+            </span>
             <div className="flex gap-2">
-              <button onClick={selectAll}  className="text-[11px] text-blue-400 hover:text-blue-300 transition">Select all</button>
+              <button onClick={selectAll}  className="text-[11px] text-blue-400 hover:text-blue-300 transition">Select all ready</button>
               <span className="text-gray-700">·</span>
               <button onClick={clearAll}   className="text-[11px] text-gray-500 hover:text-gray-400 transition">Clear</button>
             </div>
@@ -1804,38 +2248,153 @@ function EmergencyCleanup() {
           {/* Cleanup items */}
           <div className="space-y-2 mb-5">
             {items.map(item => {
-              const checked  = selected.has(item.key)
-              const hasData  = item.count > 0
+              const checked      = selected.has(item.key)
+              const hasReady     = item.count > 0
+              const hasAny       = item.totalCount > 0
+              const scanState    = scan[item.key]
+              const isExpanded   = scanState?.expanded ?? false
+              const isLoading    = scanState?.loading ?? false
               return (
-                <label
+                <div
                   key={item.key}
-                  className={`flex items-start gap-3 rounded-xl px-4 py-3 cursor-pointer transition border ${
+                  className={`rounded-xl border transition ${
                     checked
                       ? 'bg-red-500/10 border-red-500/30'
-                      : hasData
-                        ? 'bg-white/5 border-transparent hover:bg-white/8'
-                        : 'bg-white/[0.02] border-transparent opacity-50 cursor-default'
+                      : hasAny
+                        ? 'bg-white/5 border-transparent'
+                        : 'bg-white/[0.02] border-transparent opacity-60'
                   }`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={!hasData}
-                    onChange={() => hasData && toggle(item.key)}
-                    className="mt-0.5 accent-red-500 cursor-pointer"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={`text-xs font-medium ${checked ? 'text-red-300' : 'text-gray-200'}`}>{item.label}</span>
-                      <span className={`text-[11px] font-mono tabular-nums shrink-0 ${
-                        item.count > 0 ? (checked ? 'text-red-400' : 'text-yellow-400') : 'text-gray-600'
-                      }`}>
-                        {item.count.toLocaleString()} row{item.count !== 1 ? 's' : ''}
-                      </span>
+                  {/* Category header row */}
+                  <div className="flex items-start gap-3 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!hasReady}
+                      onChange={() => hasReady && toggle(item.key)}
+                      className="mt-0.5 accent-red-500 cursor-pointer disabled:cursor-not-allowed"
+                      title={hasReady ? 'Select to bulk-delete rows past auto-clean threshold' : 'No rows past auto-clean threshold yet — use Scan to view all'}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className={`text-xs font-medium ${checked ? 'text-red-300' : 'text-gray-200'}`}>{item.label}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-[10px] font-mono tabular-nums ${
+                            item.count > 0 ? (checked ? 'text-red-400' : 'text-yellow-400') : 'text-gray-600'
+                          }`}>
+                            {item.count.toLocaleString()} ready
+                          </span>
+                          <span className="text-[10px] text-gray-600 font-mono tabular-nums">·</span>
+                          <span className="text-[10px] text-gray-500 font-mono tabular-nums">
+                            {item.totalCount.toLocaleString()} total
+                          </span>
+                          {hasAny && (
+                            <button
+                              type="button"
+                              onClick={() => toggleScan(item.key)}
+                              className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-md bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/30 transition"
+                            >
+                              <Search className="w-3 h-3" />
+                              {isExpanded ? 'Hide' : 'Scan'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">{item.description}</p>
+                      {item.autoTtlMs != null && (
+                        <p className="text-[10px] text-gray-600 mt-1 leading-relaxed">
+                          Auto-cleans every row {fmtDuration(item.autoTtlMs)} after it enters this category.
+                        </p>
+                      )}
                     </div>
-                    <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">{item.description}</p>
                   </div>
-                </label>
+
+                  {/* Expanded row list */}
+                  {isExpanded && (
+                    <div className="border-t border-white/10 px-4 py-3">
+                      {isLoading ? (
+                        <div className="flex items-center gap-2 text-[11px] text-gray-500 py-2">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Scanning rows…
+                        </div>
+                      ) : scanState && scanState.rows.length === 0 ? (
+                        <p className="text-[11px] text-gray-500 py-2">No rows in this category right now.</p>
+                      ) : scanState ? (
+                        <>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => toggleAllRows(item.key)}
+                                className="text-[10px] text-blue-400 hover:text-blue-300 font-bold transition"
+                              >
+                                {scanState.selectedRowIds.size === scanState.rows.length ? 'Deselect all' : 'Select all'}
+                              </button>
+                              <span className="text-[10px] text-gray-500">
+                                {scanState.selectedRowIds.size} of {scanState.rows.length} selected
+                              </span>
+                            </div>
+                            {scanState.selectedRowIds.size > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => deleteSelectedRows(item.key)}
+                                disabled={running}
+                                className="flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-md bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 transition disabled:opacity-50"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                Delete {scanState.selectedRowIds.size}
+                              </button>
+                            )}
+                          </div>
+                          <div className="max-h-80 overflow-y-auto space-y-1 pr-1">
+                            {scanState.rows.map(row => {
+                              const rowChecked = scanState.selectedRowIds.has(row.id)
+                              const remaining  = row.autoDeleteAt != null ? row.autoDeleteAt - Date.now() : null
+                              const overdue    = remaining != null && remaining <= 0
+                              return (
+                                <label
+                                  key={row.id}
+                                  className={`flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer transition border text-[11px] ${
+                                    rowChecked
+                                      ? 'bg-red-500/10 border-red-500/30'
+                                      : 'bg-white/[0.03] border-transparent hover:bg-white/[0.06]'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={rowChecked}
+                                    onChange={() => toggleRow(item.key, row.id)}
+                                    className="accent-red-500 cursor-pointer shrink-0"
+                                  />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className={`truncate font-mono ${rowChecked ? 'text-red-200' : 'text-gray-200'}`}>{row.label}</span>
+                                      <span className={`tabular-nums text-[10px] shrink-0 ${
+                                        remaining == null ? 'text-gray-500'
+                                          : overdue       ? 'text-yellow-400 font-bold'
+                                                            : 'text-gray-400'
+                                      }`}>
+                                        {remaining == null ? 'no auto-rule'
+                                          : overdue       ? 'auto-cleans now'
+                                                            : `auto in ${fmtDuration(remaining)}`}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-2 text-[10px] text-gray-500">
+                                      {row.sublabel && <span className="truncate">{row.sublabel}</span>}
+                                      <span className="tabular-nums shrink-0 ml-auto">{fmtRelativeDate(row.timestamp)}</span>
+                                    </div>
+                                  </div>
+                                </label>
+                              )
+                            })}
+                            {scanState.rows.length >= 500 && (
+                              <p className="text-[10px] text-gray-500 text-center pt-2">Showing oldest 500 rows. Older rows will appear after a cleanup pass.</p>
+                            )}
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
               )
             })}
           </div>
@@ -1959,6 +2518,7 @@ function SettingsTab() {
         </div>
       </div>
 
+      <PerformanceControls />
       <EmergencyCleanup />
     </div>
   )
@@ -2271,6 +2831,433 @@ function outcomeLabel(o: string) {
   if (o === 'sl_hit')  return 'SL ✗'
   if (o === 'expired') return 'Expired'
   return o
+}
+
+// ── YouTube Videos Tab — Lesson AI Images ────────────────────────────────────
+
+interface LessonSidebarRow { moduleId: string; moduleTitle: string; lessonId: string; lessonTitle: string }
+type ImageStyle = 'whiteboard' | 'photoreal'
+
+type AssetPlanUI =
+  | { type: 'whiteboard'; imageId: string;     imageUrl: string }
+  | { type: 'photoreal';  imageId: string;     imageUrl: string }
+  | { type: 'motion';     componentName: string }
+  | { type: 'title';      heading: string }
+
+interface SegmentPlanUI {
+  segmentIndex: number
+  startMs:      number
+  durationMs:   number
+  spokenText:   string
+  heading:      string
+  asset:        AssetPlanUI
+  rationale:    string
+}
+
+interface LessonManifestUI {
+  lessonId:        string
+  title:           string
+  totalDurationMs: number
+  segments:        SegmentPlanUI[]
+}
+
+interface LessonImageRow {
+  id: string
+  lessonId: string
+  moduleId: string
+  segmentIndex: number
+  timestampMs: number
+  prompt: string
+  mimeType: string
+  style: ImageStyle
+  status: 'pending' | 'approved' | 'rejected'
+  rejectReason: string | null
+  createdAt: string
+  updatedAt: string
+}
+type CountsMap = Record<string, { pending: number; approved: number; rejected: number; total: number }>
+
+function fmtTs(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  const m = Math.floor(s / 60)
+  const ss = s % 60
+  return `${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+}
+
+function YouTubeVideosTab() {
+  const [sidebar, setSidebar] = useState<LessonSidebarRow[]>([])
+  const [counts,  setCounts]  = useState<CountsMap>({})
+  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null)
+  const [images,    setImages]    = useState<LessonImageRow[]>([])
+  const [loading,   setLoading]   = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [working,   setWorking]   = useState<Set<string>>(new Set())
+  const [error,     setError]     = useState('')
+  const [toast,     setToast]     = useState('')
+  // Default style for batch generation. Whiteboard (Claude + Rough.js) = free of Google API
+  // and consistent hand-drawn aesthetic. Photoreal (Imagen 4) for hook / intro / outro segments.
+  const [style,     setStyle]     = useState<ImageStyle>('whiteboard')
+
+  // ── Lesson video manifest (Claude-assembled timeline for Video Hub) ────
+  const [manifest,        setManifest]        = useState<LessonManifestUI | null>(null)
+  const [manifestStatus,  setManifestStatus]  = useState<'draft' | 'approved' | null>(null)
+  const [manifestUpdated, setManifestUpdated] = useState<string | null>(null)
+  const [manifestBusy,    setManifestBusy]    = useState(false)
+
+  async function loadManifest(lessonId: string) {
+    try {
+      const r = await fetch(`/api/admin/lesson-manifest/${encodeURIComponent(lessonId)}`)
+      if (!r.ok) { setManifest(null); setManifestStatus(null); return }
+      const d = await r.json() as { manifest: LessonManifestUI; status: 'draft' | 'approved'; updatedAt: string }
+      setManifest(d.manifest)
+      setManifestStatus(d.status)
+      setManifestUpdated(d.updatedAt)
+    } catch { /* non-critical */ }
+  }
+  useEffect(() => {
+    if (selectedLessonId) loadManifest(selectedLessonId)
+    else { setManifest(null); setManifestStatus(null) }
+  }, [selectedLessonId])
+
+  async function generateManifest() {
+    if (!selectedLessonId) return
+    setManifestBusy(true); setError(''); setToast('')
+    try {
+      const r = await fetch(`/api/admin/lesson-manifest/${encodeURIComponent(selectedLessonId)}`, { method: 'POST' })
+      const d = await r.json() as { manifest?: LessonManifestUI; error?: string }
+      if (!r.ok || !d.manifest) { setError(d.error ?? 'Manifest generation failed'); return }
+      setManifest(d.manifest)
+      setManifestStatus('draft')
+      setToast(`Manifest built · ${d.manifest.segments.length} segments planned`)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setManifestBusy(false)
+      setTimeout(() => setToast(''), 5000)
+    }
+  }
+
+  async function setManifestStatusRemote(next: 'approved' | 'draft') {
+    if (!selectedLessonId) return
+    setManifestBusy(true)
+    try {
+      const r = await fetch(`/api/admin/lesson-manifest/${encodeURIComponent(selectedLessonId)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: next }),
+      })
+      if (r.ok) setManifestStatus(next)
+    } finally {
+      setManifestBusy(false)
+    }
+  }
+
+  async function loadSummary() {
+    try {
+      const r = await fetch('/api/admin/lesson-images?summary=1')
+      const d = await r.json() as { lessons: LessonSidebarRow[]; counts: CountsMap }
+      setSidebar(d.lessons ?? [])
+      setCounts(d.counts ?? {})
+    } catch (e) { setError(String(e)) }
+  }
+  useEffect(() => { loadSummary() }, [])
+
+  const loadLesson = useCallback(async (lessonId: string) => {
+    setLoading(true); setError('')
+    try {
+      const r = await fetch(`/api/admin/lesson-images?lessonId=${encodeURIComponent(lessonId)}`)
+      const d = await r.json() as { images: LessonImageRow[] }
+      setImages(d.images ?? [])
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { if (selectedLessonId) loadLesson(selectedLessonId) }, [selectedLessonId, loadLesson])
+
+  async function generateAll() {
+    if (!selectedLessonId) return
+    setGenerating(true); setError(''); setToast('')
+    try {
+      const r = await fetch(`/api/admin/lesson-images?lessonId=${encodeURIComponent(selectedLessonId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ style }) })
+      const d = await r.json() as { generated?: number; failed?: { segmentIndex?: number; error: string }[]; error?: string }
+      if (!r.ok) { setError(d.error ?? 'Generation failed'); return }
+      setToast(`Generated ${d.generated} image${d.generated === 1 ? '' : 's'}${d.failed?.length ? ` · ${d.failed.length} failed` : ''}`)
+      if (d.failed?.length) {
+        // Show the first failure detail so we know what to fix (model name, safety filter, etc.)
+        setError(`First failure: ${d.failed[0].error}`)
+      }
+      await Promise.all([loadLesson(selectedLessonId), loadSummary()])
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setGenerating(false)
+      setTimeout(() => setToast(''), 5000)
+    }
+  }
+
+  async function patchImage(id: string, body: object) {
+    setWorking(prev => new Set(prev).add(id))
+    try {
+      const r = await fetch(`/api/admin/lesson-images/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      if (!r.ok) { const d = await r.json().catch(() => ({})); setError(d.error ?? 'Failed'); return }
+      if (selectedLessonId) await Promise.all([loadLesson(selectedLessonId), loadSummary()])
+    } finally {
+      setWorking(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
+  }
+
+  async function deleteImage(id: string) {
+    if (!confirm('Delete this image permanently?')) return
+    setWorking(prev => new Set(prev).add(id))
+    try {
+      await fetch(`/api/admin/lesson-images/${id}`, { method: 'DELETE' })
+      if (selectedLessonId) await Promise.all([loadLesson(selectedLessonId), loadSummary()])
+    } finally {
+      setWorking(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
+  }
+
+  // Group sidebar by module for the folder UI
+  const grouped = useMemo<Array<[string, { title: string; lessons: LessonSidebarRow[] }]>>(() => {
+    const m: Record<string, { title: string; lessons: LessonSidebarRow[] }> = {}
+    for (const row of sidebar) {
+      if (!m[row.moduleId]) m[row.moduleId] = { title: row.moduleTitle, lessons: [] }
+      m[row.moduleId].lessons.push(row)
+    }
+    return Object.entries(m)
+  }, [sidebar])
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-5">
+      {/* Sidebar — module folders */}
+      <aside className="lg:w-72 shrink-0 bg-[#131722] border border-white/10 rounded-2xl p-3 max-h-[80vh] overflow-y-auto">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 px-2 mb-2">Lesson Folders</h3>
+        {grouped.map(([moduleId, mod]) => (
+          <details key={moduleId} className="mb-1.5" open>
+            <summary className="text-xs font-bold text-gray-300 px-2 py-1.5 rounded hover:bg-white/5 cursor-pointer flex items-center gap-1.5">
+              <BookOpen className="w-3 h-3 text-emerald-400" /> {mod.title}
+            </summary>
+            <div className="mt-1 space-y-0.5 pl-2">
+              {mod.lessons.map(l => {
+                const c = counts[l.lessonId]
+                const isSelected = selectedLessonId === l.lessonId
+                return (
+                  <button
+                    key={l.lessonId}
+                    onClick={() => setSelectedLessonId(l.lessonId)}
+                    className={`w-full text-left text-[11px] px-2 py-1.5 rounded transition flex items-center justify-between gap-2 ${
+                      isSelected ? 'bg-emerald-500/15 text-emerald-200' : 'text-gray-400 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <span className="truncate">{l.lessonTitle}</span>
+                    {c && c.total > 0 && (
+                      <span className="flex items-center gap-1 shrink-0 tabular-nums text-[10px]">
+                        {c.approved > 0 && <span className="text-emerald-400">{c.approved}</span>}
+                        {c.pending  > 0 && <span className="text-amber-400">{c.pending}</span>}
+                        {c.rejected > 0 && <span className="text-red-400">{c.rejected}</span>}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </details>
+        ))}
+      </aside>
+
+      {/* Main grid */}
+      <main className="flex-1 min-w-0">
+        {!selectedLessonId ? (
+          <div className="bg-[#131722] border border-white/10 rounded-2xl p-12 text-center text-sm text-gray-500">
+            Select a lesson from the sidebar to view or generate its YouTube images.
+          </div>
+        ) : (
+          <div className="bg-[#131722] border border-white/10 rounded-2xl p-5">
+            <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+              <div>
+                <h3 className="text-sm font-bold text-white">{sidebar.find(s => s.lessonId === selectedLessonId)?.lessonTitle}</h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {style === 'whiteboard'
+                    ? 'Whiteboard explainer · Claude scene plan + Rough.js hand-drawn render · no Google API'
+                    : 'Photoreal hero · Imagen 4 · Forex Mastery brand palette · cinematic framing'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Style picker */}
+                <div className="flex items-center bg-white/5 border border-white/10 rounded-lg p-0.5">
+                  {(['whiteboard', 'photoreal'] as const).map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setStyle(s)}
+                      disabled={generating}
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 rounded-md transition ${
+                        style === s
+                          ? (s === 'whiteboard' ? 'bg-amber-500/25 text-amber-200' : 'bg-blue-500/25 text-blue-200')
+                          : 'text-gray-500 hover:text-gray-300'
+                      }`}
+                    >
+                      {s === 'whiteboard' ? 'Whiteboard' : 'Photoreal'}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={generateAll}
+                  disabled={generating}
+                  className="flex items-center gap-1.5 text-xs bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-lg font-semibold transition disabled:opacity-50"
+                >
+                  {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  {generating ? 'Generating…' : `Generate ${images.length > 0 ? 'all' : 'images'}`}
+                </button>
+              </div>
+            </div>
+
+            {/* Video Manifest panel — Claude-assembled per-segment asset plan for Video Hub */}
+            <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-4 mb-4">
+              <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                <div>
+                  <div className="text-xs font-bold text-white">Video Manifest</div>
+                  <p className="text-[10px] text-gray-500 mt-0.5 leading-relaxed">
+                    Claude assigns each script segment to a whiteboard image, a Remotion motion graphic, or a title slide.
+                    {manifest && ` · ${manifest.segments.length} segments planned · ${Math.round(manifest.totalDurationMs / 1000)}s total`}
+                    {manifestUpdated && ` · updated ${new Date(manifestUpdated).toLocaleTimeString()}`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {manifestStatus && (
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                      manifestStatus === 'approved' ? 'bg-emerald-500/30 text-emerald-200' : 'bg-amber-500/30 text-amber-200'
+                    }`}>{manifestStatus}</span>
+                  )}
+                  <button
+                    onClick={generateManifest}
+                    disabled={manifestBusy}
+                    className="flex items-center gap-1.5 text-[11px] bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/40 text-blue-300 px-2.5 py-1.5 rounded-md font-semibold transition disabled:opacity-50"
+                  >
+                    {manifestBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                    {manifest ? 'Re-build' : 'Build manifest'}
+                  </button>
+                  {manifest && (
+                    <button
+                      onClick={() => setManifestStatusRemote(manifestStatus === 'approved' ? 'draft' : 'approved')}
+                      disabled={manifestBusy}
+                      className={`text-[11px] font-bold px-2.5 py-1.5 rounded-md border transition disabled:opacity-50 ${
+                        manifestStatus === 'approved'
+                          ? 'bg-white/5 text-gray-400 border-white/10 hover:text-gray-200'
+                          : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                      }`}
+                    >
+                      {manifestStatus === 'approved' ? 'Revert to draft' : 'Approve for Video Hub'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {manifest && (
+                <details className="mt-2">
+                  <summary className="text-[10px] text-gray-500 cursor-pointer hover:text-gray-300">
+                    View timeline ({manifest.segments.length} segments)
+                  </summary>
+                  <ol className="mt-2 space-y-1 max-h-72 overflow-y-auto pr-1">
+                    {manifest.segments.map(seg => {
+                      const cls =
+                        seg.asset.type === 'motion'     ? 'bg-purple-500/15 text-purple-200 border-purple-500/30'
+                        : seg.asset.type === 'photoreal' ? 'bg-blue-500/15 text-blue-200 border-blue-500/30'
+                        : seg.asset.type === 'title'    ? 'bg-white/5 text-gray-300 border-white/10'
+                                                          : 'bg-amber-500/15 text-amber-200 border-amber-500/30'
+                      const label =
+                        seg.asset.type === 'motion'     ? `motion · ${seg.asset.componentName}`
+                        : seg.asset.type === 'photoreal' ? 'photoreal image'
+                        : seg.asset.type === 'title'    ? `title · ${seg.asset.heading.slice(0, 30)}`
+                                                          : (seg.asset.imageId ? 'whiteboard · attached' : 'whiteboard · NOT YET GENERATED')
+                      return (
+                        <li key={seg.segmentIndex} className="flex items-start gap-2 text-[10px]">
+                          <span className="font-mono tabular-nums text-gray-500 shrink-0 w-12">{fmtTs(seg.startMs)}</span>
+                          <span className={`shrink-0 px-1.5 py-0.5 rounded border ${cls} font-bold uppercase tracking-wider`}>{label}</span>
+                          <span className="text-gray-400 truncate" title={seg.spokenText}>{seg.spokenText.slice(0, 90)}</span>
+                        </li>
+                      )
+                    })}
+                  </ol>
+                </details>
+              )}
+            </div>
+
+            {error && <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-xs text-red-300 mb-3">{error}</div>}
+            {toast && <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-2.5 text-xs text-emerald-300 mb-3">{toast}</div>}
+
+            {loading ? (
+              <div className="text-xs text-gray-500 py-8 flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</div>
+            ) : images.length === 0 ? (
+              <div className="text-center text-sm text-gray-500 py-12">
+                No images yet. Click <strong>Generate images</strong> to create one per script segment.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {images.map(img => {
+                  const isWorking = working.has(img.id)
+                  const cls =
+                    img.status === 'approved' ? 'border-emerald-500/40 bg-emerald-500/5'
+                    : img.status === 'rejected' ? 'border-red-500/40 bg-red-500/5'
+                                                  : 'border-amber-500/40 bg-amber-500/5'
+                  return (
+                    <div key={img.id} className={`rounded-xl border ${cls} overflow-hidden flex flex-col`}>
+                      <div className="relative bg-black/40 aspect-video">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={`/api/admin/lesson-images/${img.id}/file`}
+                          alt={`Segment ${img.segmentIndex}`}
+                          className="absolute inset-0 w-full h-full object-cover"
+                        />
+                        <span className="absolute top-1.5 left-1.5 text-[10px] font-mono tabular-nums bg-black/70 text-white px-1.5 py-0.5 rounded">
+                          {fmtTs(img.timestampMs)} · seg {img.segmentIndex}
+                        </span>
+                        <div className="absolute top-1.5 right-1.5 flex items-center gap-1">
+                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            img.style === 'photoreal' ? 'bg-blue-500/30 text-blue-200' : 'bg-amber-500/30 text-amber-200'
+                          }`}>{img.style === 'photoreal' ? 'photo' : 'wb'}</span>
+                          <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            img.status === 'approved' ? 'bg-emerald-500/30 text-emerald-200'
+                            : img.status === 'rejected' ? 'bg-red-500/30 text-red-200'
+                                                          : 'bg-amber-500/30 text-amber-200'
+                          }`}>{img.status}</span>
+                        </div>
+                      </div>
+                      <div className="p-2.5 flex flex-col gap-2 text-[10px]">
+                        <p className="text-gray-400 line-clamp-2" title={img.prompt}>{img.prompt}</p>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {img.status !== 'approved' && (
+                            <button onClick={() => patchImage(img.id, { status: 'approved' })} disabled={isWorking}
+                              className="flex-1 min-w-0 text-[10px] font-bold px-2 py-1 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 border border-emerald-500/30 transition disabled:opacity-50">
+                              Approve
+                            </button>
+                          )}
+                          {img.status !== 'rejected' && (
+                            <button onClick={() => patchImage(img.id, { status: 'rejected' })} disabled={isWorking}
+                              className="flex-1 min-w-0 text-[10px] font-bold px-2 py-1 rounded bg-red-500/15 text-red-300 hover:bg-red-500/25 border border-red-500/30 transition disabled:opacity-50">
+                              Reject
+                            </button>
+                          )}
+                          <button onClick={() => patchImage(img.id, { regenerate: true })} disabled={isWorking}
+                            className="flex-1 min-w-0 text-[10px] font-bold px-2 py-1 rounded bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 border border-blue-500/30 transition disabled:opacity-50">
+                            {isWorking ? '…' : 'Re-gen'}
+                          </button>
+                          <button onClick={() => deleteImage(img.id)} disabled={isWorking}
+                            className="text-[10px] font-bold px-2 py-1 rounded bg-white/5 text-gray-500 hover:bg-white/10 hover:text-gray-300 border border-white/10 transition disabled:opacity-50">
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  )
 }
 
 function ScriptsTab() {
@@ -2602,7 +3589,7 @@ export default function AdminPage() {
       .catch(() => null)
   }, [session])
 
-  // Poll for unread support tickets every 5 min
+  // Poll for unread support tickets every 5 min — paused when tab hidden.
   useEffect(() => {
     if (!session || session.user?.role !== 'admin') return
     const fetch_ = () =>
@@ -2610,12 +3597,18 @@ export default function AdminPage() {
         .then(r => r.json())
         .then(d => setSupportUnread(d.count ?? 0))
         .catch(() => null)
-    fetch_()
-    const id = setInterval(fetch_, 5 * 60_000)
-    return () => clearInterval(id)
+    const tick = () => { if (!document.hidden) void fetch_() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const id = setInterval(tick, 5 * 60_000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [session])
 
-  // Poll for new user signups every 2 min
+  // Poll for new user signups every 2 min — paused when tab hidden.
   useEffect(() => {
     if (!session || session.user?.role !== 'admin') return
     const fetch_ = () =>
@@ -2623,9 +3616,15 @@ export default function AdminPage() {
         .then(r => r.json())
         .then(d => setNewUsers(d.count ?? 0))
         .catch(() => null)
-    fetch_()
-    const id = setInterval(fetch_, 2 * 60_000)
-    return () => clearInterval(id)
+    const tick = () => { if (!document.hidden) void fetch_() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const id = setInterval(tick, 2 * 60_000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [session])
 
   // Clear badges when admin opens the relevant tab
@@ -2652,6 +3651,7 @@ export default function AdminPage() {
     { id: 'notify',   label: 'Notify',   icon: <Mail className="w-4 h-4" />                                                            },
     { id: 'content',  label: 'Content',  icon: <BookOpen className="w-4 h-4" />                                                        },
     { id: 'scripts',  label: 'Scripts',  icon: <Video className="w-4 h-4" />                                                          },
+    { id: 'youtube',  label: 'YouTube Videos', icon: <Sparkles className="w-4 h-4" />                                                  },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" />                                                        },
   ]
 
@@ -2740,6 +3740,7 @@ export default function AdminPage() {
                 {tab === 'notify'   && 'Send emails and notifications to users.'}
                 {tab === 'content'  && 'Pre-generate and manage lesson audio files.'}
                 {tab === 'scripts'  && 'Generate YouTube trade review scripts from FM Trader predictions and approve for Video Hub.'}
+                {tab === 'youtube'  && 'Generate AI lesson images per script timestamp. Approve them for Video Hub to drop on the timeline.'}
                 {tab === 'settings' && 'Site configuration and admin credentials.'}
               </p>
             </div>
@@ -2750,6 +3751,7 @@ export default function AdminPage() {
             {tab === 'notify'   && <NotifyTab users={users} />}
             {tab === 'content'  && <ContentTab />}
             {tab === 'scripts'  && <ScriptsTab />}
+            {tab === 'youtube'  && <YouTubeVideosTab />}
             {tab === 'settings' && <SettingsTab />}
           </main>
         </div>

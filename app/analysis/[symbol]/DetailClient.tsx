@@ -315,13 +315,19 @@ export default function DetailClient({ slug }: { slug: string }) {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  // Auto-refresh analysis every 5 min
+  // Auto-refresh analysis every 5 min — pauses while tab is hidden.
   useEffect(() => {
-    const id = setInterval(() => fetchData(), 5 * 60_000)
-    return () => clearInterval(id)
+    const tick = () => { if (!document.hidden) fetchData() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    const id = setInterval(tick, 5 * 60_000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [fetchData])
 
-  // ── News fetch (on mount + every 15 min) ──────────────────────────────────
+  // ── News fetch (on mount + every 15 min, paused while hidden) ────────────
   useEffect(() => {
     const fetchNews = async () => {
       try {
@@ -329,9 +335,15 @@ export default function DetailClient({ slug }: { slug: string }) {
         if (res.ok) setNews(await res.json())
       } catch { /* news is non-critical */ }
     }
-    fetchNews()
-    const id = setInterval(fetchNews, 15 * 60_000)
-    return () => clearInterval(id)
+    const tick = () => { if (!document.hidden) void fetchNews() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const id = setInterval(tick, 15 * 60_000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [slug])
 
   // ── Live price polling every 5 s ──────────────────────────────────────────
@@ -355,9 +367,15 @@ export default function DetailClient({ slug }: { slug: string }) {
 
   useEffect(() => {
     if (!data) return
-    fetchLive()
-    const id = setInterval(fetchLive, 60_000)
-    return () => clearInterval(id)
+    const tick = () => { if (!document.hidden) void fetchLive() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const id = setInterval(tick, 60_000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [fetchLive, data])
 
   // ── Loading skeleton ──────────────────────────────────────────────────────

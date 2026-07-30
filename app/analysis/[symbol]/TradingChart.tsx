@@ -493,6 +493,9 @@ export default function TradingChart({ slug, symbol, display, currentPrice, chan
     if (liveTimerRef.current) clearInterval(liveTimerRef.current)
 
     const tick = async () => {
+      // Skip while tab is in the background — at 5s cadence this burns network
+      // and CPU for nothing the user can see.
+      if (document.hidden) return
       if (!candleRef.current || !liveBarRef.current) return
       try {
         const res  = await fetch('/api/market-data/live')

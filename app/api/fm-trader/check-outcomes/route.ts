@@ -6,6 +6,7 @@ import { learnFromOutcome, type MarketSnapshot } from '@/lib/rule-engine-learner
 import { sendBulkEmail } from '@/lib/email'
 import { buildTradeUpdateEmail, buildTradeUpdateText } from '@/lib/email-templates'
 import { sendTelegramMessage } from '@/lib/telegram'
+import { getPerfFlags } from '@/lib/perf-flags'
 
 // This route is called by a cron job (or on each FM Trader load) to resolve
 // pending predictions. It fetches the latest price for each pending pair and
@@ -31,13 +32,22 @@ export const maxDuration = 30
 export async function GET(req: Request) {
   // Allow cron or internal calls only — guard with a secret in prod
   const authHeader = req.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET ?? 'dev'
-  if (authHeader !== `Bearer ${cronSecret}`) {
+  // No 'dev' fallback — an unset CRON_SECRET must not leave a guessable string
+  // standing in as a valid credential.
+  const cronSecret = process.env.CRON_SECRET
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     // Also allow same-origin (no auth header from our own server calls)
     const host = req.headers.get('host') ?? ''
     if (!host.includes('localhost') && authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
+  }
+
+  // Admin emergency kill-switch — return early so cron-job.org doesn't error,
+  // but skip all the heavy work (Yahoo fetches, settlement loops, housekeeping).
+  const flags = await getPerfFlags()
+  if (!flags.autoCheckOutcomes) {
+    return NextResponse.json({ ok: true, skipped: 'autoCheckOutcomes disabled by admin' })
   }
 
   const now             = new Date()
@@ -125,29 +135,65 @@ export async function GET(req: Request) {
     }),
   ]) : Array(9).fill({ status: 'fulfilled', value: { count: 0 } }) as PromiseSettledResult<{ count: number }>[]
 
-  // Rolling cleanup — runs on every tick so records disappear within an hour of
-  // turning 5 hours old, regardless of when midnight housekeeping fires.
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-  await Promise.all([
-    prisma.signalAlert.deleteMany({ where: { sentAt:    { lt: fiveHoursAgo } } }),
-    prisma.brokerTrade.deleteMany({ where: { createdAt: { lt: fiveHoursAgo } } }),
-    // LiveTrade history: closed or cancelled trades older than 7 days. Positions
-    // cascade-delete via the FK so we don't need a separate query. Open/pending
-    // trades are never touched here regardless of age.
-    prisma.liveTrade.deleteMany({
-      where: {
-        status:   { in: ['closed', 'cancelled'] },
-        closedAt: { lt: sevenDaysAgo },
-      },
-    }),
-  ])
-
-  // ── 3. Fetch all pending non-expired predictions (with trade advisory updates) ─
+  // ── 3. Fetch pending predictions FIRST so we can decide whether the
+  // expensive rolling cleanup needs to fire this tick. Without this gate the
+  // function burned CPU every 15 min on three deleteMany calls even when there
+  // was nothing pending and no records were aging out.
   const pending = await prisma.fMPrediction.findMany({
     where:   { outcome: 'pending', expiresAt: { gte: now } },
     orderBy: { createdAt: 'asc' },
     include: { tradeUpdates: { orderBy: { createdAt: 'desc' } } },
   })
+
+  // Rolling cleanup throttle — only fires every 4 hours instead of every tick.
+  // Last-fire stored in AdminSetting; rows still get cleaned within hours, but
+  // we don't burn CPU running deleteMany 96×/day for nothing.
+  const ROLLING_KEY = 'check_outcomes_rolling_last'
+  const ROLLING_GAP_MS = 4 * 60 * 60 * 1000  // 4h
+  const rollingLastRow = await prisma.adminSetting.findUnique({ where: { key: ROLLING_KEY } }).catch(() => null)
+  const rollingLast = (rollingLastRow?.value as { ts?: number } | undefined)?.ts ?? 0
+  const rollingDue  = Date.now() - rollingLast >= ROLLING_GAP_MS
+
+  // Early-return path: nothing pending AND rolling cleanup not due. Most
+  // 15-min cron ticks land here when the trade flow is quiet, returning in
+  // <100ms instead of running the full settlement scaffold.
+  if (pending.length === 0 && !rollingDue) {
+    return NextResponse.json({
+      checked: 0, resolved: 0, idle: true,
+      housekeeping: {
+        predictionsDeleted: predDeleted.status    === 'fulfilled' ? predDeleted.value.count    : 0,
+        pageViewsDeleted:   pageViewDeleted.status === 'fulfilled' ? pageViewDeleted.value.count : 0,
+        tradesDeleted:      tradeDeleted.status   === 'fulfilled' ? tradeDeleted.value.count   : 0,
+        signalsDeleted:     signalDeleted.status  === 'fulfilled' ? signalDeleted.value.count  : 0,
+        sessionsDeleted:    sessDeleted.status    === 'fulfilled' ? sessDeleted.value.count    : 0,
+        tokensDeleted:      (verifyDeleted.status === 'fulfilled' ? verifyDeleted.value.count  : 0) +
+                            (resetDeleted.status  === 'fulfilled' ? resetDeleted.value.count   : 0),
+        ticketsDeleted:     ticketDeleted.status  === 'fulfilled' ? ticketDeleted.value.count  : 0,
+        accessDeleted:      accessDeleted.status  === 'fulfilled' ? accessDeleted.value.count  : 0,
+      },
+    })
+  }
+
+  // Rolling cleanup — clears records that turn stale (signalAlerts/brokerTrades
+  // > 5h, closed LiveTrades > 7d). Only runs when rollingDue.
+  if (rollingDue) {
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    await Promise.all([
+      prisma.signalAlert.deleteMany({ where: { sentAt:    { lt: fiveHoursAgo } } }),
+      prisma.brokerTrade.deleteMany({ where: { createdAt: { lt: fiveHoursAgo } } }),
+      prisma.liveTrade.deleteMany({
+        where: {
+          status:   { in: ['closed', 'cancelled'] },
+          closedAt: { lt: sevenDaysAgo },
+        },
+      }),
+    ])
+    await prisma.adminSetting.upsert({
+      where:  { key: ROLLING_KEY },
+      update: { value: { ts: Date.now() } },
+      create: { key: ROLLING_KEY, value: { ts: Date.now() } },
+    }).catch(() => { /* non-critical */ })
+  }
 
   if (pending.length === 0) {
     return NextResponse.json({
@@ -169,15 +215,21 @@ export async function GET(req: Request) {
   // Group by slug — one Yahoo quote per unique pair
   const slugSet = [...new Set(pending.map(p => p.slug))]
 
-  const prices: Record<string, number> = {}
+  // Capture day-high / day-low alongside last price so we can detect whether
+  // price actually traded inside the entry zone since the prediction was made,
+  // not just whether it sits inside the zone at this exact tick.
+  interface PriceQuote { price: number; dayHigh: number; dayLow: number }
+  const prices: Record<string, PriceQuote> = {}
   await Promise.allSettled(
     slugSet.map(async slug => {
       const sym = SLUG_TO_SYMBOL[slug]
       if (!sym) return
       try {
         const q = await yf.quote(sym, {}, { validateResult: false }) as Record<string, unknown>
-        const p = typeof q.regularMarketPrice === 'number' ? q.regularMarketPrice : 0
-        if (p > 0) prices[slug] = p
+        const p  = typeof q.regularMarketPrice    === 'number' ? q.regularMarketPrice    : 0
+        const hi = typeof q.regularMarketDayHigh  === 'number' ? q.regularMarketDayHigh  : p
+        const lo = typeof q.regularMarketDayLow   === 'number' ? q.regularMarketDayLow   : p
+        if (p > 0) prices[slug] = { price: p, dayHigh: hi, dayLow: lo }
       } catch { /* skip */ }
     })
   )
@@ -187,11 +239,28 @@ export async function GET(req: Request) {
   const updates: Promise<unknown>[] = []
 
   for (const pred of pending) {
-    const price = prices[pred.slug]
-    if (!price) continue
+    const quote = prices[pred.slug]
+    if (!quote) continue
+    const { price, dayHigh, dayLow } = quote
 
     const isBuy = pred.decision === 'BUY'
     let outcome: string | null = null
+
+    // ── Fill detection ────────────────────────────────────────────────────
+    // Mark `filled` the first tick we see price inside the entry zone, OR
+    // when the session's high/low range straddles the zone (price traded
+    // through it intraday even if it isn't sitting there right now).
+    const zoneTouched =
+      (price   >= pred.entryLow && price   <= pred.entryHigh) ||
+      (dayHigh >= pred.entryLow && dayLow  <= pred.entryHigh)
+    if (!pred.filled && zoneTouched) {
+      updates.push(
+        prisma.fMPrediction.update({
+          where: { id: pred.id },
+          data:  { filled: true, filledAt: now },
+        }).catch(() => null),
+      )
+    }
 
     // Determine effective SL level and outcome label based on any trade advisories.
     // trail_sl fired → user locked profit near TP1; if price drops back, count as tp1_hit.
@@ -319,18 +388,19 @@ export async function GET(req: Request) {
         ? (closeAt - entry) / entry
         : (entry - closeAt) / entry
 
-      const leverage    = lt.leverage    ?? 300
-      const slippagePct = lt.slippagePct ?? 0.0005
-      const feePct      = lt.feePct      ?? 0.10
+      // Slippage was charged upfront at position-open — close math only does
+      // Gross → Fee (profit only) → Net (floored at -stake).
+      // leverage null = spot trade (1×, no amplification)
+      const leverage = lt.leverage ?? 1
+      const feePct   = lt.feePct   ?? 0.10
       try {
+        // Capture settled positions so we can send per-user targeted bells.
+        const settled: Array<{ userId: string; amountBtc: number; pnlBtc: number }> = []
         await prisma.$transaction(async tx => {
           for (const pos of lt.positions) {
-            // Settlement breakdown — Gross → Slippage → Fee → Net (floored at -stake)
             const grossPnlBtc = pos.amountBtc * pnlPct * leverage
-            const slippageBtc = pos.amountBtc * slippagePct * leverage
-            const afterSlip   = grossPnlBtc - slippageBtc
-            const feeBtc      = afterSlip > 0 ? afterSlip * feePct : 0
-            const netRaw      = afterSlip - feeBtc
+            const feeBtc      = grossPnlBtc > 0 ? grossPnlBtc * feePct : 0   // profit only
+            const netRaw      = grossPnlBtc - feeBtc
             const pnlBtc      = Math.max(netRaw, -pos.amountBtc)
 
             await tx.user.update({
@@ -341,10 +411,11 @@ export async function GET(req: Request) {
               where: { id: pos.id },
               data:  {
                 status:      'closed',
-                grossPnlBtc, slippageBtc, feeBtc, pnlBtc,
+                grossPnlBtc, feeBtc, pnlBtc,
                 closedAt:    new Date(),
               },
             })
+            settled.push({ userId: pos.userId, amountBtc: pos.amountBtc, pnlBtc })
           }
           await tx.liveTrade.update({
             where: { id: lt.id },
@@ -357,18 +428,32 @@ export async function GET(req: Request) {
             },
           })
         })
-        // Fire-and-forget bell notification — leveraged % so user sees the
-        // actual impact on their stake (capped at -100%)
+        // Notifications — leveraged % so user sees the actual impact on
+        // their stake (capped at -100%).
         try {
-          const { notifyTeamUsers } = await import('@/lib/team-notify')
+          const { notifyTeamUsers }      = await import('@/lib/team-notify')
+          const { notifyPositionOwners } = await import('@/lib/position-notify')
           const leveragedPct = Math.max(pnlPct * leverage, -1)
           const pct  = (leveragedPct * 100).toFixed(2)
           const sign = leveragedPct > 0 ? '+' : ''
+
+          // Targeted per-position bell — each participant sees their own P/L
+          const notified = await notifyPositionOwners({
+            tradeDisplay: lt.display,
+            decision:     lt.decision as 'BUY' | 'SELL',
+            kind:         isTp1 ? 'tp1_hit' : 'sl_hit',
+            positions:    settled,
+            leveragedPct,
+            closePrice:   closeAt,
+          })
+
+          // Broadcast to non-participants only
           void notifyTeamUsers({
-            email:   false,
-            linkUrl: '/analysis/live-trades',
-            subject: `${lt.decision} ${lt.display} auto-closed at ${reason} (${sign}${pct}%)`,
-            message: `The underlying FM Trader signal for ${lt.display} hit ${reason} (${closeAt}). The live trade was auto-closed and all positions settled. Outcome: ${sign}${pct}%. Open the Live Trade page to see your updated balance.`,
+            email:       false,
+            linkUrl:     '/analysis/live-trades',
+            subject:     `${lt.decision} ${lt.display} auto-closed at ${reason} (${sign}${pct}%)`,
+            message:     `The underlying FM Trader signal for ${lt.display} hit ${reason} (${closeAt}). The live trade was auto-closed. Outcome: ${sign}${pct}%.`,
+            skipUserIds: notified,
           })
         } catch (notifyErr) {
           console.error('[check-outcomes] live-trade notify failed:', notifyErr)
@@ -383,8 +468,9 @@ export async function GET(req: Request) {
   // For each pending prediction that was NOT just resolved, check price position
   // and emit advisories: cancel (urgent), move SL to breakeven, trail SL to profit.
   const stillPending = pending.filter(p => {
-    const price = prices[p.slug]
-    if (!price) return false
+    const q = prices[p.slug]
+    if (!q) return false
+    const { price } = q
     const isBuy = p.decision === 'BUY'
     // Skip if just resolved (TP/SL hit)
     if (isBuy) {
@@ -396,7 +482,7 @@ export async function GET(req: Request) {
   })
 
   for (const pred of stillPending) {
-    const price  = prices[pred.slug]!
+    const price  = prices[pred.slug]!.price
     const isBuy  = pred.decision === 'BUY'
     const entry  = (pred.entryLow + pred.entryHigh) / 2
     const dec    = price >= 100 ? 2 : price >= 1 ? 4 : 5

@@ -59,10 +59,10 @@ export async function POST(req: Request) {
     predictionId?: string
     note?:      string
     suggestedAmountBtc?: number
-    leverage?:  number
+    leverage?:  number | null   // null/undefined = no leverage (1× / spot)
   }
 
-  const ALLOWED_LEVERAGE = [20, 50, 100, 300, 500]
+  const ALLOWED_LEVERAGE = [2, 5, 10, 30, 50, 100, 200]
 
   if (!body.slug || !body.display || !body.decision || !body.stopLoss || !body.tp1) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
@@ -91,10 +91,12 @@ export async function POST(req: Request) {
         typeof body.suggestedAmountBtc === 'number' && body.suggestedAmountBtc > 0
           ? body.suggestedAmountBtc
           : null,
+      // Admin can pick one of ALLOWED_LEVERAGE values or pass null/undefined
+      // for a no-leverage (1×) spot trade. Invalid numbers fall back to null.
       leverage:
         typeof body.leverage === 'number' && ALLOWED_LEVERAGE.includes(body.leverage)
           ? body.leverage
-          : undefined,   // fall back to schema default (300)
+          : null,
       // Stamp asset-class slippage + standard 10% performance fee on create
       // so the rates used at settlement are reproducible from the trade row.
       slippagePct: slippagePctFor(body.slug),

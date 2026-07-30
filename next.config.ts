@@ -40,6 +40,10 @@ const securityHeaders = [
 ]
 
 const nextConfig: NextConfig = {
+  // Native node bindings (Rust N-API). Turbopack can't bundle these — must be
+  // resolved at runtime via require() on the server. @resvg/resvg-js renders
+  // the whiteboard SVGs to PNG in /api/admin/lesson-images.
+  serverExternalPackages: ['@resvg/resvg-js'],
   async headers() {
     return [
       {

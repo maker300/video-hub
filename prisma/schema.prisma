@@ -202,6 +202,13 @@ model FMPrediction {
   outcome        String   @default("pending")     // pending | tp1_hit | tp2_hit | tp3_hit | sl_hit | expired
   outcomeAt      DateTime?
   priceAtOutcome Float?
+  // Did price ever trade INSIDE the entry zone before the outcome resolved?
+  // Set true the first tick `check-outcomes` sees price within [entryLow, entryHigh].
+  // When false on an `sl_hit` outcome, the trade never actually filled — used to
+  // separate "stop-out after real participation" from "wrong direction from minute 1"
+  // in hit-rate stats so the pair-tuning loop isn't poisoned by no-fill noise.
+  filled         Boolean  @default(false)
+  filledAt       DateTime?
   // Market snapshot at prediction time — used by the learning agent to improve rule engine
   // Stores: { decision, features: Record<string,number>, rawScore, claudeUsed, learnedBoost }
   marketSnapshot Json?
@@ -366,6 +373,52 @@ model LessonAudio {
   updatedAt   DateTime @updatedAt
 }
 
+// ── Lesson AI images ──────────────────────────────────────────────────────────
+// One image per script segment, generated via Google Imagen. Each row pins the
+// segment's synthetic timestamp so Video Hub can place it on the timeline.
+// Admin approves/rejects/regenerates before Video Hub picks them up.
+//
+// Storage: image bytes in-row (same pattern as LessonAudio). PNG/JPEG only.
+// ── Lesson video timeline manifest ────────────────────────────────────────────
+// One row per lesson. Stores the Claude-generated plan that decides which asset
+// (whiteboard image / Remotion motion graphic / title slide) plays at each
+// timestamp. Video Hub fetches this manifest to assemble the final video.
+//
+// `plan` is JSON: { lessonId, title, totalDurationMs, segments: SegmentPlan[] }
+// See lib/lesson-manifest.ts for the SegmentPlan shape.
+model LessonVideoManifest {
+  id          String   @id @default(cuid())
+  lessonId    String   @unique
+  moduleId    String
+  plan        Json                              // SegmentPlan[] + metadata
+  status      String   @default("draft")        // draft | approved
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([moduleId])
+}
+
+model LessonImage {
+  id            String   @id @default(cuid())
+  lessonId      String                              // e.g. "lesson-1-1"
+  moduleId      String                              // e.g. "module-1" — for folder grouping
+  segmentIndex  Int                                 // index within buildTimestampedSegments
+  timestampMs   Int                                 // start time within the lesson timeline
+  prompt        String                              // text sent to Imagen
+  imageData     Bytes                               // PNG/JPEG bytes
+  mimeType      String   @default("image/png")
+  // 'whiteboard' = hand-drawn explainer style (default for teaching segments)
+  // 'photoreal'  = editorial photo style (better for hook / intro / outro segments)
+  style         String   @default("whiteboard")
+  status        String   @default("pending")        // pending | approved | rejected
+  rejectReason  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([lessonId, segmentIndex])
+  @@index([status])
+}
+
 model RuleWeights {
   id           String   @id @default("singleton")
   // JSON: Record<featureName, { ema: number, count: number }>
@@ -423,9 +476,17 @@ model LiveTrade {
   // Admin's suggested starting stake (BTC) — team users see this pre-filled in the
   // open-position dialog and can accept it or add more before submitting.
   suggestedAmountBtc Float?
-  // Leverage multiplier applied to PnL — default 300 (or 500 for crypto pairs).
-  // Allowed values: 20, 50, 100, 300, 500. Loss capped at -stake (no negative balances).
-  leverage           Int     @default(300)
+  // When a TEAM user initiates the trade (vs admin "Send to Live Trade"), these
+  // fields record who requested it + what stake they want filled at approval.
+  // status starts as 'awaiting_approval'; admin approves → 'pending' and the
+  // requester's position is auto-opened with requestedAmountBtc.
+  requestedByUserId  String?
+  requestedAmountBtc Float?
+  // Leverage multiplier applied to PnL — admin picks 10, 30, 50, 100, or 200,
+  // or leaves it null for a no-leverage (1×) spot trade. Mirrors what regulated
+  // retail brokers actually offer (EU forex cap 1:30, US 1:50; crypto retail 1:5–1:20).
+  // Loss capped at -stake (no negative balances).
+  leverage           Int?
   // Round-trip slippage rate applied at close. Set per-asset-class on create:
   //   forex/indices/stocks 0.0005 (0.05%)
   //   commodities          0.0010 (0.10%)
@@ -441,8 +502,10 @@ model LiveTrade {
   openedAt     DateTime?
   closedAt     DateTime?
   // Audit
-  approvedBy   String
-  approver     User     @relation("LiveTradeApprover", fields: [approvedBy], references: [id])
+  // Nullable for team-initiated trades — gets stamped with the admin's id
+  // when they approve. Admin-initiated trades fill it on create.
+  approvedBy   String?
+  approver     User?    @relation("LiveTradeApprover", fields: [approvedBy], references: [id])
   // Optional link back to FM Trader prediction that generated this trade
   predictionId String?
   // Optional admin note shown to team users (context, instructions)
@@ -474,6 +537,12 @@ model LiveTradePosition {
   status      String   @default("open")              // 'open' | 'closed'
   openedAt    DateTime @default(now())
   closedAt    DateTime?
+  // Team user can request that admin close the whole trade early. Closing
+  // happens at the trade level (all positions settle together), so this is
+  // really an admin nudge — admin sees the flag and hits Set Close at their
+  // discretion.
+  closeRequestedAt    DateTime?
+  closeRequestReason  String?
 
   liveTrade LiveTrade @relation(fields: [liveTradeId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -503,4 +572,18 @@ model Withdrawal {
 
   @@index([userId, status])
   @@index([status, createdAt])
+}
+
+// Every Stripe event we have already handled. The unique constraint on
+// `eventId` is what makes the webhook idempotent: Stripe retries deliveries on
+// any non-2xx and does not promise exactly-once, so without this a duplicate
+// checkout.session.completed would run the extend branch twice and hand the
+// buyer double the access they paid for.
+model StripeEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  type        String
+  processedAt DateTime @default(now())
+
+  @@index([processedAt])
 }

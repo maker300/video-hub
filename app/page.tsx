@@ -1,16 +1,16 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth'
 import { TrendingUp, BookOpen, Clock, Star, ChevronRight, Play, Award, BarChart2, Shield } from 'lucide-react'
 import Navbar from '@/components/Navbar'
 import ModuleList from '@/components/ModuleList'
 import ProgressTracker from '@/components/ProgressTracker'
 import { courseModules, totalLessons } from '@/lib/courseData'
 
+// Derived from courseData rather than hardcoded — the previous copy claimed
+// "8 modules, 48 lessons" long after the course had grown to its current size,
+// and that string is what search results and link previews show.
 export const metadata = {
   title: 'Forex Mastery Course — Learn Professional Forex Trading',
-  description: 'Master forex trading from fundamentals to advanced strategies. 8 modules, 48 lessons with video, quizzes, and AI chat.',
+  description: `Master forex trading from fundamentals to advanced strategies. ${courseModules.length} modules, ${totalLessons} lessons with video, quizzes, and AI chat.`,
 }
 
 const totalDuration = courseModules.reduce(
@@ -18,10 +18,7 @@ const totalDuration = courseModules.reduce(
   0
 )
 
-export default async function HomePage() {
-  const session = await getServerSession(authOptions)
-  if (session) redirect('/course')
-
+export default function HomePage() {
   const firstLesson = courseModules[0].lessons[0]
 
   return (

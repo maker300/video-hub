@@ -10,6 +10,8 @@ import { buildSignalEmail, buildSignalText } from '@/lib/email-templates'
 import { calcLotSize, SLUG_TO_MT4 } from '@/lib/metaapi'
 import type { FMTraderRequest, FMTraderResponse, SessionSlotId } from '@/lib/fm-trader-types'
 import { runAnalysis } from '@/app/api/fm-trader/route'
+import { getPerfFlags } from '@/lib/perf-flags'
+import { Prisma } from '@prisma/client'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 120
@@ -52,24 +54,102 @@ interface ScanResult {
 }
 
 export async function GET(req: Request) {
-  const cronSecret = process.env.CRON_SECRET ?? 'dev'
+  // No fallback value: this used to default to the literal 'dev', so a missing
+  // CRON_SECRET turned a guessable string into a valid credential.
+  const cronSecret = process.env.CRON_SECRET
   const auth = req.headers.get('authorization')
 
   // Accept either cron secret (Vercel/cron-job.org) or admin session
-  if (auth !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || auth !== `Bearer ${cronSecret}`) {
     const { getAdminSession } = await import('@/lib/adminAuth')
     const { isAdmin } = await getAdminSession()
     if (!isAdmin) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // Mode: intraday (default, hourly cron) or swing (4-hourly cron)
-  // External cron config:
-  //   GET /api/cron/scan              — every hour (intraday)
-  //   GET /api/cron/scan?mode=swing   — every 4 hours (swing)
-  const url    = new URL(req.url)
-  const mode   = url.searchParams.get('mode') === 'swing' ? 'swing' : 'intraday'
+  // Admin emergency kill-switch — return early so cron-job.org logs 200, but
+  // we skip the heavy multi-instrument scan and Claude / Yahoo calls.
+  const flags = await getPerfFlags()
+  if (!flags.cronScan) {
+    return NextResponse.json({ ok: true, skipped: 'cronScan disabled by admin' })
+  }
+
+  // Status probe — admin UI calls this with ?status=1 to know when the next
+  // manual scan is allowed and when the last cron fires were. No work done.
+  const url0 = new URL(req.url)
+  if (url0.searchParams.get('status') === '1') {
+    const { prisma: prismaForStatus } = await import('@/lib/prisma')
+    const row = await prismaForStatus.adminSetting.findUnique({ where: { key: 'cron_scan_last' } }).catch(() => null)
+    const v = (row?.value ?? {}) as { intraday?: number; swing?: number; manual?: number }
+    const MANUAL_COOLDOWN_MS = 30 * 60 * 1000
+    return NextResponse.json({
+      intraday:    v.intraday ?? null,
+      swing:       v.swing    ?? null,
+      manual:      v.manual   ?? null,
+      manualNextAllowedAt: (v.manual ?? 0) + MANUAL_COOLDOWN_MS,
+    })
+  }
+
+  // Mode: intraday (default) or swing
+  //   GET /api/cron/scan              — intraday
+  //   GET /api/cron/scan?mode=swing   — swing
+  //   GET /api/cron/scan?manual=1     — admin-triggered manual scan (30-min cooldown)
+  //   GET /api/cron/scan?status=1     — admin status probe (no work)
+  const url      = new URL(req.url)
+  const mode     = url.searchParams.get('mode') === 'swing' ? 'swing' : 'intraday'
   const horizon: 'intraday' | 'swing' = mode
-  const swing  = horizon === 'swing'
+  const swing    = horizon === 'swing'
+  const isManual = url.searchParams.get('manual') === '1'
+
+  // ── Server-side cadence throttle ──────────────────────────────────────────
+  // External cron-job.org calls fire on a fixed schedule, but Vercel Fluid Active
+  // CPU is the bottleneck. We persist the last-fire timestamp per channel and
+  // ignore early calls so the cron can be set as aggressively as we want without
+  // re-burning CPU. Manual admin trigger has its own 30-min cooldown.
+  const SCAN_KEY        = 'cron_scan_last'
+  const CRON_GAP_INTRADAY = 2 * 60 * 60 * 1000   // 2h
+  const CRON_GAP_SWING    = 6 * 60 * 60 * 1000   // 6h
+  const MANUAL_COOLDOWN   = 30 * 60 * 1000        // 30 min
+  const { prisma } = await import('@/lib/prisma')
+  type ScanState = { intraday?: number; swing?: number; manual?: number }
+  const lastRow = await prisma.adminSetting.findUnique({ where: { key: SCAN_KEY } }).catch(() => null)
+  const last: ScanState = (lastRow?.value as ScanState | undefined) ?? {}
+  const nowMs = Date.now()
+
+  if (isManual) {
+    if (nowMs - (last.manual ?? 0) < MANUAL_COOLDOWN) {
+      const retryInMs = MANUAL_COOLDOWN - (nowMs - (last.manual ?? 0))
+      return NextResponse.json({
+        ok:        true,
+        throttled: 'manual',
+        retryInMs,
+        retryInMinutes: Math.ceil(retryInMs / 60000),
+      }, { status: 429 })
+    }
+  } else {
+    const gap     = swing ? CRON_GAP_SWING : CRON_GAP_INTRADAY
+    const lastTs  = swing ? (last.swing ?? 0) : (last.intraday ?? 0)
+    if (nowMs - lastTs < gap) {
+      return NextResponse.json({
+        ok:        true,
+        throttled: 'cadence',
+        mode,
+        lastFireAt: new Date(lastTs).toISOString(),
+        nextFireAt: new Date(lastTs + gap).toISOString(),
+      })
+    }
+  }
+
+  // Mark this run BEFORE the heavy work — even if we crash mid-scan we don't
+  // want another call to re-trigger immediately.
+  const patch: ScanState = { ...last }
+  if (isManual) patch.manual = nowMs
+  else if (swing) patch.swing = nowMs
+  else patch.intraday = nowMs
+  await prisma.adminSetting.upsert({
+    where:  { key: SCAN_KEY },
+    update: { value: patch as unknown as Prisma.InputJsonValue },
+    create: { key: SCAN_KEY, value: patch as unknown as Prisma.InputJsonValue },
+  }).catch(() => { /* non-critical — we'll re-fire on next call if save failed */ })
 
   const now      = new Date()
   const utcHour  = now.getUTCHours()
@@ -92,7 +172,11 @@ export async function GET(req: Request) {
   const rawResults = await Promise.allSettled(
     slugsToScan.map(async (slug): Promise<ScanResult> => {
       const mdRes = await fetch(`${base}/api/market-data/${slug}`, {
-        headers: { 'x-cron-secret': cronSecret },
+        // Read from env rather than the guard variable above: an admin-session
+        // caller passes the guard without a secret, but this internal hop still
+        // has to authenticate on its own. Empty when unset, which the receiver
+        // now rejects — the intended fail-closed behaviour.
+        headers: { 'x-cron-secret': process.env.CRON_SECRET ?? '' },
         signal:  AbortSignal.timeout(20_000),
       })
       if (!mdRes.ok) throw new Error(`Market data ${slug}: ${mdRes.status}`)
@@ -261,17 +345,26 @@ export async function GET(req: Request) {
     })
     if (subs.length === 0) continue
 
-    const recipients = subs.map(s => s.user)
+    // Filter out the env-based admin placeholder email — it's not a real
+    // inbox, so trying to deliver to it just burns a Resend attempt.
+    const recipients = subs
+      .map(s => s.user)
+      .filter(u => !u.email.endsWith('@forexmastery.internal'))
     const dir        = signal.analysis.decision === 'BUY' ? 'buy' : 'sell'
     const subject    = `New ${dir} signal on ${signal.display}`
 
-    // Email all subscribed users
-    await sendBulkEmail(
-      recipients,
-      subject,
-      (name) => buildSignalEmail(name, alertRecord),
-      (name) => buildSignalText(name, alertRecord),
-    ).catch(err => console.error(`[scan] email error for ${signal.slug}:`, err))
+    if (recipients.length > 0) {
+      const { sent, failed } = await sendBulkEmail(
+        recipients,
+        subject,
+        (name) => buildSignalEmail(name, alertRecord),
+        (name) => buildSignalText(name, alertRecord),
+      ).catch(err => {
+        console.error(`[scan] email error for ${signal.slug}:`, err)
+        return { sent: 0, failed: recipients.length, errors: [] }
+      })
+      console.log(`[scan] ${signal.slug} ${signal.analysis.decision} → email sent=${sent}/failed=${failed} (${recipients.length} subscribers)`)
+    }
 
     // Send a dedicated Telegram alert if any admin has subscribed to this pair
     const adminSubscribed = subs.some(s => s.user.role === 'admin')
@@ -349,15 +442,25 @@ export async function GET(req: Request) {
       })
       if (subs.length === 0) continue
 
-      // Email all subscribed users
+      // Email subscribers — filter out the env-based admin placeholder
+      // (@forexmastery.internal), which is not a real inbox.
+      const emailRecipients = subs
+        .map(s => s.user)
+        .filter(u => !u.email.endsWith('@forexmastery.internal'))
       const dir     = signal.analysis.decision === 'BUY' ? 'buy' : 'sell'
       const subject = `New ${dir} signal on ${signal.display}`
-      await sendBulkEmail(
-        subs.map(s => s.user),
-        subject,
-        (name) => buildSignalEmail(name, alertRecord!),
-        (name) => buildSignalText(name, alertRecord!),
-      ).catch(err => console.error(`[scan:sub] email error for ${signal.slug}:`, err))
+      if (emailRecipients.length > 0) {
+        const { sent, failed } = await sendBulkEmail(
+          emailRecipients,
+          subject,
+          (name) => buildSignalEmail(name, alertRecord!),
+          (name) => buildSignalText(name, alertRecord!),
+        ).catch(err => {
+          console.error(`[scan:sub] email error for ${signal.slug}:`, err)
+          return { sent: 0, failed: emailRecipients.length, errors: [] }
+        })
+        console.log(`[scan:sub] ${signal.slug} ${signal.analysis.decision} → email sent=${sent}/failed=${failed} (${emailRecipients.length} subscribers)`)
+      }
 
       // Telegram to admin subscribers
       const adminSubscribed = subs.some(s => s.user.role === 'admin')

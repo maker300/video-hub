@@ -15,5 +15,5 @@ export function slippagePctFor(slug: string): number {
   return 0.0005
 }
 
-/** Performance fee on PROFITABLE positions only. Currently fixed at 25%. */
-export const PERFORMANCE_FEE_PCT = 0.25
+/** Performance fee on PROFITABLE positions only. Currently fixed at 10%. */
+export const PERFORMANCE_FEE_PCT = 0.10

@@ -35,6 +35,12 @@ function findSlot(id: string) {
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+// Claude calls routinely take 5–15s on full analyses; the streaming response
+// then awaits Claude before persisting the prediction. Vercel Hobby kills
+// functions at 10s by default, which was truncating the DB save. Bump to 30s
+// so the full slow path (Claude + DB write) always completes.
+export const maxDuration = 30
+
 // ── DXY correlation table ─────────────────────────────────────────────────────
 // Correlation coefficient between pair and DXY. Range: -1 to +1.
 // Positive = pair moves WITH DXY (USD-base pairs). Negative = inverse (EUR/USD etc).
@@ -728,6 +734,13 @@ async function getClaudeNarrative(
   conf:     number,
   meta?:    FMTraderResponse['institutionalMeta'],
 ): Promise<ClaudeNarrative | null> {
+  // Admin kill-switch — when off, the rule engine still produces decision/SL/TP
+  // but the narrative & marketBias prose stay empty. Saves the largest single
+  // CPU+token cost per FM Trader call.
+  const { getPerfFlags } = await import('@/lib/perf-flags')
+  const flags = await getPerfFlags()
+  if (!flags.claudeNarrative) return null
+
   const dec      = dp(d.price)
   const f        = (n: number) => n.toFixed(dec)
   const kl       = d.keyLevels
@@ -2107,22 +2120,39 @@ function detectReversalRisk(
 // TPs are set at actual structural levels (S/R, PDH/PDL, swing H/L) rather than
 // pure ATR multiples. ATR-derived values are used as minimum fallbacks only.
 // Minimum R-multiples ensure we never take profits before a reasonable reward threshold.
+/** [min, max] R-multiples for each TP — bounds that must be respected. */
+export type TPBound = [min: number, max: number]
+export interface TPBoundSet { tp1: TPBound; tp2: TPBound; tp3: TPBound }
+
+/**
+ * Structure-first TP picker.
+ *
+ * For each TP slot:
+ *   1. Build the structural candidate list (resistances/supports + extras).
+ *   2. Filter to levels whose R-distance lies inside the slot's [min, max] window.
+ *   3. Pick the CLOSEST qualifying level (nearest structure beyond the minimum).
+ *   4. If nothing structural fits, fall back to the slot's *min* R-multiple —
+ *      a tight, reachable target rather than the old behaviour of jumping to
+ *      the arbitrary central R-value.
+ *   5. Enforce strict ordering: each subsequent TP must be beyond the previous.
+ *
+ * This is the fix for "TPs sit at arbitrary R-multiples instead of where price
+ * actually has structure to react against." Now Claude's intent (pick from
+ * structure) and the formula's intent (respect R-bounds) are aligned.
+ */
 function computeStructuralTPs(
   direction:  'BUY' | 'SELL',
   entryHigh:  number,
   entryLow:   number,
   risk:       number,
-  tp1R:       number,
-  tp2R:       number,
-  tp3R:       number,
+  bounds:     TPBoundSet,
   kl:         FMTraderRequest['keyLevels'],
   mc:         MarketContext | undefined | null,
   dec:        number,
-  extraLevels: number[] = [],   // swing-mode swing-highs/lows (daily, weekly) — added to the candidate pool
-  excludeIntradayLevels = false, // when true, skip PDH/PDL and 20-bar swing — too close for swing trades
+  extraLevels: number[] = [],
+  excludeIntradayLevels = false,
 ): { tp1: number; tp2: number; tp3: number } {
   if (risk <= 0) {
-    // Fallback when risk is zero or negative (data issue)
     return {
       tp1: round(direction === 'BUY' ? entryHigh * 1.005 : entryLow * 0.995, dec),
       tp2: round(direction === 'BUY' ? entryHigh * 1.010 : entryLow * 0.990, dec),
@@ -2130,58 +2160,58 @@ function computeStructuralTPs(
     }
   }
 
-  // ATR-based minimums (floor — we never go below these)
-  const atrTP1 = direction === 'BUY' ? entryHigh + risk * tp1R : entryLow - risk * tp1R
-  const atrTP2 = direction === 'BUY' ? entryHigh + risk * tp2R : entryLow - risk * tp2R
-  const atrTP3 = direction === 'BUY' ? entryHigh + risk * tp3R : entryLow - risk * tp3R
+  const isBuy = direction === 'BUY'
+  const refEntry = isBuy ? entryHigh : entryLow
 
-  if (direction === 'BUY') {
-    // Collect structural resistance levels above entry, sorted ascending (nearest first)
-    const levels = [
-      kl.resistance1, kl.resistance2,
-      excludeIntradayLevels ? 0 : (mc?.prevDayHigh ?? 0),
-      excludeIntradayLevels ? 0 : (mc?.swingHigh   ?? 0),
-      ...extraLevels,
-    ]
-    .filter(l => l > entryHigh + risk * 0.8)   // must be at least 0.8R above entry
-    .sort((a, b) => a - b)
+  // R-distance helper — positive number for both BUY and SELL
+  const rDist = (price: number) => Math.abs(price - refEntry) / risk
 
-    // TP1: first structural level at or above the ATR-based minimum
-    const tp1Struct = levels.find(l => l >= atrTP1 * 0.95)  // allow up to 5% below ATR target
-    // TP2: next level after TP1, must be beyond TP1
-    const tp1Val = tp1Struct ?? atrTP1
-    const tp2Struct = levels.find(l => l > tp1Val * 1.001 && l >= atrTP2 * 0.95)
-    // TP3: highest available level, must be beyond TP2
-    const tp2Val = tp2Struct ?? atrTP2
-    const tp3Struct = [...levels].reverse().find(l => l > tp2Val * 1.001 && l >= atrTP3 * 0.90)
+  // Candidate pool: only levels in the trade direction beyond entry
+  const allLevels = [
+    isBuy ? kl.resistance1 : kl.support1,
+    isBuy ? kl.resistance2 : kl.support2,
+    excludeIntradayLevels ? 0 : (isBuy ? (mc?.prevDayHigh ?? 0) : (mc?.prevDayLow  ?? 0)),
+    excludeIntradayLevels ? 0 : (isBuy ? (mc?.swingHigh   ?? 0) : (mc?.swingLow    ?? 0)),
+    ...extraLevels,
+  ]
 
-    return {
-      tp1: round(tp1Struct ?? atrTP1, dec),
-      tp2: round(tp2Struct ?? atrTP2, dec),
-      tp3: round(tp3Struct ?? atrTP3, dec),
+  // Filter to levels in the right direction with sane distance, sort by R-distance ascending
+  const levels = allLevels
+    .filter(l => l > 0)
+    .filter(l => (isBuy ? l > refEntry : l < refEntry))
+    .map(l => ({ price: l, r: rDist(l) }))
+    .sort((a, b) => a.r - b.r)
+
+  // Pick closest level whose R lies in [min, max] and is beyond `afterPrice`
+  const pickForSlot = (slot: TPBound, afterPrice: number | null): number => {
+    const [minR, maxR] = slot
+    const hit = levels.find(l => {
+      if (l.r < minR || l.r > maxR) return false
+      if (afterPrice === null) return true
+      return isBuy ? l.price > afterPrice * 1.0005 : l.price < afterPrice * 0.9995
+    })
+    if (hit) return hit.price
+    // No structure fits this slot — fall back to the *min* R (tight, reachable),
+    // not the average. Better an aggressive TP user can move up than a TP that
+    // never gets reached.
+    const fallback = isBuy ? refEntry + minR * risk : refEntry - minR * risk
+    // Still enforce ordering vs previous TP
+    if (afterPrice !== null) {
+      return isBuy
+        ? Math.max(fallback, afterPrice + risk * 0.1)
+        : Math.min(fallback, afterPrice - risk * 0.1)
     }
-  } else {
-    // Collect structural support levels below entry, sorted descending (nearest first)
-    const levels = [
-      kl.support1, kl.support2,
-      excludeIntradayLevels ? 0 : (mc?.prevDayLow ?? 0),
-      excludeIntradayLevels ? 0 : (mc?.swingLow   ?? 0),
-      ...extraLevels,
-    ]
-    .filter(l => l > 0 && l < entryLow - risk * 0.8)
-    .sort((a, b) => b - a)   // descending: highest (nearest) first
+    return fallback
+  }
 
-    const tp1Struct = levels.find(l => l <= atrTP1 * 1.05)
-    const tp1Val = tp1Struct ?? atrTP1
-    const tp2Struct = levels.find(l => l < tp1Val * 0.999 && l <= atrTP2 * 1.05)
-    const tp2Val = tp2Struct ?? atrTP2
-    const tp3Struct = [...levels].reverse().find(l => l < tp2Val * 0.999 && l <= atrTP3 * 1.10)
+  const tp1 = pickForSlot(bounds.tp1, null)
+  const tp2 = pickForSlot(bounds.tp2, tp1)
+  const tp3 = pickForSlot(bounds.tp3, tp2)
 
-    return {
-      tp1: round(tp1Struct ?? atrTP1, dec),
-      tp2: round(tp2Struct ?? atrTP2, dec),
-      tp3: round(tp3Struct ?? atrTP3, dec),
-    }
+  return {
+    tp1: round(tp1, dec),
+    tp2: round(tp2, dec),
+    tp3: round(tp3, dec),
   }
 }
 
@@ -2223,6 +2253,10 @@ function recalcLevels(
   body:       FMTraderRequest,
   decision:   'BUY' | 'SELL',
   setupGrade: 'A' | 'B' | 'C' = 'B',
+  // Per-pair empirical tuning — multipliers on TP bounds + SL floor/ceiling.
+  // null = use static bounds (no historical data yet). Caller is responsible
+  // for looking this up via `getPairTuning(slug, horizon)`.
+  tuning?: { tp1Mult: number; tp2Mult: number; tp3Mult: number; slFloorMult: number; slCeilingMult: number } | null,
 ): { entryLow: number; entryHigh: number; stopLoss: number; tp1: number; tp2: number; tp3: number; rrRatio: string } {
   const dec        = dp(body.price)
   const price      = body.price
@@ -2266,47 +2300,30 @@ function recalcLevels(
   const patternCandleLow  = signalCandle && signalCandle.l > 0 ? signalCandle.l : entryLowFb
   const patternCandleHigh = signalCandle && signalCandle.h > 0 ? signalCandle.h : entryHghFb
 
-  // SL multiplier — both horizons widened to give the stop realistic structural
-  // breathing room. Previously intraday stops were ~0.2× ATR (too tight, kept
-  // getting knocked out by normal session wicks). New values place SL behind
-  // the pattern candle by ~0.4–0.6× ATR for intraday and ~0.7–0.9× ATR for swing.
+  // SL multiplier — tight, reachable-target-friendly distances.
   const slMult = swing
-    ? (setupGrade === 'A' ? 0.55 : setupGrade === 'B' ? 0.70 : 0.90)
-    : (setupGrade === 'A' ? 0.35 : setupGrade === 'B' ? 0.45 : 0.60)
+    ? (setupGrade === 'A' ? 0.40 : setupGrade === 'B' ? 0.55 : 0.75)
+    : (setupGrade === 'A' ? 0.18 : setupGrade === 'B' ? 0.22 : 0.28)
 
-  // Max-width SL cap — widened so the cap doesn't override pattern-anchored
-  // stops on volatile pairs. Intraday now caps at 2.5× ATR (was 1.5×), swing
-  // at 3.5× ATR (was 3.0×) — gives genuine structural distance.
-  const slCapMult = swing ? 3.5 : 2.5
+  // Max-width SL cap
+  const slCapMult = swing ? 3.0 : 1.5
 
-  // Entry-zone width — swing zones are wider so price has room to retest
+  // Entry-zone width
   const entryWidthLow  = swing ? ewp * 1.6 : ewp
   const entryWidthHigh = swing ? ewp * 0.7 : ewp * 0.4
 
-  // R-multiples — realistic structural distances that match how institutional
-  // desks actually scale out. Key relationship: SWING TP1 == INTRADAY TP2
-  // (a swing trade's first target is what an intraday trader's second target
-  // would be, since the swing trader is willing to hold longer for more move).
-  //
-  //                       INTRADAY                  SWING
-  //   Grade A · TP1     2.0 R                    3.5 R   (= intraday TP2 A)
-  //   Grade A · TP2     3.5 R                    6.0 R
-  //   Grade A · TP3     5.0 R                    9.0 R
-  //   Grade B · TP1     1.75R                    3.0 R   (= intraday TP2 B)
-  //   Grade B · TP2     3.0 R                    5.0 R
-  //   Grade B · TP3     4.5 R                    8.0 R
-  //   Grade C · TP1     1.5 R                    2.5 R   (= intraday TP2 C)
-  //   Grade C · TP2     2.5 R                    4.0 R
-  //   Grade C · TP3     3.5 R                    6.0 R
-  const tp1R = swing
-    ? (setupGrade === 'A' ? 3.5  : setupGrade === 'B' ? 3.0  : 2.5)
-    : (setupGrade === 'A' ? 2.0  : setupGrade === 'B' ? 1.75 : 1.5)
-  const tp2R = swing
-    ? (setupGrade === 'A' ? 6.0  : setupGrade === 'B' ? 5.0  : 4.0)
-    : (setupGrade === 'A' ? 3.5  : setupGrade === 'B' ? 3.0  : 2.5)
-  const tp3R = swing
-    ? (setupGrade === 'A' ? 9.0  : setupGrade === 'B' ? 8.0  : 6.0)
-    : (setupGrade === 'A' ? 5.0  : setupGrade === 'B' ? 4.5  : 3.5)
+  // TP bounds — [min, max] R-multiples per slot. Static "anchor" values that
+  // pair tuning (when available) nudges by up to ±30% based on hit-rate history.
+  // Same downstream numbers used by the Claude clamp so formula + Claude paths
+  // stay in lockstep.
+  const staticTpBounds: TPBoundSet = swing
+    ? { tp1: [1.5, 3.5], tp2: [2.5, 6.0], tp3: [3.5, 9.0] }
+    : { tp1: [1.0, 2.5], tp2: [1.5, 4.0], tp3: [2.0, 6.0] }
+  const tpBounds: TPBoundSet = tuning ? {
+    tp1: [staticTpBounds.tp1[0] * tuning.tp1Mult, staticTpBounds.tp1[1] * tuning.tp1Mult],
+    tp2: [staticTpBounds.tp2[0] * tuning.tp2Mult, staticTpBounds.tp2[1] * tuning.tp2Mult],
+    tp3: [staticTpBounds.tp3[0] * tuning.tp3Mult, staticTpBounds.tp3[1] * tuning.tp3Mult],
+  } : staticTpBounds
 
   // Swing-mode TP anchors — pull from Daily and Weekly fractal swing extremes
   // (these are the levels institutions actually target on multi-day holds).
@@ -2324,8 +2341,16 @@ function recalcLevels(
   let entryLow: number, entryHigh: number, stopLoss: number
   let tp1: number, tp2: number, tp3: number
 
+  // Entry-anchor drift cap — matches the same bound applied at the Claude
+  // merge step. Keeps the "wait for retest at EMA9" entry concept while
+  // preventing the zone from sitting >1×ATR (intraday) / >1.5×ATR (swing)
+  // from current price — beyond that, fills get rare within the validity window.
+  const entryDriftCap = blendedATR * (swing ? 1.5 : 1.0)
+
   if (decision === 'BUY') {
-    const entryMid = Math.min(price, entryEMA9) + spreadBuf
+    const rawAnchor     = Math.min(price, entryEMA9)
+    const clampedAnchor = Math.max(rawAnchor, price - entryDriftCap)
+    const entryMid      = clampedAnchor + spreadBuf
     entryLow  = round(entryMid * (1 - entryWidthLow), dec)
     entryHigh = round(entryMid * (1 + entryWidthHigh), dec)
     const patternStop  = patternCandleLow - blendedATR * slMult - spreadBuf
@@ -2333,11 +2358,13 @@ function recalcLevels(
     stopLoss = round(Math.max(patternStop, maxWidthStop), dec)
     const risk = entryHigh - stopLoss
     ;({ tp1, tp2, tp3 } = computeStructuralTPs(
-      'BUY', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec,
+      'BUY', entryHigh, entryLow, risk, tpBounds, kl, body.marketContext, dec,
       swingTPAnchors, /* excludeIntradayLevels */ swing,
     ))
   } else {
-    const entryMid = Math.max(price, entryEMA9) - spreadBuf
+    const rawAnchor     = Math.max(price, entryEMA9)
+    const clampedAnchor = Math.min(rawAnchor, price + entryDriftCap)
+    const entryMid      = clampedAnchor - spreadBuf
     entryHigh = round(entryMid * (1 + entryWidthLow), dec)
     entryLow  = round(entryMid * (1 - entryWidthHigh), dec)
     const patternStop  = patternCandleHigh + blendedATR * slMult + spreadBuf
@@ -2345,7 +2372,7 @@ function recalcLevels(
     stopLoss = round(Math.min(patternStop, maxWidthStop), dec)
     const risk = stopLoss - entryLow
     ;({ tp1, tp2, tp3 } = computeStructuralTPs(
-      'SELL', entryHigh, entryLow, risk, tp1R, tp2R, tp3R, kl, body.marketContext, dec,
+      'SELL', entryHigh, entryLow, risk, tpBounds, kl, body.marketContext, dec,
       swingTPAnchors, /* excludeIntradayLevels */ swing,
     ))
   }
@@ -3068,8 +3095,12 @@ function sessionGate(category: string, slug: string): { blocked: boolean; reason
 export async function POST(req: Request) {
   const session   = await getServerSession(authOptions)
   const cronHeader = req.headers.get('x-cron-secret')
-  const cronSecret = process.env.CRON_SECRET ?? 'dev'
-  if (!session && cronHeader !== cronSecret) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // No 'dev' fallback — an unset CRON_SECRET must not leave a guessable string
+  // standing in as a valid credential.
+  const cronSecret = process.env.CRON_SECRET
+  if (!session && (!cronSecret || cronHeader !== cronSecret)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
 
   // Silently resolve pending predictions on every FM Trader call — fire-and-forget.
   // This keeps outcomes near-real-time even though the Vercel cron only runs daily.
@@ -3266,8 +3297,10 @@ export async function POST(req: Request) {
   if (inMemory && !body.scanOnly) {
     // Recalculate levels from current price before saving or returning.
     const memGrade  = inMemory.data.setupGrade ?? 'B'
+    const { getPairTuning: getMemTuning } = await import('@/lib/pair-tuning')
+    const memTuning = await getMemTuning(body.slug, body.tradeHorizon ?? 'intraday')
     const memLevels = inMemory.data.decision !== 'NO TRADE'
-      ? recalcLevels(body, inMemory.data.decision as 'BUY' | 'SELL', memGrade)
+      ? recalcLevels(body, inMemory.data.decision as 'BUY' | 'SELL', memGrade, memTuning)
       : null
     const memResult = memLevels
       ? { ...inMemory.data, entryZone: [memLevels.entryLow, memLevels.entryHigh] as [number, number], stopLoss: memLevels.stopLoss, tp1: memLevels.tp1, tp2: memLevels.tp2, tp3: memLevels.tp3, rrRatio: memLevels.rrRatio }
@@ -3357,8 +3390,10 @@ export async function POST(req: Request) {
           } : undefined)
         : {}
       const learnedBoost = decision !== 'NO TRADE' ? computeLearnedBoost(features, learnedWeights) : 0
+      const { getPairTuning: getSharedTuning } = await import('@/lib/pair-tuning')
+      const sharedTuning = await getSharedTuning(body.slug, body.tradeHorizon ?? 'intraday')
       const freshLevels = decision !== 'NO TRADE'
-        ? recalcLevels(body, decision as 'BUY' | 'SELL', freshGrade)
+        ? recalcLevels(body, decision as 'BUY' | 'SELL', freshGrade, sharedTuning)
         : null
 
       const sharedResult: FMTraderResponse = {
@@ -3429,7 +3464,13 @@ export async function POST(req: Request) {
     //
     //   When `Accept` is `application/json` (or anything else), we fall back to the
     //   original blocking JSON response for compatibility.
-    const wantsStream = (req.headers.get('accept') ?? '').includes('application/x-ndjson')
+    // Streaming gated by admin flag (fmTraderStreaming). When off, we return
+    // a single buffered JSON response — slightly cheaper per-request because
+    // we avoid the ReadableStream + double rule-engine encode.
+    const { getPerfFlags: _getPerfFlagsForStream } = await import('@/lib/perf-flags')
+    const _streamFlags = await _getPerfFlagsForStream()
+    const wantsStream = _streamFlags.fmTraderStreaming
+      && (req.headers.get('accept') ?? '').includes('application/x-ndjson')
 
     // ── Step 0: Load learned weights + per-pair win rate → inject into prompt ─
     const [learnedWeights, pairStats] = await Promise.all([
@@ -3476,11 +3517,17 @@ export async function POST(req: Request) {
     const ewp      = atr.entryWidthPct
     const setupGrade = ruleResult.setupGrade ?? 'B'
 
+    // Per-pair empirical tuning — multipliers on TP/SL bounds drawn from
+    // historical hit-rates. Returns identity (no change) when fewer than
+    // 10 resolved trades exist for this pair+horizon.
+    const { getPairTuning } = await import('@/lib/pair-tuning')
+    const pairTuning = await getPairTuning(body.slug, body.tradeHorizon ?? 'intraday')
+
     let entryLow: number, entryHigh: number, stopLoss: number
     let tp1: number, tp2: number, tp3: number
 
     if (decision === 'BUY' || decision === 'SELL') {
-      const lvl = recalcLevels(body, decision, setupGrade)
+      const lvl = recalcLevels(body, decision, setupGrade, pairTuning)
       entryLow  = lvl.entryLow
       entryHigh = lvl.entryHigh
       stopLoss  = lvl.stopLoss
@@ -3559,17 +3606,71 @@ export async function POST(req: Request) {
       if (narrative?.thesis)     merged.thesis     = narrative.thesis
       if (narrative?.marketBias) merged.marketBias = narrative.marketBias
 
-      // Claude levels override formula levels when valid (anchored to live price)
+      // Claude levels merge with formula levels, but with ATR-based SOFT CLAMPS
+      // that preserve Claude's structural intent while sanding off both extremes:
+      //   • SL too tight  → gets pushed out to the noise-floor distance
+      //   • SL too wide   → gets pulled in to a still-reasonable ceiling
+      //   • TP too close  → gets pushed out to TP-minimum R-multiple
+      //   • TP unreachable → gets pulled in to a viable R-multiple
+      //
+      // Numbers below are calibrated for the signal's validity window
+      // (1-2h intraday, multi-day swing) so trades have a real shot at TPs.
       let fEntryLow = entryLow, fEntryHigh = entryHigh, fSL = stopLoss
       let fTP1 = tp1, fTP2 = tp2, fTP3 = tp3
       const clv = narrative
       if (clv && decision !== 'NO TRADE') {
-        if (clv.entryLow  > 0) fEntryLow  = round(clv.entryLow,  dec)
-        if (clv.entryHigh > 0) fEntryHigh = round(clv.entryHigh, dec)
-        if (clv.stopLoss  > 0) fSL        = round(clv.stopLoss,  dec)
-        if (clv.tp1       > 0) fTP1       = round(clv.tp1,       dec)
-        if (clv.tp2       > 0) fTP2       = round(clv.tp2,       dec)
-        if (clv.tp3       > 0) fTP3       = round(clv.tp3,       dec)
+        const isSwing  = (body.tradeHorizon ?? 'intraday') === 'swing'
+        const isBuy    = decision === 'BUY'
+        const atrUnit  = atr.atrProxy > 0 ? atr.atrProxy : price * 0.005
+
+        // Entry zone — Claude may shift it, but clamp the drift to ±N×ATR
+        // from current price so the zone is still fillable inside the window.
+        const ENTRY_DRIFT_MULT = isSwing ? 1.5 : 1.0
+        const entryDriftCap    = atrUnit * ENTRY_DRIFT_MULT
+        const clampNear = (v: number) => Math.min(Math.max(v, price - entryDriftCap), price + entryDriftCap)
+        if (clv.entryLow  > 0) fEntryLow  = round(clampNear(clv.entryLow),  dec)
+        if (clv.entryHigh > 0) fEntryHigh = round(clampNear(clv.entryHigh), dec)
+
+        // The "reference entry" for SL/TP distance math — opposite end of the
+        // entry zone from the trade direction (entryHigh for BUY, entryLow for SELL).
+        const refEntry = isBuy ? fEntryHigh : fEntryLow
+
+        // SL bounds — floor prevents noise-stops, ceiling prevents wild stops.
+        // Pair tuning nudges the floor up (if SL hit too often) or ceiling down
+        // (if too many expirations indicate stops were too distant).
+        const SL_FLOOR_MULT   = (isSwing ? 0.50 : 0.30) * pairTuning.slFloorMult
+        const SL_CEILING_MULT = (isSwing ? 2.50 : 1.50) * pairTuning.slCeilingMult
+        const slFloorDist     = atrUnit * SL_FLOOR_MULT
+        const slCeilingDist   = atrUnit * SL_CEILING_MULT
+        if (clv.stopLoss > 0) {
+          const wantedDist = Math.abs(refEntry - clv.stopLoss)
+          const clampedDist = Math.min(Math.max(wantedDist, slFloorDist), slCeilingDist)
+          fSL = round(isBuy ? refEntry - clampedDist : refEntry + clampedDist, dec)
+        }
+
+        // TPs — bounded as R-multiples of the realised SL distance, with
+        // pair-specific multipliers applied (e.g., 0.85 on a pair whose TP1
+        // historically hits <35% of the time → pulls TP1 closer).
+        const risk = Math.abs(refEntry - fSL)
+        if (risk > 0) {
+          const staticTP = isSwing
+            ? { tp1: [1.5, 3.5], tp2: [2.5, 6.0], tp3: [3.5, 9.0] }
+            : { tp1: [1.0, 2.5], tp2: [1.5, 4.0], tp3: [2.0, 6.0] }
+          const TP_BOUNDS = {
+            tp1: [staticTP.tp1[0] * pairTuning.tp1Mult, staticTP.tp1[1] * pairTuning.tp1Mult],
+            tp2: [staticTP.tp2[0] * pairTuning.tp2Mult, staticTP.tp2[1] * pairTuning.tp2Mult],
+            tp3: [staticTP.tp3[0] * pairTuning.tp3Mult, staticTP.tp3[1] * pairTuning.tp3Mult],
+          }
+          const clampTP = (claudeTP: number, [minR, maxR]: number[]): number => {
+            if (claudeTP <= 0) return claudeTP   // caller will keep formula value
+            const wantedR  = Math.abs(claudeTP - refEntry) / risk
+            const clampedR = Math.min(Math.max(wantedR, minR), maxR)
+            return round(isBuy ? refEntry + clampedR * risk : refEntry - clampedR * risk, dec)
+          }
+          const c1 = clampTP(clv.tp1, TP_BOUNDS.tp1); if (c1 > 0) fTP1 = c1
+          const c2 = clampTP(clv.tp2, TP_BOUNDS.tp2); if (c2 > 0) fTP2 = c2
+          const c3 = clampTP(clv.tp3, TP_BOUNDS.tp3); if (c3 > 0) fTP3 = c3
+        }
       }
       merged.entryZone = [fEntryLow, fEntryHigh]
       merged.stopLoss  = fSL
@@ -3629,7 +3730,7 @@ export async function POST(req: Request) {
 
       // Outcome checker — fire-and-forget
       fetch(`${process.env.NEXTAUTH_URL ?? 'http://localhost:3000'}/api/fm-trader/check-outcomes`, {
-        headers: { authorization: `Bearer ${process.env.CRON_SECRET ?? 'dev'}` },
+        headers: { authorization: `Bearer ${process.env.CRON_SECRET ?? ''}` },
       }).catch(() => { /* non-critical */ })
 
       return merged

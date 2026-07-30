@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { checkScriptKey } from '@/lib/scriptAuth'
 
 export const dynamic = 'force-dynamic'
 
 // Public endpoint — returns approved scripts for Video Hub to consume.
 // Secured by FM_SCRIPT_API_KEY header (set the same key in Video Hub env).
 export async function GET(req: Request) {
-  const apiKey = process.env.FM_SCRIPT_API_KEY
-  if (apiKey && req.headers.get('x-api-key') !== apiKey) {
+  if (!checkScriptKey(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

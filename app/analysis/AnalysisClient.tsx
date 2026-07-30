@@ -402,14 +402,19 @@ export default function AnalysisClient({ initial }: { initial: MarketData | null
   // Signals to Watch
   const [topSignals, setTopSignals] = useState<{ slug: string; display: string; category: string; decision: string; confidence: number; confluence: number; sentAt: string }[]>([])
   useEffect(() => {
-    fetch('/api/signals/top')
-      .then(r => r.json())
-      .then(d => setTopSignals(d.signals ?? []))
-      .catch(() => {})
-    const id = setInterval(() => {
+    const fetchTop = () => {
       fetch('/api/signals/top').then(r => r.json()).then(d => setTopSignals(d.signals ?? [])).catch(() => {})
-    }, 2 * 60 * 1000)
-    return () => clearInterval(id)
+    }
+    // Pause when tab is hidden; catch up on visibility return.
+    const tick = () => { if (!document.hidden) fetchTop() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const id = setInterval(tick, 2 * 60 * 1000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   // Live price state
@@ -449,9 +454,15 @@ export default function AnalysisClient({ initial }: { initial: MarketData | null
     if (!mktCache || (Date.now() - mktCache.ts) >= MARKET_CACHE_TTL) {
       fetchData()
     }
-    // Auto-refresh every 10 minutes
-    const id = setInterval(() => fetchData(), MARKET_CACHE_TTL)
-    return () => clearInterval(id)
+    // Auto-refresh every 10 minutes — paused while tab is hidden.
+    const tick = () => { if (!document.hidden) fetchData() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    const id = setInterval(tick, MARKET_CACHE_TTL)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [fetchData])
 
   // ── Live price polling (5 s) + alert checker ──────────────────────────────
@@ -511,9 +522,16 @@ export default function AnalysisClient({ initial }: { initial: MarketData | null
   }, [])
 
   useEffect(() => {
-    fetchLive()
-    const id = setInterval(fetchLive, LIVE_INTERVAL)
-    return () => clearInterval(id)
+    // Pause live polling while tab is hidden; catch up on visibility return.
+    const tick = () => { if (!document.hidden) void fetchLive() }
+    const onVisible = () => { if (!document.hidden) tick() }
+    tick()
+    const id = setInterval(tick, LIVE_INTERVAL)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [fetchLive])
 
   // Apply tab + sentiment + search filters

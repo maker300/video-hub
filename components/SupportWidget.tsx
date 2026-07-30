@@ -22,6 +22,10 @@ interface Conversation {
   createdAt: number
   hiddenAt:  number | null
   isGuest:   boolean         // was this conversation started as a guest?
+  // Bumped on every message exchange (user, bot, or admin reply). Conversation
+  // is auto-purged 24h after this timestamp — gives the user a fresh start the
+  // next time they open Aria after a day of inactivity.
+  lastActiveAt: number
 }
 
 interface StoredChats {
@@ -31,7 +35,7 @@ interface StoredChats {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const THREE_DAYS = 3 * 24 * 60 * 60 * 1000
+const ONE_DAY = 24 * 60 * 60 * 1000
 
 // Messages that should never be persisted to localStorage
 const ERROR_MESSAGES = [
@@ -54,10 +58,16 @@ function loadStore(key: string): StoredChats {
     const raw = localStorage.getItem(key)
     if (!raw) return { conversations: [], activeId: null }
     const stored: StoredChats = JSON.parse(raw)
-    // Purge conversations hidden more than 3 days ago
+    // Purge any conversation (active or hidden) that's been idle > 24h.
+    // Fallbacks handle pre-existing localStorage entries from before lastActiveAt.
+    const cutoff = Date.now() - ONE_DAY
     stored.conversations = stored.conversations.filter(c =>
-      !c.hiddenAt || Date.now() - c.hiddenAt < THREE_DAYS
+      (c.lastActiveAt ?? c.hiddenAt ?? c.createdAt) >= cutoff
     )
+    // If the active conversation was purged, drop the pointer so hydrate makes a fresh one.
+    if (stored.activeId && !stored.conversations.some(c => c.id === stored.activeId)) {
+      stored.activeId = null
+    }
     return stored
   } catch {
     return { conversations: [], activeId: null }
@@ -113,10 +123,10 @@ function friendlyDate(ts: number) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function daysUntilDelete(hiddenAt: number) {
-  const remaining = THREE_DAYS - (Date.now() - hiddenAt)
-  const days = Math.ceil(remaining / (24 * 60 * 60 * 1000))
-  return Math.max(1, days)
+function hoursUntilDelete(lastActiveAt: number) {
+  const remaining = ONE_DAY - (Date.now() - lastActiveAt)
+  const hours = Math.ceil(remaining / (60 * 60 * 1000))
+  return Math.max(1, hours)
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -153,7 +163,7 @@ export default function SupportWidget() {
 
     if (!active) {
       // No active conversation — create one
-      active = { id: uid(), messages: [makeWelcomeMsg(session)], ticketId: null, createdAt: Date.now(), hiddenAt: null, isGuest: !session?.user }
+      active = { id: uid(), messages: [makeWelcomeMsg(session)], ticketId: null, createdAt: Date.now(), hiddenAt: null, isGuest: !session?.user, lastActiveAt: Date.now() }
       loaded.conversations.unshift(active)
       loaded.activeId = active.id
       saveStore(key, loaded)
@@ -194,6 +204,7 @@ export default function SupportWidget() {
           return {
             ...prev,
             messages: [...prev.messages, { role: 'assistant', content: data.reply, isAdminReply: true }],
+            lastActiveAt: Date.now(),
           }
         })
       })
@@ -217,12 +228,14 @@ export default function SupportWidget() {
     if (!activeConv) return
     const key = storageKey(email)
 
-    // Hide the current conversation
-    const hiddenNow: Conversation = { ...activeConv, hiddenAt: Date.now() }
+    // Hide the current conversation — lastActiveAt = now so the 24h purge timer
+    // starts ticking from the end-of-conversation moment.
+    const hiddenNow: Conversation = { ...activeConv, hiddenAt: Date.now(), lastActiveAt: Date.now() }
     // Create a fresh one
     const fresh: Conversation = {
       id: uid(), messages: [makeWelcomeMsg(session)],
       ticketId: null, createdAt: Date.now(), hiddenAt: null, isGuest: !session?.user,
+      lastActiveAt: Date.now(),
     }
 
     const updated: StoredChats = {
@@ -243,7 +256,7 @@ export default function SupportWidget() {
 
     const userMsg: Message = { role: 'user', content: text.trim() }
     const updated = [...activeConv.messages, userMsg]
-    setActiveConv(prev => prev ? { ...prev, messages: updated } : prev)
+    setActiveConv(prev => prev ? { ...prev, messages: updated, lastActiveAt: Date.now() } : prev)
     setInput('')
     setLoading(true)
 
@@ -268,19 +281,19 @@ export default function SupportWidget() {
 
       if (!res.ok || data.error) {
         setActiveConv(prev => prev
-          ? { ...prev, messages: [...prev.messages, { role: 'assistant', content: data.error ?? 'Something went wrong. Please try again.' }] }
+          ? { ...prev, messages: [...prev.messages, { role: 'assistant', content: data.error ?? 'Something went wrong. Please try again.' }], lastActiveAt: Date.now() }
           : prev)
       } else {
         const reply: Message = { role: 'assistant', content: data.reply }
         setActiveConv(prev => {
           if (!prev) return prev
-          return { ...prev, messages: [...prev.messages, reply], ticketId: data.ticketId ?? prev.ticketId }
+          return { ...prev, messages: [...prev.messages, reply], ticketId: data.ticketId ?? prev.ticketId, lastActiveAt: Date.now() }
         })
         if (!open) setUnread(u => u + 1)
       }
     } catch {
       setActiveConv(prev => prev
-        ? { ...prev, messages: [...prev.messages, { role: 'assistant', content: "I'm having a connection issue. Please try again." }] }
+        ? { ...prev, messages: [...prev.messages, { role: 'assistant', content: "I'm having a connection issue. Please try again." }], lastActiveAt: Date.now() }
         : prev
       )
     } finally {
@@ -342,7 +355,7 @@ export default function SupportWidget() {
               </p>
               <p className="text-[10px] text-emerald-400 mt-0.5">
                 {isHistoryView
-                  ? `Started ${friendlyDate(historyConv!.createdAt)} · deletes in ${daysUntilDelete(historyConv!.hiddenAt!)}d`
+                  ? `Started ${friendlyDate(historyConv!.createdAt)} · deletes in ${hoursUntilDelete(historyConv!.lastActiveAt ?? historyConv!.hiddenAt!)}h`
                   : view === 'history'
                   ? `${hiddenConvs.length} previous chat${hiddenConvs.length !== 1 ? 's' : ''}`
                   : 'ForexMastery Support · Online'}
@@ -387,7 +400,7 @@ export default function SupportWidget() {
                 <p className="text-center text-gray-600 text-sm mt-10">No previous conversations.</p>
               ) : hiddenConvs.map(conv => {
                 const preview = conv.messages.find(m => m.role === 'user')?.content ?? 'No messages'
-                const daysLeft = daysUntilDelete(conv.hiddenAt!)
+                const hoursLeft = hoursUntilDelete(conv.lastActiveAt ?? conv.hiddenAt!)
                 return (
                   <button
                     key={conv.id}
@@ -396,7 +409,7 @@ export default function SupportWidget() {
                   >
                     <p className="text-xs text-white font-medium truncate">{preview}</p>
                     <p className="text-[10px] text-gray-500 mt-0.5">
-                      {friendlyDate(conv.createdAt)} · deletes in {daysLeft} day{daysLeft !== 1 ? 's' : ''}
+                      {friendlyDate(conv.createdAt)} · deletes in {hoursLeft} hour{hoursLeft !== 1 ? 's' : ''}
                     </p>
                   </button>
                 )
