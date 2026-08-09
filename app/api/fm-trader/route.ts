@@ -3139,17 +3139,6 @@ export async function POST(req: Request) {
       : undefined
   let tokenCharged = false
 
-  if (tokenUserId) {
-    const balance = await debitTokens(tokenUserId, TOKENS_PER_RUN, 'fm_trader_run', body.slug)
-    if (balance === null) {
-      return NextResponse.json({
-        error:   'insufficient_tokens',
-        message: 'You are out of FM Trader tokens. Top up to keep running predictions.',
-        buyUrl:  '/analysis/tokens',
-      }, { status: 402 })
-    }
-    tokenCharged = true
-  }
 
   // A NO TRADE verdict does not cost a token. The user asked for a call and was
   // told to stay out — useful, but not the prediction they paid for. Refunded
@@ -3302,6 +3291,42 @@ export async function POST(req: Request) {
   const utcHour   = new Date(nowTs).toISOString().slice(0, 13)  // "2026-04-24T09"
   const hourStart = new Date(`${utcHour}:00:00.000Z`)
   const hourEnd   = new Date(hourStart.getTime() + 60 * 60 * 1000)  // exact UTC hour boundary
+
+  // ── Charge for the run ─────────────────────────────────────────────────────
+  // Deliberately placed after the UTC hour boundary is known, and after the
+  // news-blackout / dead-session exits above: those all return NO TRADE, which
+  // does not cost a token, so not charging beats charging and refunding.
+  //
+  // One token per prediction per user per hour — not per view. A stored
+  // FMPrediction for this user, instrument and horizon in the current hour means
+  // they already paid for this call, so reopening the page or coming back to it
+  // is free. forceRefresh is an explicit request for a new prediction and always
+  // charges.
+  if (tokenUserId) {
+    const alreadyPaid = body.forceRefresh
+      ? null
+      : await prisma.fMPrediction.findFirst({
+          where: {
+            userId:       tokenUserId,
+            slug:         body.slug,
+            tradeHorizon: body.tradeHorizon ?? 'intraday',
+            generatedAt:  { gte: hourStart },
+          },
+          select: { id: true },
+        })
+
+    if (!alreadyPaid) {
+      const balance = await debitTokens(tokenUserId, TOKENS_PER_RUN, 'fm_trader_run', body.slug)
+      if (balance === null) {
+        return NextResponse.json({
+          error:   'insufficient_tokens',
+          message: 'You are out of FM Trader tokens. Top up to keep running predictions.',
+          buyUrl:  '/analysis/tokens',
+        }, { status: 402 })
+      }
+      tokenCharged = true
+    }
+  }
 
   // Prune expired entries before reading so stale results never slip through
   pruneCache(nowTs)
