@@ -3151,6 +3151,33 @@ export async function POST(req: Request) {
     tokenCharged = true
   }
 
+  // A NO TRADE verdict does not cost a token. The user asked for a call and was
+  // told to stay out — useful, but not the prediction they paid for. Refunded
+  // rather than charged conditionally because the debit has to happen before the
+  // cache paths, and the decision is not known until after them.
+  //
+  // Guarded by tokenRefunded so the several return paths below cannot each
+  // credit the same run.
+  let tokenRefunded = false
+  const settleTokens = async <T,>(result: T): Promise<T> => {
+    const decision = (result as { decision?: string } | null)?.decision
+    if (tokenCharged && !tokenRefunded && tokenUserId && decision === 'NO TRADE') {
+      tokenRefunded = true
+      await creditTokens(tokenUserId, TOKENS_PER_RUN, 'refund_no_trade', body.slug)
+        .catch(e => console.error('[fm-trader] no-trade refund failed:', e))
+    }
+    return result
+  }
+
+  /** Refund a run that returned no prediction at all (rate limit, hard error). */
+  const refundUnused = async (why: string) => {
+    if (tokenCharged && !tokenRefunded && tokenUserId) {
+      tokenRefunded = true
+      await creditTokens(tokenUserId, TOKENS_PER_RUN, 'refund_failed_run', `${body.slug} (${why})`)
+        .catch(e => console.error('[fm-trader] refund failed:', e))
+    }
+  }
+
   // ── News blackout: client signals a high-impact event is imminent ─────────
   // If a scheduled high-impact event is within ±30 min, we force NO TRADE.
   // A professional desk never enters within this window — the stop would need
@@ -3187,7 +3214,7 @@ export async function POST(req: Request) {
       traderNote:         `I'm sitting this one out. ${body.blackoutReason ?? 'High-impact news is due shortly.'} The risk/reward of trading into a news event is terrible — you are essentially gambling on a binary outcome. I'd rather miss the move than get stopped out by a 50-pip spike. I'll be back at my desk after the dust settles.`,
       generatedAt:        Date.now(),
     }
-    return NextResponse.json(noTradeResult)
+    return NextResponse.json(await settleTokens(noTradeResult))
   }
 
   // ── Session/liquidity gate (server-enforced) ───────────────────────────────
@@ -3226,7 +3253,7 @@ export async function POST(req: Request) {
       traderNote:         `Patience. The ${new Date().getUTCHours().toString().padStart(2, '0')}:00 UTC window is dead for this instrument. I could give you a signal, but it would be noise, not analysis. Come back during London (07:00–16:00 UTC) or New York (12:00–21:00 UTC) hours for a signal worth acting on.`,
       generatedAt:        Date.now(),
     }
-    return NextResponse.json(deadResult)
+    return NextResponse.json(await settleTokens(deadResult))
   }
 
   // ── Server-side news blackout (independent of client-sent flag) ───────────
@@ -3264,7 +3291,7 @@ export async function POST(req: Request) {
       traderNote:         `Server-confirmed news blackout: ${svrNews.reason}. I'm sitting this one out.`,
       generatedAt:        Date.now(),
     }
-    return NextResponse.json(svrBlackoutResult)
+    return NextResponse.json(await settleTokens(svrBlackoutResult))
   }
 
   // ── Shared analysis cache: one Claude call per pair per UTC hour ─────────────
@@ -3284,6 +3311,7 @@ export async function POST(req: Request) {
   const minutesIntoHour = Math.floor((nowTs - hourStart.getTime()) / 60_000)
   if (body.forceRefresh && !body.scanOnly) {
     if (minutesIntoHour < 30) {
+      await refundUnused('refresh cooldown')
       return NextResponse.json(
         { error: `Refresh available after 30 minutes into the hour. Try again in ${30 - minutesIntoHour} min.` },
         { status: 429 },
@@ -3370,7 +3398,7 @@ export async function POST(req: Request) {
         })
       }
     }
-    return NextResponse.json(memResult)
+    return NextResponse.json(await settleTokens(memResult))
   }
 
   try {
@@ -3500,7 +3528,7 @@ export async function POST(req: Request) {
           })
         }
       }
-      return NextResponse.json(sharedResult)
+      return NextResponse.json(await settleTokens(sharedResult))
     }
 
     // ── No shared result yet — full Claude path ────────────────────────────────
@@ -3784,7 +3812,7 @@ export async function POST(req: Request) {
         headers: { authorization: `Bearer ${process.env.CRON_SECRET ?? ''}` },
       }).catch(() => { /* non-critical */ })
 
-      return merged
+      return settleTokens(merged)
     }
 
     // ── Streaming path: send rule-engine preliminary first, Claude overrides second
@@ -3846,7 +3874,7 @@ export async function POST(req: Request) {
       const staleResult = staleDrift
         ? { ...stale.data, riskFactors: [staleDrift, ...(stale.data.riskFactors ?? [])] }
         : stale.data
-      return NextResponse.json(staleResult)
+      return NextResponse.json(await settleTokens(staleResult))
     }
     // Refund — the run failed and the user received nothing. The stale-cache
     // branch above deliberately keeps the charge: they still got a prediction.

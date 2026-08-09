@@ -47,6 +47,7 @@ export type LedgerReason =
   | 'purchase'
   | 'fm_trader_run'
   | 'refund_failed_run'
+  | 'refund_no_trade'
   | 'admin_grant'
   | 'admin_revoke'
 
