@@ -70,9 +70,12 @@ export const finnhubProvider: CalendarProvider = {
     const res = await fetch(url, { signal: AbortSignal.timeout(20_000) })
 
     if (!res.ok) {
-      // 401/403 here most likely means the calendar is gated to a paid plan
-      // rather than a bad key — surface the status so the cron log says which.
-      throw new Error(`finnhub calendar HTTP ${res.status}`)
+      // Include the provider's own message. A 403 here can mean the calendar is
+      // gated to a paid plan, the account is unverified, or the key is still
+      // activating — and those need different responses, so the status code
+      // alone is not enough to act on. Truncated: it is going into a log line.
+      const body = await res.text().catch(() => '')
+      throw new Error(`finnhub calendar HTTP ${res.status}: ${body.slice(0, 200)}`)
     }
 
     const json = await res.json() as { economicCalendar?: FinnhubRow[] }
@@ -108,7 +111,115 @@ export const finnhubProvider: CalendarProvider = {
   },
 }
 
-export const ACTIVE_PROVIDER: CalendarProvider = finnhubProvider
+// ── ForexFactory (faireconomy mirror) ─────────────────────────────────────────
+//
+// Free and keyless, and its currency codes already match the ffCurrencies table
+// in app/api/news/[slug]/route.ts. Three constraints shape the code below:
+//
+//   1. It rate-limits aggressively — a handful of requests inside a few minutes
+//      returns 429. Hence FETCH_TTL_MS and the module-level cache; the cron must
+//      run at ~20 minute intervals, NOT the 5 minutes a keyed API would allow.
+//   2. Only ff_calendar_thisweek.json exists. today/tomorrow/nextweek/lastweek
+//      all 404, so the horizon is the current week and the "upcoming" view goes
+//      short as the week ends.
+//   3. Numbers arrive as display strings with units ("5.7%", "2.50T", "-0.7"),
+//      so they need parsing before any surprise arithmetic.
+//
+// Unofficial mirror: no SLA and no ToS guarantee. If it starts failing, that is
+// expected rather than surprising — swap ACTIVE_PROVIDER to a keyed source.
+
+const FF_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
+// Sits below the 15-minute cron cadence on purpose: at TTL == interval the two
+// straddle the boundary and a scheduled run can be served stale rows. Still
+// guards against rapid manual re-runs, which is what triggers the 429.
+const FETCH_TTL_MS = 10 * 60 * 1000
+
+let ffCache: { at: number; rows: FFRow[] } | null = null
+
+interface FFRow {
+  title?:    string
+  country?:  string   // despite the name, this is the CURRENCY code (USD, JPY…)
+  date?:     string   // ISO 8601 with offset
+  impact?:   string   // "High" | "Medium" | "Low" | "Holiday"
+  forecast?: string
+  previous?: string
+  actual?:   string
+}
+
+/**
+ * "5.7%" -> 5.7, "2.50T" -> 2.5, "-0.7" -> -0.7, "" -> null.
+ *
+ * Magnitude suffixes are stripped rather than scaled: actual, forecast and
+ * previous for a given event share a unit, so the surprise arithmetic is
+ * consistent either way, and the raw string is kept for display.
+ */
+export function parseFFValue(raw: string | undefined | null): number | null {
+  if (!raw) return null
+  const m = raw.replace(/,/g, '').match(/-?\d+(\.\d+)?/)
+  if (!m) return null
+  const n = Number(m[0])
+  return Number.isFinite(n) ? n : null
+}
+
+/** Trailing unit from a display value: "5.7%" -> "%", "2.50T" -> "T". */
+export function parseFFUnit(raw: string | undefined | null): string | null {
+  if (!raw) return null
+  const m = raw.match(/[%KMBT]$/i)
+  return m ? m[0] : null
+}
+
+export const forexFactoryProvider: CalendarProvider = {
+  name: 'forexfactory',
+
+  async fetchWindow(from: Date, to: Date): Promise<CalendarEvent[]> {
+    let rows: FFRow[]
+
+    if (ffCache && Date.now() - ffCache.at < FETCH_TTL_MS) {
+      rows = ffCache.rows
+    } else {
+      const res = await fetch(FF_URL, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ForexMastery/1.0)' },
+        signal:  AbortSignal.timeout(20_000),
+      })
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        // 429 here means the poll cadence is too tight, not that anything broke.
+        throw new Error(`forexfactory HTTP ${res.status}: ${body.slice(0, 120)}`)
+      }
+      const json = await res.json()
+      if (!Array.isArray(json)) throw new Error('forexfactory: unexpected payload shape')
+      rows = json as FFRow[]
+      ffCache = { at: Date.now(), rows }
+    }
+
+    return rows.flatMap((r): CalendarEvent[] => {
+      const currency = (r.country ?? '').toUpperCase()
+      const impact   = (r.impact ?? '').toLowerCase()
+
+      if (!currency || !r.title || !r.date) return []
+      if (!TRACKED_IMPACTS.has(impact)) return []   // drops Low and Holiday
+
+      const scheduledAt = new Date(r.date)
+      if (Number.isNaN(scheduledAt.getTime())) return []
+      if (scheduledAt < from || scheduledAt > to) return []
+
+      return [{
+        eventKey:    `ff|${currency}|${r.title}|${scheduledAt.toISOString()}`,
+        country:     currency,   // feed gives no separate country code
+        currency,
+        event:       r.title,
+        impact:      impact as 'high' | 'medium',
+        scheduledAt,
+        actual:      parseFFValue(r.actual),
+        forecast:    parseFFValue(r.forecast),
+        previous:    parseFFValue(r.previous),
+        unit:        parseFFUnit(r.actual ?? r.forecast ?? r.previous),
+      }]
+    })
+  },
+}
+
+export const ACTIVE_PROVIDER: CalendarProvider = forexFactoryProvider
 
 // ── Surprise classification ───────────────────────────────────────────────────
 
