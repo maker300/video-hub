@@ -110,9 +110,10 @@ function ResetContent() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">New password</label>
+                <label htmlFor="new-password" className="block text-xs text-gray-400 mb-1.5">New password</label>
                 <div className="relative">
                   <input
+                    id="new-password"
                     type={showPw ? 'text' : 'password'}
                     value={password}
                     onChange={e => setPassword(e.target.value)}
@@ -120,7 +121,10 @@ function ResetContent() {
                     required
                     disabled={loading}
                     className={INPUT + ' pr-10'}
-                    autoFocus
+                    autoComplete="new-password"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                   <button
                     type="button"

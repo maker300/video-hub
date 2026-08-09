@@ -90,8 +90,9 @@ export default function ForgotPasswordPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Email address</label>
+                <label htmlFor="reset-email" className="block text-xs text-gray-400 mb-1.5">Email address</label>
                 <input
+                  id="reset-email"
                   type="email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
@@ -99,7 +100,11 @@ export default function ForgotPasswordPage() {
                   required
                   disabled={loading}
                   className={INPUT}
-                  autoFocus
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
               </div>
               <button type="submit" disabled={loading || !email.trim()} className={BTN}>
