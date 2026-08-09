@@ -122,7 +122,7 @@ export default function AdBanner() {
 
       {/* Slide content */}
       <Link
-        href="/analysis/plans"
+        href="/analysis/tokens"
         className="flex items-center justify-between gap-4 px-4 py-2.5 group"
         style={{
           opacity:   animDir === 'in' ? 1 : 0,

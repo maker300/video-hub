@@ -5,7 +5,6 @@ import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import Navbar from '@/components/Navbar'
 import AnalysisClient from './AnalysisClient'
-import AnalysisAccessDenied from './AnalysisAccessDenied'
 import PaymentSuccessBanner from './PaymentSuccessBanner'
 
 const db = prisma as any
@@ -15,37 +14,15 @@ export const metadata = {
   description: 'Live technical analysis and predictions for major forex pairs, gold, silver, and cryptocurrencies.',
 }
 
-function isAccessValid(access: any): boolean {
-  if (!access || !access.active) return false
-  if (access.type === 'monthly_rollover') return true
-  return new Date(access.endDate) > new Date()
-}
-
 export default async function AnalysisPage() {
   const session = await getServerSession(authOptions)
   if (!session) redirect('/auth/signin?callbackUrl=/analysis')
 
-  let hasAccess = session.user?.role === 'admin'
-
-  if (!hasAccess) {
-    try {
-      const access = await db.analysisAccess.findUnique({
-        where: { userId: session.user!.id as string },
-      })
-      hasAccess = isAccessValid(access)
-    } catch {
-      hasAccess = false
-    }
-  }
-
-  if (!hasAccess) {
-    return (
-      <div className="min-h-screen bg-[#0A0F1E]">
-        <Navbar />
-        <AnalysisAccessDenied />
-      </div>
-    )
-  }
+  // Analysis pages are open to any signed-in user. Access used to be sold as a
+  // timed plan (AnalysisAccess); the product now charges per FM Trader run
+  // instead, so gating the charts as well would be a second paywall over
+  // something that costs nothing to serve. Existing admin-granted AnalysisAccess
+  // rows are left in place and simply no longer consulted here.
 
   return (
     <div className="min-h-screen bg-[#0A0F1E]">

@@ -16,6 +16,10 @@ model User {
   role          String    @default("user")    // 'user' | 'team' | 'admin'
   // Team-fund BTC balance — set by admin, debited on position open, credited on close
   teamBalanceBtc  Float    @default(0)
+  // FM Trader run credits. Debited per prediction delivered, credited by
+  // Stripe purchase or an auto-refund when a run fails. Int, not Float:
+  // these are countable units and must never accumulate rounding drift.
+  tokenBalance    Int      @default(0)
   // Saved BTC receive address — pre-fills the withdraw form on subsequent withdrawals
   btcWithdrawalAddress String?
   createdAt     DateTime  @default(now())
@@ -38,6 +42,7 @@ model User {
   liveTradesApproved  LiveTrade[]           @relation("LiveTradeApprover")
   withdrawals         Withdrawal[]
   withdrawalsProcessed Withdrawal[]         @relation("WithdrawalProcessor")
+  tokenLedger     TokenLedger[]
 }
 
 model Account {
@@ -623,4 +628,29 @@ model EconomicEvent {
   @@index([scheduledAt])
   @@index([releasedAt])
   @@index([notifiedAt])
+}
+
+// Append-only audit trail for every token movement.
+//
+// Required, not optional: this is money-adjacent, and the first question when a
+// user says "I was charged twice" is what actually happened to their balance.
+// The FM Trader learner incident is the cautionary case — state with no record
+// behind it could not be validated or rebuilt, only thrown away.
+model TokenLedger {
+  id        String   @id @default(cuid())
+  userId    String
+  // Positive credits, negative debits. Sums to User.tokenBalance.
+  delta     Int
+  // purchase | fm_trader_run | refund_failed_run | admin_grant | admin_revoke
+  reason    String
+  balance   Int                        // balance AFTER this entry, for reconciliation
+  // Free-text context: the pair slug for a run, the Stripe event id for a
+  // purchase, the admin's note for a manual adjustment.
+  reference String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([reason])
 }

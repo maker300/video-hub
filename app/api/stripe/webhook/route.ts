@@ -21,69 +21,51 @@ export async function POST(req: Request) {
   }
 
   if (event.type === 'checkout.session.completed') {
-    const session  = event.data.object as any
-    const meta     = session.metadata ?? {}
-    const userId   = meta.userId   as string | undefined
-    const duration = meta.duration as string | undefined
-    const days     = parseInt(meta.days ?? '30', 10)
+    const session = event.data.object as any
+    const meta    = session.metadata ?? {}
+    const userId  = meta.userId as string | undefined
+    const packId  = meta.packId as string | undefined
+    const tokens  = parseInt(meta.tokens ?? '0', 10)
 
-    if (!userId || !duration) {
-      console.error('[stripe/webhook] Missing metadata', meta)
+    if (!userId || !packId || !Number.isFinite(tokens) || tokens <= 0) {
+      console.error('[stripe/webhook] Missing or invalid token metadata', meta)
       return NextResponse.json({ error: 'Missing metadata' }, { status: 400 })
     }
 
-    const now = new Date()
-
     try {
-      // Claim the event and grant access in one transaction. Stripe retries on
-      // any non-2xx and does not guarantee exactly-once delivery, so a repeat
-      // of this event would otherwise re-run the extend branch below and give
-      // the buyer a second period of access for one payment.
+      // Claim the event and credit the tokens in one transaction. Stripe retries
+      // on any non-2xx and does not guarantee exactly-once delivery, so without
+      // the claim a repeated delivery would credit the same purchase twice.
       //
       // Claiming inside the transaction (rather than before it) means a failed
-      // grant rolls the claim back too, so Stripe's retry still works.
-      const granted = await prisma.$transaction(async tx => {
+      // credit rolls the claim back too, so Stripe's retry still works.
+      const balance = await prisma.$transaction(async tx => {
         const db = tx as any
 
         await db.stripeEvent.create({
           data: { eventId: event.id, type: event.type },
         })
 
-        const existing = await db.analysisAccess.findUnique({ where: { userId } })
+        const user = await tx.user.update({
+          where:  { id: userId },
+          data:   { tokenBalance: { increment: tokens } },
+          select: { tokenBalance: true },
+        })
 
-        // If the user has active access that hasn't expired yet, extend from their
-        // current endDate so they don't lose remaining time. Otherwise start fresh.
-        const baseDate = (existing?.active && existing.endDate && new Date(existing.endDate) > now)
-          ? new Date(existing.endDate)
-          : now
+        await db.tokenLedger.create({
+          data: {
+            userId,
+            delta:     tokens,
+            reason:    'purchase',
+            balance:   user.tokenBalance,
+            reference: `${packId} | stripe:${event.id}`,
+          },
+        })
 
-        const startDate = now
-        const endDate   = new Date(baseDate)
-        endDate.setDate(endDate.getDate() + days)
-
-        const extendedFrom = baseDate > now
-          ? `extended from ${baseDate.toISOString().split('T')[0]}`
-          : 'started fresh'
-
-        const data = {
-          type:      duration,
-          startDate,
-          endDate,
-          active:    true,
-          grantedAt: now,
-          note:      `Purchased via Stripe — ${meta.planId} (${extendedFrom})`,
-        }
-
-        if (existing) {
-          await db.analysisAccess.update({ where: { userId }, data })
-        } else {
-          await db.analysisAccess.create({ data: { userId, ...data } })
-        }
-
-        return { endDate, extendedFrom }
+        return user.tokenBalance
       })
 
-      console.log(`[stripe/webhook] Access granted: userId=${userId} plan=${duration} days=${days} endDate=${granted.endDate.toISOString()} (${granted.extendedFrom})`)
+      console.log(`[stripe/webhook] Credited ${tokens} tokens: userId=${userId} pack=${packId} balance=${balance}`)
     } catch (err) {
       // P2002 on stripeEvent.eventId — we have already handled this delivery.
       // Acknowledge with a 2xx so Stripe stops retrying.

@@ -50,7 +50,7 @@ export default function AnalysisAccessDenied() {
         {/* CTAs */}
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <Link
-            href="/analysis/plans"
+            href="/analysis/tokens"
             className="flex items-center justify-center gap-2 px-6 py-3 bg-[#1D9E75] hover:bg-[#22b886] text-white text-sm font-semibold rounded-xl transition"
           >
             View Plans <ArrowRight className="w-4 h-4" />

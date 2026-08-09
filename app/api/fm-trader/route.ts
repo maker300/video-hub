@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
 import { prisma } from '@/lib/prisma'
+import { debitTokens, creditTokens, TOKENS_PER_RUN } from '@/lib/tokens'
 import {
   SESSION_SLOTS, CRYPTO_SESSION_SLOTS,
   type FMTraderRequest, type FMTraderResponse,
@@ -3121,6 +3122,35 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Incomplete market data provided.' }, { status: 400 })
   }
 
+  // ── Token charge ───────────────────────────────────────────────────────────
+  // One token per prediction delivered to a user, on any instrument.
+  //
+  // Charged here, ahead of the cache paths below, because a cached prediction is
+  // still a prediction from the user's side — they asked, they got an answer.
+  //
+  // Not charged for: cron and system calls (no session), scanOnly requests
+  // (which feed the scanner rather than a person), and admins.
+  //
+  // The debit itself is a single conditional UPDATE — see lib/tokens.ts for why
+  // it must not be a read-then-write.
+  const tokenUserId =
+    session && !body.scanOnly && (session.user as any)?.role !== 'admin'
+      ? ((session.user as any)?.id as string | undefined)
+      : undefined
+  let tokenCharged = false
+
+  if (tokenUserId) {
+    const balance = await debitTokens(tokenUserId, TOKENS_PER_RUN, 'fm_trader_run', body.slug)
+    if (balance === null) {
+      return NextResponse.json({
+        error:   'insufficient_tokens',
+        message: 'You are out of FM Trader tokens. Top up to keep running predictions.',
+        buyUrl:  '/analysis/tokens',
+      }, { status: 402 })
+    }
+    tokenCharged = true
+  }
+
   // ── News blackout: client signals a high-impact event is imminent ─────────
   // If a scheduled high-impact event is within ±30 min, we force NO TRADE.
   // A professional desk never enters within this window — the stop would need
@@ -3817,6 +3847,12 @@ export async function POST(req: Request) {
         ? { ...stale.data, riskFactors: [staleDrift, ...(stale.data.riskFactors ?? [])] }
         : stale.data
       return NextResponse.json(staleResult)
+    }
+    // Refund — the run failed and the user received nothing. The stale-cache
+    // branch above deliberately keeps the charge: they still got a prediction.
+    if (tokenCharged && tokenUserId) {
+      await creditTokens(tokenUserId, TOKENS_PER_RUN, 'refund_failed_run', body.slug)
+        .catch(e => console.error('[fm-trader] token refund failed:', e))
     }
     return NextResponse.json({ error: 'Analysis engine error.' }, { status: 500 })
   }
