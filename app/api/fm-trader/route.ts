@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import Anthropic from '@anthropic-ai/sdk'
@@ -3314,18 +3314,30 @@ export async function POST(req: Request) {
       })
       if (!alreadySaved) {
         const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
-        prisma.fMPrediction.create({
-          data: {
-            userId: dbUser.id, slug: body.slug, display: body.display,
-            category: body.category, sessionSlot: body.sessionSlot,
-            tradeHorizon: body.tradeHorizon ?? 'intraday',
-            decision: memResult.decision, confidence: memResult.confidence,
-            entryLow: memResult.entryZone[0], entryHigh: memResult.entryZone[1],
-            stopLoss: memResult.stopLoss, tp1: memResult.tp1,
-            tp2: memResult.tp2, tp3: memResult.tp3, rrRatio: memResult.rrRatio,
-            priceAtCall: body.price, generatedAt: new Date(memResult.generatedAt), expiresAt,
-          },
-        }).catch(() => {})
+        // after() rather than a bare floating promise: this is a cache-hit fast
+        // path, so we don't want to block the response on a write — but an
+        // unawaited promise lets the serverless runtime freeze before the insert
+        // lands, silently dropping predictions. after() keeps the invocation
+        // alive until it completes. Errors are logged, not swallowed; a missing
+        // row costs an outcome the learner and pair tuning both need.
+        after(async () => {
+          try {
+            await prisma.fMPrediction.create({
+              data: {
+                userId: dbUser.id, slug: body.slug, display: body.display,
+                category: body.category, sessionSlot: body.sessionSlot,
+                tradeHorizon: body.tradeHorizon ?? 'intraday',
+                decision: memResult.decision, confidence: memResult.confidence,
+                entryLow: memResult.entryZone[0], entryHigh: memResult.entryZone[1],
+                stopLoss: memResult.stopLoss, tp1: memResult.tp1,
+                tp2: memResult.tp2, tp3: memResult.tp3, rrRatio: memResult.rrRatio,
+                priceAtCall: body.price, generatedAt: new Date(memResult.generatedAt), expiresAt,
+              },
+            })
+          } catch (e) {
+            console.error('[fm-trader] prediction save failed (mem-cache path):', e)
+          }
+        })
       }
     }
     return NextResponse.json(memResult)
@@ -3430,23 +3442,32 @@ export async function POST(req: Request) {
         if (!alreadySaved) {
           const expiresAt = predictionExpiresAt(body.category, nowTs, body.tradeHorizon)
           const snapshot: MarketSnapshot = { decision, features, rawScore, claudeUsed: false, learnedBoost }
-          prisma.fMPrediction.create({
-            data: {
-              userId: dbUser.id, slug: body.slug, display: body.display,
-              category: body.category, sessionSlot: body.sessionSlot,
-              tradeHorizon: body.tradeHorizon ?? 'intraday',
-              decision, confidence: sharedRow.confidence,
-              entryLow:  sharedResult.entryZone[0], entryHigh: sharedResult.entryZone[1],
-              stopLoss:  sharedResult.stopLoss, tp1: sharedResult.tp1,
-              tp2: sharedResult.tp2, tp3: sharedResult.tp3, rrRatio: sharedResult.rrRatio,
-              priceAtCall: body.price, marketSnapshot: snapshot as object,
-              generatedAt: sharedRow.generatedAt, expiresAt,
-              thesis: sharedRow.thesis ?? undefined, technicalBreakdown: sharedRow.technicalBreakdown ?? undefined,
-              marketBias: sharedRow.marketBias ?? undefined, riskFactors: sharedRow.riskFactors ?? undefined,
-              sessionContext: sharedRow.sessionContext ?? undefined, traderNote: sharedRow.traderNote ?? undefined,
-              timeValidity: sharedRow.timeValidity ?? undefined,
-            },
-          }).catch(() => {})
+          // See the mem-cache path above — same reasoning. This row carries the
+          // marketSnapshot the learner trains on, so dropping it loses the
+          // feature vector as well as the outcome.
+          after(async () => {
+            try {
+              await prisma.fMPrediction.create({
+                data: {
+                  userId: dbUser.id, slug: body.slug, display: body.display,
+                  category: body.category, sessionSlot: body.sessionSlot,
+                  tradeHorizon: body.tradeHorizon ?? 'intraday',
+                  decision, confidence: sharedRow.confidence,
+                  entryLow:  sharedResult.entryZone[0], entryHigh: sharedResult.entryZone[1],
+                  stopLoss:  sharedResult.stopLoss, tp1: sharedResult.tp1,
+                  tp2: sharedResult.tp2, tp3: sharedResult.tp3, rrRatio: sharedResult.rrRatio,
+                  priceAtCall: body.price, marketSnapshot: snapshot as object,
+                  generatedAt: sharedRow.generatedAt, expiresAt,
+                  thesis: sharedRow.thesis ?? undefined, technicalBreakdown: sharedRow.technicalBreakdown ?? undefined,
+                  marketBias: sharedRow.marketBias ?? undefined, riskFactors: sharedRow.riskFactors ?? undefined,
+                  sessionContext: sharedRow.sessionContext ?? undefined, traderNote: sharedRow.traderNote ?? undefined,
+                  timeValidity: sharedRow.timeValidity ?? undefined,
+                },
+              })
+            } catch (e) {
+              console.error('[fm-trader] prediction save failed (shared-cache path):', e)
+            }
+          })
         }
       }
       return NextResponse.json(sharedResult)
