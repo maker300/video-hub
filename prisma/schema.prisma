@@ -587,3 +587,40 @@ model StripeEvent {
 
   @@index([processedAt])
 }
+
+// A scheduled macro release (CPI, PPI, NFP, rate decisions) tracked by the
+// FM News agent. Rows are created when the event is first seen on the calendar
+// and updated in place once the actual print lands.
+//
+// `eventKey` is the dedup guard: the calendar poller runs every few minutes and
+// will re-see the same event many times, so inserts are keyed on it and the
+// release notification is gated on `notifiedAt` being null.
+model EconomicEvent {
+  id            String    @id @default(cuid())
+  eventKey      String    @unique          // provider id, or country|event|scheduledAt
+  country       String                     // "US"
+  currency      String                     // "USD"
+  event         String                     // "CPI y/y"
+  impact        String    @default("medium")  // high | medium | low
+  scheduledAt   DateTime
+  // Populated on release. `actual` staying null past scheduledAt means the
+  // provider has not published the print yet.
+  actual        Float?
+  forecast      Float?
+  previous      Float?
+  unit          String?
+  // actual - forecast, and its direction relative to expectations. Deliberately
+  // NOT a trade direction: how a surprise maps to price depends on positioning,
+  // so the agent reports exposure and leaves direction to the pair analysis.
+  surprise      Float?
+  surpriseDir   String?                    // hotter | cooler | inline
+  affectedSlugs Json                       // string[] of instrument slugs
+  releasedAt    DateTime?
+  notifiedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([scheduledAt])
+  @@index([releasedAt])
+  @@index([notifiedAt])
+}

@@ -1,0 +1,164 @@
+// FM News agent — polls the economic calendar, records scheduled releases, and
+// alerts once the actual print lands.
+//
+// Run every ~5 minutes. Most ticks do nothing: the calendar is upserted and no
+// event has newly resolved. The alert fires on the transition from "actual is
+// null" to "actual has a value", gated on notifiedAt so a release is announced
+// exactly once no matter how often the poller sees it afterwards.
+//
+// The agent reports the print and which tracked instruments it bears on. It
+// does NOT call a direction — how a surprise maps to price depends on
+// positioning and what was already priced in, and issuing confident directional
+// calls with no measured accuracy behind them is precisely the failure mode the
+// FM Trader learner just had to be reset for. Direction stays with the per-pair
+// analysis, which is measured.
+import { NextResponse } from 'next/server'
+import { prisma } from '@/lib/prisma'
+import { ACTIVE_PROVIDER, classifySurprise, formatPrint } from '@/lib/econ-calendar'
+import { slugsForCurrency, displayForSlug } from '@/lib/market-map'
+import { sendTelegramMessage } from '@/lib/telegram'
+
+export const dynamic = 'force-dynamic'
+
+/** Only announce a print this long after its scheduled time — stale data from a
+ *  backfilled calendar row shouldn't page anyone. */
+const RELEASE_GRACE_MS = 3 * 60 * 60 * 1000  // 3 hours
+
+export async function GET(req: Request) {
+  const cronSecret = process.env.CRON_SECRET
+  const auth = req.headers.get('authorization')
+
+  if (!cronSecret || auth !== `Bearer ${cronSecret}`) {
+    const { getAdminSession } = await import('@/lib/adminAuth')
+    const { isAdmin } = await getAdminSession()
+    if (!isAdmin) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const db  = prisma as any
+  const now = new Date()
+
+  // ── 1. Pull the calendar window ────────────────────────────────────────────
+  // Back a day so a print that landed while we were down is still picked up;
+  // forward a week so the feed can show what's coming.
+  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+  const to   = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+
+  let events
+  try {
+    events = await ACTIVE_PROVIDER.fetchWindow(from, to)
+  } catch (e) {
+    // Includes the "calendar is a paid endpoint" case — surfaced, not swallowed,
+    // so a silently dead agent is visible in the logs rather than looking idle.
+    console.error(`[econ-news] provider ${ACTIVE_PROVIDER.name} failed:`, e)
+    return NextResponse.json(
+      { ok: false, provider: ACTIVE_PROVIDER.name, error: String(e) },
+      { status: 502 },
+    )
+  }
+
+  // ── 2. Upsert, and collect the ones that just resolved ─────────────────────
+  const newlyReleased: Array<{
+    id: string; event: string; currency: string; impact: string
+    actual: number | null; forecast: number | null; previous: number | null
+    unit: string | null; surpriseDir: string | null; affectedSlugs: string[]
+  }> = []
+
+  for (const e of events) {
+    const affectedSlugs = slugsForCurrency(e.currency)
+    if (affectedSlugs.length === 0) continue  // nothing we cover
+
+    const { surprise, dir } = classifySurprise(e.actual, e.forecast)
+    const hasPrint = e.actual != null
+
+    const existing = await db.economicEvent.findUnique({
+      where:  { eventKey: e.eventKey },
+      select: { id: true, actual: true, notifiedAt: true },
+    })
+
+    const data = {
+      country:     e.country,
+      currency:    e.currency,
+      event:       e.event,
+      impact:      e.impact,
+      scheduledAt: e.scheduledAt,
+      actual:      e.actual,
+      forecast:    e.forecast,
+      previous:    e.previous,
+      unit:        e.unit,
+      surprise,
+      surpriseDir: dir,
+      affectedSlugs,
+      releasedAt:  hasPrint ? (e.scheduledAt <= now ? e.scheduledAt : now) : null,
+    }
+
+    const row = existing
+      ? await db.economicEvent.update({ where: { eventKey: e.eventKey }, data })
+      : await db.economicEvent.create({ data: { eventKey: e.eventKey, ...data } })
+
+    // Announce only on the null -> value transition, once, and only if the
+    // print is recent. `existing?.actual == null` covers both a brand-new row
+    // that already carries a print and one we watched resolve.
+    const justResolved = hasPrint && existing?.actual == null && !existing?.notifiedAt
+    const isRecent     = now.getTime() - e.scheduledAt.getTime() < RELEASE_GRACE_MS
+
+    if (justResolved && isRecent) {
+      newlyReleased.push({
+        id: row.id, event: e.event, currency: e.currency, impact: e.impact,
+        actual: e.actual, forecast: e.forecast, previous: e.previous,
+        unit: e.unit, surpriseDir: dir, affectedSlugs,
+      })
+    }
+  }
+
+  // ── 3. Announce ────────────────────────────────────────────────────────────
+  for (const r of newlyReleased) {
+    const print    = formatPrint(r)
+    const affected = r.affectedSlugs.map(displayForSlug).join(', ')
+    const dirNote  =
+      r.surpriseDir === 'hotter' ? ' — above expectations'
+      : r.surpriseDir === 'cooler' ? ' — below expectations'
+      : r.surpriseDir === 'inline' ? ' — in line with expectations'
+      : ''
+
+    // Telegram broadcast
+    await sendTelegramMessage(
+      `📊 <b>${r.currency} — ${r.event}</b>\n\n` +
+      `<b>${print}</b>${dirNote}\n\n` +
+      `Instruments with exposure: ${affected}\n` +
+      `<i>Exposure only — open the pair analysis for a directional read.</i>\n` +
+      `🔗 https://forexmastery.org/analysis/news`
+    ).catch(e => console.error('[econ-news] telegram failed:', e))
+
+    // Bell — only users following an affected pair, one notification each even
+    // if they follow several of the instruments this release touches.
+    const subs = await prisma.pairSubscription.findMany({
+      where:  { slug: { in: r.affectedSlugs } },
+      select: { userId: true },
+      distinct: ['userId'],
+    })
+
+    if (subs.length > 0) {
+      await prisma.adminNotification.createMany({
+        data: subs.map(s => ({
+          userId:  s.userId,
+          subject: `${r.currency} ${r.event}: ${print}`,
+          message: `${r.event} came in at ${print}${dirNote}. Instruments you follow with exposure to ${r.currency}: ${affected}. This is an exposure flag, not a trade call — check the pair analysis for direction.`,
+          linkUrl: '/analysis/news',
+        })),
+      }).catch(e => console.error('[econ-news] bell notify failed:', e))
+    }
+
+    await db.economicEvent.update({
+      where: { id: r.id },
+      data:  { notifiedAt: new Date() },
+    })
+  }
+
+  return NextResponse.json({
+    ok:        true,
+    provider:  ACTIVE_PROVIDER.name,
+    scanned:   events.length,
+    announced: newlyReleased.length,
+    events:    newlyReleased.map(r => `${r.currency} ${r.event}`),
+  })
+}
