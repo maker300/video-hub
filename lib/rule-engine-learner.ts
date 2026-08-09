@@ -355,6 +355,33 @@ export async function learnFromOutcome(
   }
 }
 
+// ── Degenerate-state detection ────────────────────────────────────────────────
+
+/**
+ * True when essentially every qualifying feature reads as a loser.
+ *
+ * Features exist to discriminate: some conditions should predict wins and
+ * others losses. If nearly all of them are negative, the learner has not found
+ * signal — it has collapsed into uniform pessimism, and its output says more
+ * about a systemic problem (scoring, stop geometry, a bad market regime) than
+ * about any individual condition.
+ *
+ * In that state both outputs below are actively harmful: the boost pins itself
+ * near -MAX_BOOST on every call, and the learning context tells the model that
+ * every signal it can observe historically loses, which invites it to fade its
+ * own analysis. Both suppress themselves until the weights recover.
+ */
+export function isDegenerate(weights: LearnedWeights): boolean {
+  const qualifying = Object.values(weights.features ?? {}).filter(
+    s => s && s.count >= MIN_OBSERVATIONS,
+  )
+  // Too few features to judge — let the normal paths run.
+  if (qualifying.length < 5) return false
+
+  const positive = qualifying.filter(s => s.ema > 0).length
+  return positive / qualifying.length < 0.15
+}
+
 // ── Confidence boost calculation ───────────────────────────────────────────────
 
 /**
@@ -367,6 +394,7 @@ export function computeLearnedBoost(
   weights:  LearnedWeights,
 ): number {
   if (!weights.totalLearned || weights.totalLearned < 30) return 0  // Need data first
+  if (isDegenerate(weights)) return 0  // Uniform pessimism — carries no signal
 
   let boost        = 0
   let activeCount  = 0
@@ -400,6 +428,13 @@ export function computeLearnedBoost(
 export function buildLearningContext(weights: LearnedWeights): string {
   if (!weights.totalLearned || weights.totalLearned < 30) {
     return `Learning agent: ${weights.totalLearned ?? 0} outcomes recorded — insufficient data for pattern adjustment yet (need 30+).`
+  }
+
+  // Say nothing rather than "every condition you can observe historically
+  // loses" — that reads as an instruction to fade the analysis, and it is what
+  // a degenerate weight set produces. See isDegenerate() above.
+  if (isDegenerate(weights)) {
+    return `Learning agent: ${weights.totalLearned} outcomes recorded, but the learned weights are not currently discriminating between conditions — no pattern adjustment applied. Judge this setup on its own merits.`
   }
 
   // Find strongest positive and negative features

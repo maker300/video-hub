@@ -334,11 +334,18 @@ export async function GET(req: Request) {
       // outcome score: +1 = any TP hit (win), -1 = SL hit (loss), 0 = expired
       const snapshot = pred.marketSnapshot as MarketSnapshot | null
       if (snapshot?.features) {
-        // Graded outcome: bigger TP hit = stronger win signal for the learner
-      const outcomeVal = outcome === 'sl_hit'  ? -1.0
+        // Graded outcome: bigger TP hit = stronger win signal for the learner.
+        //
+        // Any TP hit scores at least +1.0, matching the -1.0 of a stop-out.
+        // TP1 previously scored +0.5 against a -1.0 loss, which required a 2:1
+        // win rate just to hold a feature's EMA at zero — a profitable 1:2 R
+        // setup hitting TP1 half the time scored -0.25. Every feature drifted
+        // negative regardless of real performance, and the resulting all-negative
+        // state was fed to the model as "these conditions historically lose".
+        const outcomeVal = outcome === 'sl_hit'  ? -1.0
           : outcome === 'tp3_hit' ? +1.5
-          : outcome === 'tp2_hit' ? +1.0
-          : outcome === 'tp1_hit' ? +0.5
+          : outcome === 'tp2_hit' ? +1.25
+          : outcome === 'tp1_hit' ? +1.0
           : 0
         // Fire-and-forget — never block outcome resolution on learning.
         // Learner is binned by horizon so swing outcomes don't pollute intraday weights.

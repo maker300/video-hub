@@ -1,0 +1,375 @@
+[
+  {
+    "id": "singleton",
+    "weights": {
+      "features": {
+        "atr_moderate": {
+          "ema": -0.10099395020144812,
+          "count": 26
+        },
+        "session_good": {
+          "ema": -0.13587151134700837,
+          "count": 23
+        },
+        "session_peak": {
+          "ema": -0.014544281600000014,
+          "count": 5
+        },
+        "pdh_pdl_break": {
+          "ema": 0.035127661035519994,
+          "count": 7
+        },
+        "setup_grade_a": {
+          "ema": 0,
+          "count": 0
+        },
+        "setup_grade_b": {
+          "ema": -0.042341388281308685,
+          "count": 22
+        },
+        "ema_aligned_1H": {
+          "ema": -0.12345820859078886,
+          "count": 26
+        },
+        "ema_aligned_4H": {
+          "ema": -0.16818294049782714,
+          "count": 26
+        },
+        "weekly_aligned": {
+          "ema": -0.14651214773953747,
+          "count": 10
+        },
+        "order_block_hit": {
+          "ema": -0.008165609507515256,
+          "count": 10
+        },
+        "pd_zone_optimal": {
+          "ema": 0,
+          "count": 0
+        },
+        "volume_elevated": {
+          "ema": 0.05546979042997044,
+          "count": 11
+        },
+        "near_key_support": {
+          "ema": -0.0201967616,
+          "count": 5
+        },
+        "ema_aligned_daily": {
+          "ema": -0.06911122231518477,
+          "count": 25
+        },
+        "candle_confirms_1H": {
+          "ema": -0.13448013977304804,
+          "count": 25
+        },
+        "candle_confirms_4H": {
+          "ema": -0.08927066037361303,
+          "count": 23
+        },
+        "ema_aligned_weekly": {
+          "ema": -0.14651214773953747,
+          "count": 10
+        },
+        "rsi_1H_directional": {
+          "ema": 0,
+          "count": 1
+        },
+        "rsi_4H_directional": {
+          "ema": 0,
+          "count": 0
+        },
+        "multi_tf_confluence": {
+          "ema": -0.10584978858127482,
+          "count": 25
+        },
+        "near_key_resistance": {
+          "ema": -0.010254454783999993,
+          "count": 6
+        },
+        "correlation_confirms": {
+          "ema": 0,
+          "count": 0
+        },
+        "correlation_conflicts": {
+          "ema": 0,
+          "count": 0
+        },
+        "rsi_daily_directional": {
+          "ema": -0.0038732799999999998,
+          "count": 4
+        },
+        "liquidity_sweep_confirmed": {
+          "ema": 0,
+          "count": 0
+        }
+      },
+      "updatedAt": "2026-05-23T19:30:24.983Z",
+      "totalLearned": 26
+    },
+    "totalLearned": 26,
+    "updatedAt": "2026-05-23T18:30:24.988Z"
+  },
+  {
+    "id": "singleton-swing",
+    "weights": {
+      "features": {
+        "fvg_active": {
+          "ema": -0.43773908808527595,
+          "count": 36
+        },
+        "atr_moderate": {
+          "ema": -0.5311116213072952,
+          "count": 46
+        },
+        "session_good": {
+          "ema": -0.55572458989724,
+          "count": 38
+        },
+        "session_peak": {
+          "ema": -0.22121580415688394,
+          "count": 12
+        },
+        "bos_confirmed": {
+          "ema": -0.2794775915417871,
+          "count": 17
+        },
+        "choch_warning": {
+          "ema": 0,
+          "count": 0
+        },
+        "macd_confirms": {
+          "ema": -0.31326955004788326,
+          "count": 32
+        },
+        "pdh_pdl_break": {
+          "ema": -0.096391286905574,
+          "count": 14
+        },
+        "setup_grade_a": {
+          "ema": -0.14095742899165592,
+          "count": 9
+        },
+        "setup_grade_b": {
+          "ema": -0.5815941046179952,
+          "count": 36
+        },
+        "ema_aligned_1H": {
+          "ema": -0.4692639105558724,
+          "count": 41
+        },
+        "ema_aligned_4H": {
+          "ema": -0.5113421337020041,
+          "count": 44
+        },
+        "weekly_aligned": {
+          "ema": -0.36144561725629926,
+          "count": 29
+        },
+        "order_block_hit": {
+          "ema": -0.3616334765521633,
+          "count": 9
+        },
+        "pd_zone_optimal": {
+          "ema": -0.08,
+          "count": 1
+        },
+        "volume_elevated": {
+          "ema": -0.4041216020789058,
+          "count": 24
+        },
+        "near_key_support": {
+          "ema": -0.16756844461472398,
+          "count": 11
+        },
+        "ema_aligned_daily": {
+          "ema": -0.5479084035958643,
+          "count": 46
+        },
+        "candle_confirms_1H": {
+          "ema": -0.47552370710331016,
+          "count": 40
+        },
+        "candle_confirms_4H": {
+          "ema": -0.5371388369038452,
+          "count": 35
+        },
+        "ema_aligned_weekly": {
+          "ema": -0.36144561725629926,
+          "count": 29
+        },
+        "rsi_1H_directional": {
+          "ema": -0.5569964060221307,
+          "count": 43
+        },
+        "rsi_4H_directional": {
+          "ema": -0.5687378983500087,
+          "count": 39
+        },
+        "eq_liquidity_target": {
+          "ema": -0.22904466161978573,
+          "count": 9
+        },
+        "multi_tf_confluence": {
+          "ema": -0.467417481035604,
+          "count": 43
+        },
+        "near_key_resistance": {
+          "ema": -0.36662461833413834,
+          "count": 12
+        },
+        "correlation_confirms": {
+          "ema": 0,
+          "count": 0
+        },
+        "correlation_conflicts": {
+          "ema": 0,
+          "count": 0
+        },
+        "rsi_daily_directional": {
+          "ema": -0.5561731771624564,
+          "count": 39
+        },
+        "liquidity_sweep_confirmed": {
+          "ema": -0.08,
+          "count": 2
+        }
+      },
+      "updatedAt": "2026-08-07T10:30:49.179Z",
+      "totalLearned": 46
+    },
+    "totalLearned": 46,
+    "updatedAt": "2026-08-07T09:30:49.182Z"
+  },
+  {
+    "id": "singleton-intraday",
+    "weights": {
+      "features": {
+        "fvg_active": {
+          "ema": -0.7873714354141178,
+          "count": 110
+        },
+        "atr_moderate": {
+          "ema": -0.764271102612926,
+          "count": 138
+        },
+        "session_good": {
+          "ema": -0.7411079899795245,
+          "count": 120
+        },
+        "session_peak": {
+          "ema": -0.45423665212251324,
+          "count": 33
+        },
+        "bos_confirmed": {
+          "ema": -0.4192888250267879,
+          "count": 47
+        },
+        "choch_warning": {
+          "ema": 0,
+          "count": 0
+        },
+        "macd_confirms": {
+          "ema": -0.7667312612267527,
+          "count": 91
+        },
+        "pdh_pdl_break": {
+          "ema": -0.48641012997248706,
+          "count": 46
+        },
+        "setup_grade_a": {
+          "ema": -0.5707353916691954,
+          "count": 16
+        },
+        "setup_grade_b": {
+          "ema": -0.7165722628989629,
+          "count": 114
+        },
+        "ema_aligned_1H": {
+          "ema": -0.7069636022200527,
+          "count": 132
+        },
+        "ema_aligned_4H": {
+          "ema": -0.666826121631965,
+          "count": 132
+        },
+        "weekly_aligned": {
+          "ema": -0.5450706584687036,
+          "count": 72
+        },
+        "order_block_hit": {
+          "ema": -0.6170663828448363,
+          "count": 51
+        },
+        "pd_zone_optimal": {
+          "ema": -0.4198395347140608,
+          "count": 8
+        },
+        "volume_elevated": {
+          "ema": -0.4529298907142091,
+          "count": 61
+        },
+        "near_key_support": {
+          "ema": -0.5026604202931302,
+          "count": 36
+        },
+        "ema_aligned_daily": {
+          "ema": -0.6656025387219429,
+          "count": 122
+        },
+        "candle_confirms_1H": {
+          "ema": -0.6776588344805363,
+          "count": 121
+        },
+        "candle_confirms_4H": {
+          "ema": -0.6432729871821662,
+          "count": 116
+        },
+        "ema_aligned_weekly": {
+          "ema": -0.5450706584687036,
+          "count": 72
+        },
+        "rsi_1H_directional": {
+          "ema": -0.7185225181385396,
+          "count": 126
+        },
+        "rsi_4H_directional": {
+          "ema": -0.6994569114468208,
+          "count": 120
+        },
+        "eq_liquidity_target": {
+          "ema": -0.4874670137831432,
+          "count": 53
+        },
+        "multi_tf_confluence": {
+          "ema": -0.6333639453965367,
+          "count": 130
+        },
+        "near_key_resistance": {
+          "ema": -0.7716476647958119,
+          "count": 32
+        },
+        "correlation_confirms": {
+          "ema": 0,
+          "count": 0
+        },
+        "correlation_conflicts": {
+          "ema": 0,
+          "count": 0
+        },
+        "rsi_daily_directional": {
+          "ema": -0.575025927583042,
+          "count": 114
+        },
+        "liquidity_sweep_confirmed": {
+          "ema": -0.06131200000000002,
+          "count": 3
+        }
+      },
+      "updatedAt": "2026-08-07T12:31:04.191Z",
+      "totalLearned": 138
+    },
+    "totalLearned": 138,
+    "updatedAt": "2026-08-07T11:31:04.193Z"
+  }
+]
