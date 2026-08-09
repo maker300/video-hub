@@ -1,5 +1,15 @@
 // Resend transactional email sender.
 // Resend has significantly better Gmail inbox placement than Brevo's shared IPs.
+//
+// ⚠ Always build the HTML with a template from lib/email-templates.ts. Do not
+// hand-write markup for a send, however one-off it seems.
+//
+// Those templates deliberately avoid centered tables, branded header bars, card
+// shadows, large CTA buttons and footers, because Gmail reads that combination
+// as a mailing list and files it under Promotions. A broadcast sent on
+// 2026-08-09 bypassed them with hand-rolled HTML carrying all five, and landed
+// in Promotions for every recipient — the templates were fine, the caller was
+// not. Broadcasts go through buildBroadcastEmail (see app/api/admin/notify).
 
 const RESEND_API = 'https://api.resend.com/emails'
 
