@@ -958,8 +958,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                 )}
               </label>
               <input
-                type="number" step="0.0001" min="0"
-                autoFocus
+                type="number" step="0.0001" min="0" inputMode="decimal"
                 value={posAmount}
                 onChange={e => setPosAmount(e.target.value)}
                 placeholder={posModal.trade.suggestedAmountBtc ? String(posModal.trade.suggestedAmountBtc) : '0.0500'}
@@ -1011,7 +1010,7 @@ export default function LiveTradesClient({ isAdmin }: { isAdmin: boolean }) {
                  :                                   'Close price'}
               </label>
               <input
-                type="number" step="0.00001" min="0" autoFocus
+                type="number" step="0.00001" min="0" inputMode="decimal"
                 value={editPrice}
                 onChange={e => setEditPrice(e.target.value)}
                 placeholder="0.0000"

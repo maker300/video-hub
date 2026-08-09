@@ -1665,7 +1665,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                 <div>
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">Suggested team stake (BTC)</label>
                   <input
-                    type="number" step="0.0001" min="0" autoFocus
+                    type="number" step="0.0001" min="0" inputMode="decimal"
                     value={liveAmount}
                     onChange={e => setLiveAmount(e.target.value)}
                     placeholder="0.05 (optional)"
@@ -1778,11 +1778,10 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
                     Stake (BTC)
                   </label>
                   <input
-                    type="number" step="0.0001" min="0"
+                    type="number" step="0.0001" min="0" inputMode="decimal"
                     value={teamAmount}
                     onChange={e => setTeamAmount(e.target.value)}
                     placeholder="0.0500"
-                    autoFocus
                     className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm tabular-nums outline-none focus:border-emerald-500/60"
                   />
                 </div>

@@ -833,7 +833,6 @@ export default function TradingChart({ slug, symbol, display, currentPrice, chan
             {textInput && (
               <div className="absolute z-20" style={{ left: `${textInput.pt.x * 100}%`, top: `${textInput.pt.y * 100}%`, transform: 'translate(4px, -50%)' }}>
                 <input
-                  autoFocus
                   value={textInput.val}
                   onChange={e => setTextInput(v => v ? { ...v, val: e.target.value } : null)}
                   onKeyDown={e => { if (e.key === 'Enter') confirmText(); if (e.key === 'Escape') setTextInput(null) }}
