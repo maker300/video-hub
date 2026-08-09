@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma'
 import Navbar from '@/components/Navbar'
 import AnalysisClient from './AnalysisClient'
 import PaymentSuccessBanner from './PaymentSuccessBanner'
+import TokenBalancePill from '@/components/TokenBalancePill'
 
 const db = prisma as any
 
@@ -30,6 +31,9 @@ export default async function AnalysisPage() {
         <PaymentSuccessBanner />
       </Suspense>
       <Navbar />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4 flex justify-end">
+        <TokenBalancePill />
+      </div>
       <AnalysisClient initial={null} />
     </div>
   )

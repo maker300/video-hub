@@ -1,8 +1,8 @@
 import Stripe from 'stripe'
 
-// Token packs replaced the old time-based access plans. lib/plans.ts is kept
-// only because admin grants still reference the `type` strings it defined
-// (one_month, six_months…) on existing AnalysisAccess rows.
+// Token packs replaced the old time-based access plans. lib/plans.ts is gone;
+// existing AnalysisAccess rows still carry its `type` strings (one_month,
+// six_months…) as plain data, which the admin grant UI continues to read.
 export { TOKEN_PACKS } from './tokens'
 export type { TokenPackId } from './tokens'
 

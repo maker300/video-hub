@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import Navbar from '@/components/Navbar'
+import TokenBalancePill from '@/components/TokenBalancePill'
 import DetailClient from './DetailClient'
 import { SLUG_META } from '@/app/api/market-data/[symbol]/route'
 
@@ -34,6 +35,9 @@ export default async function SymbolPage({ params }: { params: Promise<{ symbol:
   return (
     <div className="min-h-screen bg-[#0A0F1E]">
       <Navbar />
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4 flex justify-end">
+        <TokenBalancePill />
+      </div>
       <DetailClient slug={slug} />
     </div>
   )

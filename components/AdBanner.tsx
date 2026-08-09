@@ -20,9 +20,9 @@ const SLIDES = [
     pill:     'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
   },
   {
-    badge:    'From £13.50 / month',
-    headline: 'Pick the plan that fits your trading',
-    sub:      '1 month · 3 months · 6 months · 12 months — cancel any time.',
+    badge:    'From £5',
+    headline: 'Pay per prediction, not per month',
+    sub:      '100 FM Trader runs for £5. Charts, analysis & the calendar stay free.',
     icon:     <Star className="w-5 h-5" />,
     color:    'from-amber-500/20 to-yellow-500/10',
     accent:   'text-amber-400',
@@ -50,9 +50,9 @@ const SLIDES = [
     pill:     'bg-violet-500/15 text-violet-300 border-violet-500/30',
   },
   {
-    badge:    '3-Months Most Popular',
-    headline: 'Save £5.40 — get 3 months for £35.10',
-    sub:      'Full access to FM Trader, AI signals, live data & 60+ instruments.',
+    badge:    'Best value',
+    headline: '1,250 runs for £50 — 4p a prediction',
+    sub:      'Tokens never expire, and a failed run is refunded automatically.',
     icon:     <ShieldCheck className="w-5 h-5" />,
     color:    'from-rose-500/20 to-pink-500/10',
     accent:   'text-rose-400',
@@ -152,7 +152,7 @@ export default function AdBanner() {
 
         {/* Right: CTA */}
         <div className={`shrink-0 flex items-center gap-1.5 text-xs font-bold ${slide.accent} group-hover:gap-2.5 transition-all`}>
-          <span className="hidden sm:inline">View Plans</span>
+          <span className="hidden sm:inline">Buy Tokens</span>
           <ArrowRight className="w-4 h-4" />
         </div>
       </Link>

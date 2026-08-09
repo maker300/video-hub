@@ -7,8 +7,7 @@ import {
   X, TrendingUp, TrendingDown, Minus, Loader2, AlertTriangle,
   Target, Shield, Zap, Brain, BarChart3, RefreshCw, Clock,
   ChevronDown, ChevronUp, CalendarClock, Bell, BellOff, History,
-  CheckCircle2, XCircle, Timer, DollarSign, Send, Wifi, Trash2,
-} from 'lucide-react'
+  CheckCircle2, XCircle, Timer, DollarSign, Send, Wifi, Trash2, Coins } from 'lucide-react'
 import {
   isPairSubscribed, togglePairSubscription,
   requestNotificationPermission, firePairBrowserNotification,
@@ -559,6 +558,10 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   const [analysis,      setAnalysis]      = useState<FMTraderResponse | null>(null)
   const [loading,       setLoading]       = useState(false)
   const [error,         setError]         = useState('')
+  // Distinguishes 'you have no tokens' from a genuine engine failure —
+  // retrying costs nothing but achieves nothing, so the UI offers a top-up
+  // link instead of a retry button.
+  const [outOfTokens,   setOutOfTokens]   = useState(false)
   const [showBreakdown,  setShowBreakdown]  = useState(false)
   const [pairSubscribed, setPairSubscribed] = useState(false)
   const [alertToast,     setAlertToast]     = useState('')
@@ -825,7 +828,7 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
   useEffect(() => () => { if (countdownTimer.current) clearInterval(countdownTimer.current) }, [])
 
   const fetchAnalysis = useCallback(async (sessionSlot: SessionSlotId, forceRefresh = false, tradeHorizon: 'intraday' | 'swing' = horizon) => {
-    setLoading(true); setError(''); setRefining(false)
+    setLoading(true); setError(''); setRefining(false); setOutOfTokens(false)
     if (!forceRefresh) { setAnalysis(null) }
     setShowBreakdown(false)
     try {
@@ -843,7 +846,13 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
 
       if (!res.ok) {
         // Errors come back as JSON regardless of streaming intent
-        const errJson = await res.json().catch(() => ({} as { error?: string }))
+        const errJson = await res.json().catch(() => ({} as { error?: string; message?: string }))
+        // 402 = no tokens left. Surfaced separately so the user gets a top-up
+        // link rather than a red "Analysis Failed" they cannot act on.
+        if (res.status === 402 || errJson.error === 'insufficient_tokens') {
+          setOutOfTokens(true)
+          throw new Error(errJson.message || 'You are out of FM Trader tokens.')
+        }
         throw new Error(errJson.error || `HTTP ${res.status}`)
       }
 
@@ -1145,7 +1154,31 @@ export default function FMTrader({ data, currentPrice, onClose, initialShowHisto
             </div>
           )}
 
-          {!showHistory && error && !loading && (
+          {/* Out of tokens is a billing state, not a failure — amber rather than
+              red, and it offers the one action that actually resolves it. */}
+          {!showHistory && outOfTokens && !loading && (
+            <div className="p-6">
+              <div className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/25 rounded-xl p-4">
+                <Coins className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-amber-200 mb-1">Out of tokens</p>
+                  <p className="text-xs text-amber-300/80">
+                    Each FM Trader prediction costs 1 token. Top up to keep running
+                    predictions on any instrument.
+                  </p>
+                </div>
+              </div>
+              <Link
+                href="/analysis/tokens"
+                className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-[#2a1a02] text-sm font-bold transition"
+              >
+                <Coins className="w-4 h-4" />
+                Buy tokens — from £5 for 100 runs
+              </Link>
+            </div>
+          )}
+
+          {!showHistory && error && !outOfTokens && !loading && (
             <div className="p-6">
               <div className="flex items-start gap-3 bg-red-500/10 border border-red-500/20 rounded-xl p-4">
                 <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
