@@ -25,6 +25,19 @@ export interface RecapPrediction {
   rrRatio:        string
 }
 
+/** Gold and Bitcoin get a mention every day whether or not they were traded. */
+export interface FlagshipSnapshot {
+  display:   string
+  price:     number
+  changePct: number | null
+  signal:    string | null          // overall rule-engine read
+  trend:     string                 // per-timeframe signals, condensed
+  support:   number | null
+  resistance: number | null
+  /** False when the instrument's market is shut — the price is last-close, not live. */
+  marketOpen: boolean
+}
+
 export interface RecapData {
   date:        string
   total:       number
@@ -40,6 +53,7 @@ export interface RecapData {
   winners:     RecapPrediction[]
   losers:      RecapPrediction[]
   pairs:       string[]
+  flagships:   FlagshipSnapshot[]
 }
 
 const WIN_OUTCOMES  = ['tp1_hit', 'tp2_hit', 'tp3_hit']
@@ -50,6 +64,65 @@ const shape = (r: any): RecapPrediction => ({
   priceAtOutcome: r.priceAtOutcome, entryLow: r.entryLow, entryHigh: r.entryHigh,
   stopLoss: r.stopLoss, tp1: r.tp1, rrRatio: r.rrRatio,
 })
+
+/**
+ * Gold and Bitcoin, fetched live.
+ *
+ * These get a slot in every recap regardless of whether FM Trader traded them —
+ * they are the two instruments the audience watches daily. Failures are
+ * tolerated: a missing snapshot drops the mention rather than losing the post.
+ */
+const FLAGSHIP_SLUGS = ['xau-usd', 'btc-usd']
+
+/**
+ * Is the spot FX / metals market open?
+ *
+ * The week runs Sunday 22:00 UTC to Friday 21:00 UTC. Gold sits inside that;
+ * Bitcoin does not stop, so it is never gated by this. Without the check a
+ * weekend recap would report Friday's close as if it were today's move.
+ */
+function isForexOpen(now: Date): boolean {
+  const day  = now.getUTCDay()          // 0 Sun … 6 Sat
+  const hour = now.getUTCHours()
+  if (day === 6) return false                    // Saturday
+  if (day === 0) return hour >= 22               // Sunday, after the open
+  if (day === 5) return hour < 21                // Friday, before the close
+  return true
+}
+
+const ALWAYS_OPEN = new Set(['btc-usd', 'eth-usd', 'sol-usd', 'xrp-usd', 'bnb-usd', 'doge-usd'])
+
+async function gatherFlagships(): Promise<FlagshipSnapshot[]> {
+  const base = process.env.NEXTAUTH_URL?.replace(/\/$/, '')
+    ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
+
+  const out = await Promise.allSettled(FLAGSHIP_SLUGS.map(async slug => {
+    const res = await fetch(`${base}/api/market-data/${slug}`, {
+      headers: { 'x-cron-secret': process.env.CRON_SECRET ?? '' },
+      signal:  AbortSignal.timeout(20_000),
+    })
+    if (!res.ok) throw new Error(`${slug}: HTTP ${res.status}`)
+    const d = await res.json()
+    const tfs: Array<{ key: string; signal: string }> = d.timeframes ?? []
+    return {
+      display:    d.display ?? slug,
+      price:      d.price,
+      changePct:  typeof d.changePct === 'number' ? Number(d.changePct.toFixed(2)) : null,
+      signal:     d.overallSignal ?? null,
+      trend:      tfs.filter(t => ['daily', '4h', '1h'].includes(t.key))
+                     .map(t => `${t.key} ${t.signal}`).join(', '),
+      support:    d.keyLevels?.support1    ?? null,
+      resistance: d.keyLevels?.resistance1 ?? null,
+      marketOpen: ALWAYS_OPEN.has(slug) || isForexOpen(new Date()),
+    } as FlagshipSnapshot
+  }))
+
+  return out.flatMap(r => {
+    if (r.status === 'fulfilled') return [r.value]
+    console.error('[daily-recap] flagship fetch failed:', r.reason)
+    return []
+  })
+}
 
 /** Everything created in the last 24 hours, with whatever has resolved. */
 export async function gatherRecap(now = new Date()): Promise<RecapData> {
@@ -65,6 +138,8 @@ export async function gatherRecap(now = new Date()): Promise<RecapData> {
       stopLoss: true, tp1: true, rrRatio: true,
     },
   })
+
+  const flagships = await gatherFlagships()
 
   const wins    = rows.filter(r => WIN_OUTCOMES.includes(r.outcome)).length
   const losses  = rows.filter(r => r.outcome === 'sl_hit').length
@@ -82,6 +157,7 @@ export async function gatherRecap(now = new Date()): Promise<RecapData> {
     winners: rows.filter(r => WIN_OUTCOMES.includes(r.outcome)).slice(0, 5).map(shape),
     losers:  rows.filter(r => r.outcome === 'sl_hit').slice(0, 5).map(shape),
     pairs: [...new Set(rows.map(r => r.slug))],
+    flagships,
   }
 }
 
@@ -100,6 +176,11 @@ For the winners: what the setup was and why it worked. Name the thing a student 
 For the losers: this is the most valuable part of the post, so give it the most room. For each loss, work through it — where the entry was, where the stop sat, where price actually went. Then answer the two questions a student is really asking:
   1. Was this avoidable, or was it a good trade that lost? Say which. Not every loss is a mistake, and pretending otherwise teaches superstition.
   2. What specifically should they do differently tomorrow? Concrete. "Wait for the retest" beats "be more patient."
+
+GOLD AND BITCOIN
+Every post includes a short read on XAU/USD and BTC/USD, whether or not you traded them. Your students watch both daily. Two or three lines each at most: where price is, which way the timeframes lean, and the level that matters next. Work it into the flow — a paragraph, not a data dump — and skip either one if no data is supplied for it.
+
+If an instrument is marked closed (gold over the weekend), do not narrate a move or momentum it cannot have had. Say it is shut, and give the level worth watching when it reopens. Bitcoin never closes, so it always gets its read.
 
 Close with one lesson they can act on, and a short sign-off.
 
@@ -144,6 +225,19 @@ ${d.resolved === 0
   : d.losses === 0
     ? 'NOTE: no losses today. Do not pad with open trades. Use the space to teach what made the winners work, and warn against the overconfidence a green day breeds.'
     : ''}
+
+GOLD AND BITCOIN — include a short read on each of these:
+${d.flagships.length
+  ? d.flagships.map(f =>
+      f.marketOpen === false
+        ? `- ${f.display}: MARKET CLOSED for the weekend. Last close ${f.price}. Do not describe today's move or momentum — say it is shut and, if useful, flag the level to watch when it reopens.`
+        : `- ${f.display}: ${f.price}${f.changePct != null ? ` (${f.changePct > 0 ? '+' : ''}${f.changePct}% on the day)` : ''}` +
+      `${f.signal ? `, overall read ${f.signal}` : ''}` +
+      `${f.trend ? `, timeframes ${f.trend}` : ''}` +
+      `${f.support != null ? `, support ${f.support}` : ''}` +
+      `${f.resistance != null ? `, resistance ${f.resistance}` : ''}`
+    ).join('\n')
+  : '(market data unavailable today — skip this section entirely rather than guessing)'}
 
 Also worth knowing, but do NOT build the post around it: ${d.pending} trades are still open.`
 }
