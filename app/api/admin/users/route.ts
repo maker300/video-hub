@@ -15,6 +15,7 @@ export async function GET() {
         email:         true,
         role:          true,
         teamBalanceBtc: true,
+        tokenBalance:  true,
         password:      true,
         createdAt:     true,
         emailVerified: true,

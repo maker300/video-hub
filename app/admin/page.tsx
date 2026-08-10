@@ -44,6 +44,7 @@ interface UserRow {
   progress:      { id: string; completed: boolean }[]
   subscription:  { plan: string; status: string } | null
   analysisAccess?: AnalysisAccess | null
+  tokenBalance?:  number
 }
 
 interface Stats {
@@ -404,6 +405,44 @@ function GrantAccessModal({
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10))
   const [note,      setNote]      = useState(existing?.note ?? '')
   const [saving,    setSaving]    = useState(false)
+  // Token state — loaded on open so the modal shows the live balance rather
+  // than whatever the users list was last refreshed with.
+  const [tokenBalance, setTokenBalance] = useState<number | null>(null)
+  const [tokenDelta,   setTokenDelta]   = useState('')
+  const [tokenNote,    setTokenNote]    = useState('')
+  const [tokenSaving,  setTokenSaving]  = useState(false)
+  const [tokenMsg,     setTokenMsg]     = useState('')
+
+  useEffect(() => {
+    fetch(`/api/admin/users/${user.id}/tokens`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) setTokenBalance(d.balance) })
+      .catch(() => { /* balance is informational — the access controls still work */ })
+  }, [user.id])
+
+  async function adjustTokens() {
+    const delta = Math.trunc(Number(tokenDelta))
+    if (!Number.isFinite(delta) || delta === 0) { setTokenMsg('Enter a non-zero whole number.'); return }
+    setTokenSaving(true); setTokenMsg('')
+    try {
+      const res  = await fetch(`/api/admin/users/${user.id}/tokens`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ delta, note: tokenNote }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Failed')
+      setTokenBalance(data.balance)
+      setTokenDelta(''); setTokenNote('')
+      setTokenMsg(`${delta > 0 ? 'Added' : 'Removed'} ${Math.abs(delta)} — balance now ${data.balance}.`)
+      onSaved()
+    } catch (e) {
+      setTokenMsg(e instanceof Error ? e.message : 'Failed to adjust tokens.')
+    } finally {
+      setTokenSaving(false)
+    }
+  }
+
   const [msg,       setMsg]       = useState('')
 
   async function grant() {
@@ -516,6 +555,43 @@ function GrantAccessModal({
             {msg}
           </p>
         )}
+
+        {/* ── FM Trader tokens ──────────────────────────────────────────────
+            Access is free now, so tokens are the thing an admin actually
+            grants. Adjustments are written to TokenLedger with this note and
+            the acting admin's email, so a manual grant is as auditable as a
+            purchase. */}
+        <div className="pt-3 mt-1 border-t border-white/10">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-gray-400">FM Trader tokens</label>
+            <span className="text-xs text-gray-300">
+              Balance: <strong className="text-white">{tokenBalance ?? '—'}</strong>
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="number" step="1" inputMode="numeric"
+              value={tokenDelta}
+              onChange={e => setTokenDelta(e.target.value)}
+              placeholder="e.g. 100, or -50 to remove"
+              className="flex-1 bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2 text-white text-sm tabular-nums outline-none focus:border-emerald-500/60"
+            />
+            <button
+              onClick={adjustTokens}
+              disabled={tokenSaving || !tokenDelta.trim()}
+              className="px-4 py-2 rounded-lg bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 text-sm font-semibold transition disabled:opacity-50"
+            >
+              {tokenSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Apply'}
+            </button>
+          </div>
+          <input
+            value={tokenNote}
+            onChange={e => setTokenNote(e.target.value)}
+            placeholder="Reason (optional) — recorded in the ledger"
+            className="mt-2 w-full bg-[#0b1322] border border-white/15 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-emerald-500/60"
+          />
+          {tokenMsg && <p className="text-[11px] mt-2 text-gray-400">{tokenMsg}</p>}
+        </div>
 
         <div className="flex gap-3 pt-1">
           <button
@@ -817,6 +893,17 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
                         </span>
                       ) : (
                         <span className="text-[10px] text-gray-600 italic">No access</span>
+                      )}
+                      {/* Token balance — what actually gates FM Trader now that
+                          analysis itself is free. Admins are never charged. */}
+                      {u.role !== 'admin' && (
+                        <p className={`text-[10px] mt-1 font-semibold ${
+                          (u.tokenBalance ?? 0) === 0 ? 'text-gray-600'
+                          : (u.tokenBalance ?? 0) <= 5 ? 'text-amber-400'
+                          : 'text-gray-400'
+                        }`}>
+                          {(u.tokenBalance ?? 0).toLocaleString()} token{(u.tokenBalance ?? 0) === 1 ? '' : 's'}
+                        </p>
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{timeAgo(u.createdAt)}</td>
