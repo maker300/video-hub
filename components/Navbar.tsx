@@ -15,6 +15,9 @@ export default function Navbar() {
   const [mobileOpen,    setMobileOpen]    = useState(false)
   const [dropdownOpen,  setDropdownOpen]  = useState(false)
   const [notifOpen,     setNotifOpen]     = useState(false)
+  // Which broadcast is expanded. Long messages are clamped to 3 lines and the
+  // row navigates on tap, so before this there was no way to read one in full.
+  const [expandedNotif, setExpandedNotif] = useState<string | null>(null)
   const [progress,      setProgress]      = useState(0)
   const [notifications, setNotifications] = useState<PriceNotification[]>([])
   const dropdownRef      = useRef<HTMLDivElement>(null)
@@ -300,6 +303,9 @@ export default function Navbar() {
                           const isSub         = n.type === 'subscription'
                           const isTradeUpdate = n.type === 'trade_update'
                           const isBroadcast   = n.type === 'broadcast'
+                          // 3-line clamp holds roughly this much at the dropdown width;
+                          // beyond it the message needs expanding to be readable.
+                          const isLongBroadcast = isBroadcast && (n.rrRatio?.length ?? 0) > 120
                           const [tuType, tuMsg] = isTradeUpdate && n.rrRatio ? n.rrRatio.split('||') : ['', '']
                           const tuLabel = tuType === 'cancel' ? '⚠️ Cancel Advisory'
                             : tuType === 'move_sl_breakeven' ? '🛡️ Move SL to Break Even'
@@ -314,9 +320,20 @@ export default function Navbar() {
                             <button
                               key={n.id}
                               onClick={() => {
-                                setNotifOpen(false)
+                                if (!(isBroadcast && isLongBroadcast && expandedNotif !== n.id)) {
+                                  setNotifOpen(false)
+                                }
                                 if (isSub) return
-                                if (isBroadcast) { if (n.linkUrl) router.push(n.linkUrl); return }
+                                if (isBroadcast) {
+                                  // Long message, not yet open: expand instead of
+                                  // navigating, so it can actually be read.
+                                  if (isLongBroadcast && expandedNotif !== n.id) {
+                                    setExpandedNotif(n.id)
+                                    return
+                                  }
+                                  if (n.linkUrl) router.push(n.linkUrl)
+                                  return
+                                }
                                 router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`)
                               }}
                               className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-white/5 active:bg-white/10 border-b border-white/5 transition"
@@ -343,8 +360,15 @@ export default function Navbar() {
                                 ) : isBroadcast ? (
                                   <>
                                     <p className="text-sm font-semibold text-white">{n.display}</p>
-                                    <p className="text-xs text-gray-400 mt-0.5 line-clamp-3">{n.rrRatio}</p>
-                                    <p className="text-[10px] text-violet-400/80 mt-1">Message from ForexMastery</p>
+                                    <p className={`text-xs text-gray-400 mt-0.5 whitespace-pre-line ${expandedNotif === n.id ? '' : 'line-clamp-3'}`}>{n.rrRatio}</p>
+                                    {isLongBroadcast && (
+                                      <p className="text-[10px] font-semibold text-violet-300 mt-1">
+                                        {expandedNotif === n.id ? 'Show less' : 'Tap to read more'}
+                                      </p>
+                                    )}
+                                    <p className="text-[10px] text-violet-400/80 mt-1">
+                                      {expandedNotif === n.id && n.linkUrl ? 'Tap again to open' : 'Message from ForexMastery'}
+                                    </p>
                                   </>
                                 ) : isTradeUpdate ? (
                                   <>
@@ -574,6 +598,9 @@ export default function Navbar() {
                             const isSub         = n.type === 'subscription'
                             const isTradeUpdate = n.type === 'trade_update'
                             const isBroadcast   = n.type === 'broadcast'
+                            // 3-line clamp holds roughly this much at the dropdown width;
+                            // beyond it the message needs expanding to be readable.
+                            const isLongBroadcast = isBroadcast && (n.rrRatio?.length ?? 0) > 120
                             const [tuType, tuMsg] = isTradeUpdate && n.rrRatio ? n.rrRatio.split('||') : ['', '']
                             const tuLabel = tuType === 'cancel' ? '⚠️ Cancel Advisory'
                               : tuType === 'move_sl_breakeven' ? '🛡️ Move SL to Break Even'
@@ -588,9 +615,20 @@ export default function Navbar() {
                               <button
                                 key={n.id}
                                 onClick={() => {
-                                setNotifOpen(false)
+                                if (!(isBroadcast && isLongBroadcast && expandedNotif !== n.id)) {
+                                  setNotifOpen(false)
+                                }
                                 if (isSub) return
-                                if (isBroadcast) { if (n.linkUrl) router.push(n.linkUrl); return }
+                                if (isBroadcast) {
+                                  // Long message, not yet open: expand instead of
+                                  // navigating, so it can actually be read.
+                                  if (isLongBroadcast && expandedNotif !== n.id) {
+                                    setExpandedNotif(n.id)
+                                    return
+                                  }
+                                  if (n.linkUrl) router.push(n.linkUrl)
+                                  return
+                                }
                                 router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`)
                               }}
                                 className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-white/5 active:bg-white/10 border-b border-white/5 transition"
@@ -617,8 +655,15 @@ export default function Navbar() {
                                   ) : isBroadcast ? (
                                     <>
                                       <p className="text-sm font-semibold text-white">{n.display}</p>
-                                      <p className="text-xs text-gray-400 mt-0.5 line-clamp-3">{n.rrRatio}</p>
-                                      <p className="text-[10px] text-violet-400/80 mt-1">Message from ForexMastery</p>
+                                      <p className={`text-xs text-gray-400 mt-0.5 whitespace-pre-line ${expandedNotif === n.id ? '' : 'line-clamp-3'}`}>{n.rrRatio}</p>
+                                      {isLongBroadcast && (
+                                        <p className="text-[10px] font-semibold text-violet-300 mt-1">
+                                          {expandedNotif === n.id ? 'Show less' : 'Tap to read more'}
+                                        </p>
+                                      )}
+                                      <p className="text-[10px] text-violet-400/80 mt-1">
+                                        {expandedNotif === n.id && n.linkUrl ? 'Tap again to open' : 'Message from ForexMastery'}
+                                      </p>
                                     </>
                                   ) : isTradeUpdate ? (
                                     <>
