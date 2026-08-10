@@ -309,10 +309,13 @@ export default function Navbar() {
                           const isSub         = n.type === 'subscription'
                           const isTradeUpdate = n.type === 'trade_update'
                           const isBroadcast   = n.type === 'broadcast'
-                          // 3-line clamp holds roughly this much at the dropdown width;
-                          // beyond it the message needs expanding to be readable.
-                          const isLongBroadcast = isBroadcast && (n.rrRatio?.length ?? 0) > 120
                           const [tuType, tuMsg] = isTradeUpdate && n.rrRatio ? n.rrRatio.split('||') : ['', '']
+                          // Any message body long enough that the clamp hides part of it. The row
+                          // navigates on tap, so without this the tail is simply unreadable —
+                          // which applied to trade advisories just as much as to broadcasts.
+                          const notifMsg  = isBroadcast ? (n.rrRatio ?? '') : isTradeUpdate ? tuMsg : ''
+                          const isLongMsg = (isBroadcast || isTradeUpdate) && notifMsg.length > 110
+                          const needsExpand = isLongMsg && expandedNotif !== n.id
                           const tuLabel = tuType === 'cancel' ? '⚠️ Cancel Advisory'
                             : tuType === 'move_sl_breakeven' ? '🛡️ Move SL to Break Even'
                             : tuType === 'trail_sl' ? '📈 Trail SL into Profit'
@@ -326,17 +329,13 @@ export default function Navbar() {
                             <button
                               key={n.id}
                               onClick={() => {
-                                if (!(isBroadcast && isLongBroadcast && expandedNotif !== n.id)) {
-                                  setNotifOpen(false)
-                                }
+                                // Expanding must not close the dropdown.
+                                if (!needsExpand) setNotifOpen(false)
                                 if (isSub) return
+                                // Long message, not yet open: first tap reveals it,
+                                // second follows the link.
+                                if (needsExpand) { setExpandedNotif(n.id); return }
                                 if (isBroadcast) {
-                                  // Long message, not yet open: expand instead of
-                                  // navigating, so it can actually be read.
-                                  if (isLongBroadcast && expandedNotif !== n.id) {
-                                    setExpandedNotif(n.id)
-                                    return
-                                  }
                                   if (n.linkUrl) router.push(n.linkUrl)
                                   return
                                 }
@@ -367,7 +366,7 @@ export default function Navbar() {
                                   <>
                                     <p className="text-sm font-semibold text-white">{n.display}</p>
                                     <p className={`text-xs text-gray-400 mt-0.5 whitespace-pre-line ${expandedNotif === n.id ? '' : 'line-clamp-3'}`}>{n.rrRatio}</p>
-                                    {isLongBroadcast && (
+                                    {isLongMsg && (
                                       <p className="text-[10px] font-semibold text-violet-300 mt-1">
                                         {expandedNotif === n.id ? 'Show less' : 'Tap to read more'}
                                       </p>
@@ -379,8 +378,15 @@ export default function Navbar() {
                                 ) : isTradeUpdate ? (
                                   <>
                                     <p className="text-sm font-semibold text-white">{tuLabel} — {n.display}</p>
-                                    <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{tuMsg}</p>
-                                    <p className="text-[10px] text-amber-400/80 mt-1">FM Trader advisory · Tap to open analysis</p>
+                                    <p className={`text-xs text-gray-400 mt-0.5 whitespace-pre-line ${expandedNotif === n.id ? '' : 'line-clamp-2'}`}>{tuMsg}</p>
+                                    {isLongMsg && (
+                                      <p className="text-[10px] font-semibold text-amber-300 mt-1">
+                                        {expandedNotif === n.id ? 'Show less' : 'Tap to read more'}
+                                      </p>
+                                    )}
+                                    <p className="text-[10px] text-amber-400/80 mt-1">
+                                      FM Trader advisory · {expandedNotif === n.id ? 'Tap again to open analysis' : 'Tap to open analysis'}
+                                    </p>
                                   </>
                                 ) : isSignal ? (
                                   <>
@@ -604,10 +610,13 @@ export default function Navbar() {
                             const isSub         = n.type === 'subscription'
                             const isTradeUpdate = n.type === 'trade_update'
                             const isBroadcast   = n.type === 'broadcast'
-                            // 3-line clamp holds roughly this much at the dropdown width;
-                            // beyond it the message needs expanding to be readable.
-                            const isLongBroadcast = isBroadcast && (n.rrRatio?.length ?? 0) > 120
                             const [tuType, tuMsg] = isTradeUpdate && n.rrRatio ? n.rrRatio.split('||') : ['', '']
+                            // Any message body long enough that the clamp hides part of it. The row
+                            // navigates on tap, so without this the tail is simply unreadable —
+                            // which applied to trade advisories just as much as to broadcasts.
+                            const notifMsg  = isBroadcast ? (n.rrRatio ?? '') : isTradeUpdate ? tuMsg : ''
+                            const isLongMsg = (isBroadcast || isTradeUpdate) && notifMsg.length > 110
+                            const needsExpand = isLongMsg && expandedNotif !== n.id
                             const tuLabel = tuType === 'cancel' ? '⚠️ Cancel Advisory'
                               : tuType === 'move_sl_breakeven' ? '🛡️ Move SL to Break Even'
                               : tuType === 'trail_sl' ? '📈 Trail SL into Profit'
@@ -621,17 +630,13 @@ export default function Navbar() {
                               <button
                                 key={n.id}
                                 onClick={() => {
-                                if (!(isBroadcast && isLongBroadcast && expandedNotif !== n.id)) {
-                                  setNotifOpen(false)
-                                }
+                                // Expanding must not close the dropdown.
+                                if (!needsExpand) setNotifOpen(false)
                                 if (isSub) return
+                                // Long message, not yet open: first tap reveals it,
+                                // second follows the link.
+                                if (needsExpand) { setExpandedNotif(n.id); return }
                                 if (isBroadcast) {
-                                  // Long message, not yet open: expand instead of
-                                  // navigating, so it can actually be read.
-                                  if (isLongBroadcast && expandedNotif !== n.id) {
-                                    setExpandedNotif(n.id)
-                                    return
-                                  }
                                   if (n.linkUrl) router.push(n.linkUrl)
                                   return
                                 }
@@ -662,7 +667,7 @@ export default function Navbar() {
                                     <>
                                       <p className="text-sm font-semibold text-white">{n.display}</p>
                                       <p className={`text-xs text-gray-400 mt-0.5 whitespace-pre-line ${expandedNotif === n.id ? '' : 'line-clamp-3'}`}>{n.rrRatio}</p>
-                                      {isLongBroadcast && (
+                                      {isLongMsg && (
                                         <p className="text-[10px] font-semibold text-violet-300 mt-1">
                                           {expandedNotif === n.id ? 'Show less' : 'Tap to read more'}
                                         </p>
@@ -674,8 +679,15 @@ export default function Navbar() {
                                   ) : isTradeUpdate ? (
                                     <>
                                       <p className="text-sm font-semibold text-white">{tuLabel} — {n.display}</p>
-                                      <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{tuMsg}</p>
-                                      <p className="text-[10px] text-amber-400/80 mt-1">FM Trader advisory · Tap to open analysis</p>
+                                      <p className={`text-xs text-gray-400 mt-0.5 whitespace-pre-line ${expandedNotif === n.id ? '' : 'line-clamp-2'}`}>{tuMsg}</p>
+                                      {isLongMsg && (
+                                        <p className="text-[10px] font-semibold text-amber-300 mt-1">
+                                          {expandedNotif === n.id ? 'Show less' : 'Tap to read more'}
+                                        </p>
+                                      )}
+                                      <p className="text-[10px] text-amber-400/80 mt-1">
+                                      FM Trader advisory · {expandedNotif === n.id ? 'Tap again to open analysis' : 'Tap to open analysis'}
+                                    </p>
                                     </>
                                   ) : isSignal ? (
                                     <>
