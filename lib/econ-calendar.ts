@@ -261,3 +261,40 @@ export function formatPrint(e: {
   if (e.previous != null) parts.push(`(prev ${n(e.previous)})`)
   return parts.join(' ')
 }
+
+// ── First-order currency bias ─────────────────────────────────────────────────
+
+export type CurrencyBias = 'positive' | 'negative' | 'neutral'
+
+/**
+ * Indicators where a HIGHER reading is bad for the currency.
+ *
+ * For most releases a beat means a stronger economy and a firmer currency, but
+ * unemployment and claims invert that — rising joblessness is not good news
+ * however much it beats forecast. Without this list the agent would label a
+ * spike in claims as positive.
+ */
+const INVERSE_INDICATORS = [
+  'unemployment rate', 'jobless claims', 'continuing claims', 'unemployment change',
+  'claimant count', 'trade deficit', 'budget deficit', 'inventories',
+]
+
+/**
+ * Whether a print reads as supportive or negative for its own currency.
+ *
+ * Deliberately first-order and labelled as such wherever it is shown: the real
+ * reaction depends on positioning and what was already priced in, which this
+ * does not model. It is a starting point for the pair analysis, not a trade
+ * call.
+ */
+export function currencyBias(eventName: string, dir: SurpriseDir | null): CurrencyBias {
+  if (!dir || dir === 'inline') return 'neutral'
+
+  const name     = eventName.toLowerCase()
+  const inverted = INVERSE_INDICATORS.some(k => name.includes(k))
+
+  const strongPrint = dir === 'hotter'
+  const supportive  = inverted ? !strongPrint : strongPrint
+
+  return supportive ? 'positive' : 'negative'
+}

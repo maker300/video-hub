@@ -43,6 +43,9 @@ model User {
   withdrawals         Withdrawal[]
   withdrawalsProcessed Withdrawal[]         @relation("WithdrawalProcessor")
   tokenLedger     TokenLedger[]
+  posts           Post[]
+  postLikes       PostLike[]
+  postComments    PostComment[]
 }
 
 model Account {
@@ -653,4 +656,61 @@ model TokenLedger {
 
   @@index([userId, createdAt])
   @@index([reason])
+}
+
+// ── Community feed ────────────────────────────────────────────────────────────
+
+// A post is either written by a user or auto-published by the FM News agent
+// when a macro release lands. Text only by design — no images or media.
+model Post {
+  id         String   @id @default(cuid())
+  // Null for agent posts: they belong to the system, not a person.
+  userId     String?
+  authorType String   @default("user")     // user | agent
+  content    String                         // plain text; never rendered as HTML
+  // Set on agent posts so a release can only ever produce one post.
+  economicEventId String? @unique
+  createdAt  DateTime @default(now())
+  // Posts live 24 hours. Set explicitly at creation rather than derived at read
+  // time so the purge job can index on it.
+  expiresAt  DateTime
+  // Soft delete so an owner/admin removal keeps the audit trail and the
+  // comment thread does not vanish mid-read for someone else.
+  deletedAt  DateTime?
+
+  user     User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes    PostLike[]
+  comments PostComment[]
+
+  @@index([createdAt])
+  @@index([authorType, createdAt])
+  @@index([expiresAt])
+}
+
+model PostLike {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One like per user per post — the toggle relies on this, not on a read.
+  @@unique([postId, userId])
+  @@index([postId])
+}
+
+model PostComment {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+  deletedAt DateTime?
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
 }

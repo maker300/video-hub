@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Settings, ChevronDown, Shield, Bell, TrendingDown, Minus, Mail, Zap, CalendarClock } from 'lucide-react'
+import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Settings, ChevronDown, Shield, Bell, TrendingDown, Minus, Mail, Zap, CalendarClock, MessagesSquare } from 'lucide-react'
 import { useSession, signOut } from 'next-auth/react'
 import { getProgress } from '@/lib/progress'
 import { totalLessons } from '@/lib/courseData'
@@ -235,6 +235,12 @@ export default function Navbar() {
               <Link href="/analysis/news" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
                 <CalendarClock className="w-4 h-4" />
                 Calendar
+              </Link>
+            )}
+            {session && (
+              <Link href="/analysis/feed" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+                <MessagesSquare className="w-4 h-4" />
+                Feed
               </Link>
             )}
             {(session?.user?.role === 'team' || session?.user?.role === 'admin') && (
@@ -757,6 +763,16 @@ export default function Navbar() {
               >
                 <CalendarClock className="w-4 h-4" />
                 <span className="text-sm font-medium">Calendar</span>
+              </Link>
+            )}
+            {session && (
+              <Link
+                href="/analysis/feed"
+                className="flex items-center gap-2 text-gray-300 hover:text-white px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all"
+                onClick={() => setMobileOpen(false)}
+              >
+                <MessagesSquare className="w-4 h-4" />
+                <span className="text-sm font-medium">Feed</span>
               </Link>
             )}
             {(session?.user?.role === 'team' || session?.user?.role === 'admin') && (

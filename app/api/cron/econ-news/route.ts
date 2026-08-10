@@ -14,7 +14,7 @@
 // analysis, which is measured.
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { ACTIVE_PROVIDER, classifySurprise, formatPrint } from '@/lib/econ-calendar'
+import { ACTIVE_PROVIDER, classifySurprise, formatPrint, currencyBias } from '@/lib/econ-calendar'
 import { slugsForCurrency, displayForSlug } from '@/lib/market-map'
 import { sendTelegramMessage } from '@/lib/telegram'
 
@@ -148,11 +148,43 @@ export async function GET(req: Request) {
       }).catch(e => console.error('[econ-news] bell notify failed:', e))
     }
 
+    // Publish to the community feed. economicEventId is unique, so a release
+    // can only ever produce one post no matter how the poller behaves.
+    const bias = currencyBias(r.event, r.surpriseDir as any)
+    const biasLine =
+      bias === 'positive' ? `Reads positive for ${r.currency}`
+      : bias === 'negative' ? `Reads negative for ${r.currency}`
+      : `Neutral for ${r.currency} — in line with expectations`
+
+    await db.post.create({
+      data: {
+        authorType:      'agent',
+        economicEventId: r.id,
+        expiresAt:       new Date(Date.now() + 24 * 60 * 60 * 1000),
+        content: [
+          `${r.currency} — ${r.event}`,
+          ``,
+          `${print}${dirNote}`,
+          biasLine,
+          ``,
+          `Instruments with exposure: ${affected}`,
+          ``,
+          `First-order read only — how this actually moves price depends on positioning and what was already priced in. Check the pair analysis before trading.`,
+        ].join('\n'),
+      },
+    }).catch((e: unknown) => console.error('[econ-news] feed post failed:', e))
+
     await db.economicEvent.update({
       where: { id: r.id },
       data:  { notifiedAt: new Date() },
     })
   }
+
+  // Hard-delete posts past their 24 hours. Runs every tick: the query is
+  // indexed on expiresAt and the row count is small, so there is no reason to
+  // defer it to a daily job. Comments and likes cascade.
+  await db.post.deleteMany({ where: { expiresAt: { lt: new Date() } } })
+    .catch((e: unknown) => console.error('[econ-news] post purge failed:', e))
 
   return NextResponse.json({
     ok:        true,
