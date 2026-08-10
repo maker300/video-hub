@@ -2348,6 +2348,17 @@ function recalcLevels(
   // from current price — beyond that, fills get rare within the validity window.
   const entryDriftCap = blendedATR * (swing ? 1.5 : 1.0)
 
+  // Minimum distance the stop must sit beyond the far edge of the entry zone.
+  //
+  // Without this, patternStop below can land inside the entry range: it is
+  // derived from the pattern candle and, unlike maxWidthStop, is not bounded
+  // relative to entryLow/entryHigh. Math.max (BUY) / Math.min (SELL) then picks
+  // the tighter of the two, so whenever the pattern candle sits inside the zone
+  // the stop does too — the trade is invalidated at a price we would still be
+  // willing to enter at. Three of fourteen live predictions had this, two of
+  // which stopped out.
+  const minStopGap = spreadBuf + blendedATR * 0.25
+
   if (decision === 'BUY') {
     const rawAnchor     = Math.min(price, entryEMA9)
     const clampedAnchor = Math.max(rawAnchor, price - entryDriftCap)
@@ -2356,7 +2367,10 @@ function recalcLevels(
     entryHigh = round(entryMid * (1 + entryWidthHigh), dec)
     const patternStop  = patternCandleLow - blendedATR * slMult - spreadBuf
     const maxWidthStop = entryLow - blendedATR * slCapMult
-    stopLoss = round(Math.max(patternStop, maxWidthStop), dec)
+    // Clamp below the entry zone. A no-op when the stop is already correctly
+    // placed; it only bites when patternStop has crept up into the range.
+    const rawStop      = Math.max(patternStop, maxWidthStop)
+    stopLoss = round(Math.min(rawStop, entryLow - minStopGap), dec)
     const risk = entryHigh - stopLoss
     ;({ tp1, tp2, tp3 } = computeStructuralTPs(
       'BUY', entryHigh, entryLow, risk, tpBounds, kl, body.marketContext, dec,
@@ -2370,12 +2384,21 @@ function recalcLevels(
     entryLow  = round(entryMid * (1 - entryWidthHigh), dec)
     const patternStop  = patternCandleHigh + blendedATR * slMult + spreadBuf
     const maxWidthStop = entryHigh + blendedATR * slCapMult
-    stopLoss = round(Math.min(patternStop, maxWidthStop), dec)
+    // Mirror of the BUY clamp — the stop must sit above the entry zone.
+    const rawStop      = Math.min(patternStop, maxWidthStop)
+    stopLoss = round(Math.max(rawStop, entryHigh + minStopGap), dec)
     const risk = stopLoss - entryLow
     ;({ tp1, tp2, tp3 } = computeStructuralTPs(
       'SELL', entryHigh, entryLow, risk, tpBounds, kl, body.marketContext, dec,
       swingTPAnchors, /* excludeIntradayLevels */ swing,
     ))
+  }
+
+  // Invariant: the stop is outside the entry zone and the trade has real risk.
+  // Logged rather than thrown — a bad level should not take the analysis down,
+  // but it must not pass silently the way it did before.
+  if (stopLoss >= entryLow && stopLoss <= entryHigh) {
+    console.error('[fm-trader] stop inside entry zone after clamp', { slug: body.slug, decision, entryLow, entryHigh, stopLoss })
   }
 
   const riskPips = decision === 'BUY' ? entryHigh - stopLoss : stopLoss - entryLow
