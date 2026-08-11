@@ -20,9 +20,16 @@ import { sendTelegramMessage } from '@/lib/telegram'
 
 export const dynamic = 'force-dynamic'
 
-/** Only announce a print this long after its scheduled time — stale data from a
- *  backfilled calendar row shouldn't page anyone. */
-const RELEASE_GRACE_MS = 3 * 60 * 60 * 1000  // 3 hours
+/**
+ * How late an event may still be announced.
+ *
+ * Guards against a backfilled calendar row paging everyone about something from
+ * last week. Widened from 3 to 8 hours because 3 was tight enough that an
+ * outage would silently skip releases — the cron was disabled for 26 consecutive
+ * executions once already, and a window shorter than a working day means those
+ * hours are simply lost rather than caught up on the next successful run.
+ */
+const RELEASE_GRACE_MS = 8 * 60 * 60 * 1000
 
 export async function GET(req: Request) {
   const cronSecret = process.env.CRON_SECRET
