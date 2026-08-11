@@ -625,6 +625,14 @@ model EconomicEvent {
   affectedSlugs Json                       // string[] of instrument slugs
   releasedAt    DateTime?
   notifiedAt    DateTime?
+  // Separate from notifiedAt: the agent announces when the scheduled time
+  // passes (with no figure, because the free feed carries none), and a second
+  // announcement goes out when an admin supplies the actual. Without this the
+  // figure could be announced repeatedly on every edit.
+  figureAnnouncedAt DateTime?
+  // Who last edited the figures by hand, for the admin audit trail.
+  editedBy      String?
+  editedAt      DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

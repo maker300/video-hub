@@ -17,6 +17,7 @@ import { prisma } from '@/lib/prisma'
 import { ACTIVE_PROVIDER, classifySurprise, formatPrint, currencyBias } from '@/lib/econ-calendar'
 import { slugsForCurrency, displayForSlug } from '@/lib/market-map'
 import { sendTelegramMessage } from '@/lib/telegram'
+import { alertAdmins } from '@/lib/admin-alert'
 
 export const dynamic = 'force-dynamic'
 
@@ -193,6 +194,24 @@ export async function GET(req: Request) {
         ].join('\n'),
       },
     }).catch((e: unknown) => console.error('[econ-news] feed post failed:', e))
+
+    // Nudge an admin to type the figure in. The free calendar feed carries a
+    // schedule but no actuals, so a release only becomes useful once someone
+    // enters the number — and it is worth nothing an hour later. Only fires
+    // when the figure is genuinely missing, so a paid feed would silence it.
+    if (!hasFigure) {
+      await alertAdmins({
+        linkUrl: '/admin/calendar',
+        subject: `Enter the figure — ${r.currency} ${r.event}`,
+        message: `${r.currency} ${r.event} has just released and no figure is in the data feed. Enter the actual to publish it to the feed and alert everyone following ${affected}.`,
+        telegramHtml:
+          `⏱ <b>Figure needed — ${r.currency} ${r.event}</b>\n\n` +
+          `Just released${r.forecast != null ? `, ${r.forecast}${r.unit ?? ''} expected` : ''}.\n` +
+          `Nothing will publish until the actual is entered.\n\n` +
+          `Exposure: ${affected}\n` +
+          `🔗 https://forexmastery.org/admin/calendar`,
+      }).catch(e => console.error('[econ-news] admin nudge failed:', e))
+    }
 
     await db.economicEvent.update({
       where: { id: r.id },
