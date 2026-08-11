@@ -371,3 +371,31 @@ export function currencyBias(eventName: string, dir: SurpriseDir | null): Curren
 
   return supportive ? 'positive' : 'negative'
 }
+
+// ── Commentary vs numeric releases ────────────────────────────────────────────
+
+const COMMENTARY_KEYWORDS = [
+  'speaks', 'speech', 'statement', 'press conference', 'minutes', 'testimony',
+  'holiday', 'summit', 'symposium', 'remarks', 'address', 'panel', 'meeting',
+  'bank holiday', 'vote', 'election', 'outlook',
+]
+
+/**
+ * True for events that never carry a number: speeches, statements, press
+ * conferences, holidays.
+ *
+ * These were being labelled "figure not published to our data source", which
+ * reads as a broken feed when nothing is wrong — an RBA press conference has no
+ * figure to publish and never will. They are worth showing (guidance often
+ * moves price more than the print it accompanies), just not as a missing number.
+ */
+export function isCommentaryEvent(
+  eventName: string,
+  forecast: number | null,
+  previous: number | null,
+): boolean {
+  const name = eventName.toLowerCase()
+  if (COMMENTARY_KEYWORDS.some(k => name.includes(k))) return true
+  // Nothing to compare against and nothing expected — there is no figure here.
+  return forecast === null && previous === null
+}

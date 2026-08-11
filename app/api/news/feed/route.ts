@@ -7,7 +7,7 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { displayForSlug } from '@/lib/market-map'
-import { formatPrint } from '@/lib/econ-calendar'
+import { formatPrint, isCommentaryEvent } from '@/lib/econ-calendar'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,7 +53,12 @@ export async function GET() {
     print:       e.actual != null ? formatPrint(e) : null,
     // True once the scheduled time has passed with no figure published — the
     // page shows "awaiting result" rather than pretending it is still upcoming.
-    awaitingResult: e.actual == null && new Date(e.scheduledAt) < now,
+    // A speech or press conference has no number and never will — flagged so
+    // the page shows it as commentary rather than a missing figure.
+    isCommentary: isCommentaryEvent(e.event, e.forecast, e.previous),
+    note:         e.note ?? null,
+    awaitingResult: e.actual == null && new Date(e.scheduledAt) < now
+                    && !isCommentaryEvent(e.event, e.forecast, e.previous),
     surpriseDir: e.surpriseDir,
     affected:    (e.affectedSlugs as string[] ?? []).map(s => ({ slug: s, display: displayForSlug(s) })),
   })

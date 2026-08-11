@@ -14,7 +14,7 @@
 // analysis, which is measured.
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { ACTIVE_PROVIDER, classifySurprise, formatPrint, currencyBias } from '@/lib/econ-calendar'
+import { ACTIVE_PROVIDER, classifySurprise, formatPrint, currencyBias, isCommentaryEvent } from '@/lib/econ-calendar'
 import { slugsForCurrency, displayForSlug } from '@/lib/market-map'
 import { sendTelegramMessage } from '@/lib/telegram'
 import { alertAdmins } from '@/lib/admin-alert'
@@ -128,8 +128,11 @@ export async function GET(req: Request) {
   // ── 3. Announce ────────────────────────────────────────────────────────────
   for (const r of newlyReleased) {
     const hasFigure = r.actual != null
+    const isCommentary = isCommentaryEvent(r.event, r.forecast, r.previous)
     const print     = hasFigure
       ? formatPrint(r)
+      : isCommentary
+      ? 'Commentary event — watch the tone rather than a number'
       : r.forecast != null
         ? `figure pending — ${r.forecast}${r.unit ?? ''} was expected`
         : 'figure pending'
@@ -171,7 +174,9 @@ export async function GET(req: Request) {
     // Publish to the community feed. economicEventId is unique, so a release
     // can only ever produce one post no matter how the poller behaves.
     const bias = currencyBias(r.event, r.surpriseDir as any)
-    const biasLine = !hasFigure
+    const biasLine = isCommentary
+      ? `No figure attached to this one — ${r.currency} moves on what is said.`
+      : !hasFigure
       ? `Watch ${r.currency} for the reaction — the number is not in our data feed yet.`
       : bias === 'positive' ? `Reads positive for ${r.currency}`
       : bias === 'negative' ? `Reads negative for ${r.currency}`
@@ -199,7 +204,9 @@ export async function GET(req: Request) {
     // schedule but no actuals, so a release only becomes useful once someone
     // enters the number — and it is worth nothing an hour later. Only fires
     // when the figure is genuinely missing, so a paid feed would silence it.
-    if (!hasFigure) {
+    // Only chase a number that can actually exist. A press conference has no
+    // figure and never will, so nudging for one is noise.
+    if (!hasFigure && !isCommentaryEvent(r.event, r.forecast, r.previous)) {
       await alertAdmins({
         linkUrl: '/admin/calendar',
         subject: `Enter the figure — ${r.currency} ${r.event}`,

@@ -9,6 +9,7 @@ interface Ev {
   scheduledAt: string; actual: number | null; forecast: number | null
   previous: number | null; unit: string | null; surpriseDir: string | null
   needsFigure: boolean; figureAnnouncedAt: string | null
+  isCommentary: boolean; note: string | null
   editedBy: string | null; affected: string[]
 }
 
@@ -16,6 +17,7 @@ export default function CalendarAdminClient() {
   const [events, setEvents] = useState<Ev[]>([])
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState<Record<string, string>>({})
+  const [noteDraft, setNoteDraft] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
 
@@ -27,20 +29,22 @@ export default function CalendarAdminClient() {
   useEffect(() => { load() }, [load])
 
   async function save(ev: Ev) {
-    const raw = (draft[ev.id] ?? '').trim()
-    if (!raw) return
+    const raw  = (draft[ev.id] ?? '').trim()
+    const memo = (noteDraft[ev.id] ?? '').trim()
+    // A commentary event has no figure to enter — its content is the takeaway.
+    if (ev.isCommentary ? !memo : !raw) return
     setBusy(ev.id); setMsg('')
     try {
       const res = await fetch(`/api/admin/econ-events/${ev.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ actual: raw }),
+        body: JSON.stringify(ev.isCommentary ? { note: memo } : { actual: raw, ...(memo ? { note: memo } : {}) }),
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d.error ?? 'Failed')
       setMsg(d.announced
         ? `Published ${d.print} — ${d.notified} follower${d.notified === 1 ? '' : 's'} notified.`
         : 'Saved. The figure was already announced, so no new alert was sent.')
-      setDraft(x => ({ ...x, [ev.id]: '' }))
+      setDraft(x => ({ ...x, [ev.id]: '' })); setNoteDraft(x => ({ ...x, [ev.id]: '' }))
       await load()
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Failed to save.')
@@ -81,6 +85,9 @@ export default function CalendarAdminClient() {
                     <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border ${
                       ev.impact === 'high' ? 'bg-red-500/15 text-red-300 border-red-500/30'
                       : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}`}>{ev.impact}</span>
+                    {ev.isCommentary && (
+                      <span className="text-[10px] font-bold uppercase text-violet-300">commentary</span>
+                    )}
                     {ev.needsFigure && (
                       <span className="text-[10px] font-bold uppercase text-amber-300 flex items-center gap-1">
                         <Clock className="w-3 h-3" /> needs figure
@@ -103,23 +110,40 @@ export default function CalendarAdminClient() {
                   )}
                 </div>
                 <div className="flex gap-2 shrink-0">
-                  <input
-                    value={draft[ev.id] ?? ''}
-                    onChange={e => setDraft(x => ({ ...x, [ev.id]: e.target.value }))}
-                    onKeyDown={e => { if (e.key === 'Enter') save(ev) }}
-                    placeholder={ev.actual != null ? String(ev.actual) : 'actual'}
-                    inputMode="decimal"
-                    className="w-28 bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2 text-sm tabular-nums outline-none focus:border-emerald-500/60"
-                  />
+                  {!ev.isCommentary && (
+                    <input
+                      value={draft[ev.id] ?? ''}
+                      onChange={e => setDraft(x => ({ ...x, [ev.id]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter') save(ev) }}
+                      placeholder={ev.actual != null ? String(ev.actual) : 'actual'}
+                      inputMode="decimal"
+                      className="w-28 bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2 text-sm tabular-nums outline-none focus:border-emerald-500/60"
+                    />
+                  )}
                   <button
                     onClick={() => save(ev)}
-                    disabled={busy === ev.id || !(draft[ev.id] ?? '').trim()}
+                    disabled={busy === ev.id || (ev.isCommentary ? !(noteDraft[ev.id] ?? '').trim() : !(draft[ev.id] ?? '').trim())}
                     className="px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-[#052e21] text-sm font-bold transition"
                   >
                     {busy === ev.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Publish'}
                   </button>
                 </div>
               </div>
+
+              {/* Takeaway. The only content a speech or press conference will
+                  ever have, and useful on numeric releases too — the RBA held
+                  at 4.35% exactly as forecast while the guidance turned
+                  hawkish, which no figure conveys. */}
+              <textarea
+                value={noteDraft[ev.id] ?? ev.note ?? ''}
+                onChange={e => setNoteDraft(x => ({ ...x, [ev.id]: e.target.value }))}
+                rows={2}
+                maxLength={600}
+                placeholder={ev.isCommentary
+                  ? 'What did they actually say? e.g. "Held as expected, but guidance turned hawkish — a hike is explicitly on the table."'
+                  : 'Optional takeaway to publish alongside the figure'}
+                className="mt-3 w-full bg-[#0a0f1e] border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none focus:border-violet-500/50 resize-none"
+              />
             </div>
           ))}
         </div>

@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server'
 import { getAdminSession } from '@/lib/adminAuth'
 import { prisma } from '@/lib/prisma'
 import { displayForSlug } from '@/lib/market-map'
+import { isCommentaryEvent } from '@/lib/econ-calendar'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,7 +37,12 @@ export async function GET() {
       surpriseDir: e.surpriseDir,
       // Past its time and still without a figure — these are the rows an admin
       // needs to act on, so the UI can sort them to the top.
-      needsFigure: e.actual == null && new Date(e.scheduledAt) < now,
+      isCommentary: isCommentaryEvent(e.event, e.forecast, e.previous),
+      note:         e.note ?? null,
+      // Only numeric releases need a figure typed in; a press conference never
+      // will, so it must not sit in the queue looking unfinished.
+      needsFigure: e.actual == null && new Date(e.scheduledAt) < now
+                   && !isCommentaryEvent(e.event, e.forecast, e.previous),
       figureAnnouncedAt: e.figureAnnouncedAt,
       editedBy:    e.editedBy,
       affected:    (e.affectedSlugs as string[] ?? []).map(displayForSlug),

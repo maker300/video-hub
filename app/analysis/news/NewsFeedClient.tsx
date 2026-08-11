@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useSession } from 'next-auth/react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import { TrendingUp, TrendingDown, Minus, Clock, AlertCircle, PencilLine } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Clock, AlertCircle, PencilLine, MessageSquare } from 'lucide-react'
 
 interface Affected { slug: string; display: string }
 interface FeedEvent {
@@ -16,6 +16,8 @@ interface FeedEvent {
   releasedAt:  string | null
   print:       string | null
   awaitingResult: boolean
+  isCommentary: boolean
+  note: string | null
   surpriseDir: 'hotter' | 'cooler' | 'inline' | null
   affected:    Affected[]
 }
@@ -66,6 +68,26 @@ function EventCard({ e, isAdmin }: { e: FeedEvent; isAdmin: boolean }) {
         <div className="mt-3">
           <div className="text-lg font-bold text-white">{e.print}</div>
           <div className="mt-1"><SurpriseBadge dir={e.surpriseDir} /></div>
+          {e.note && (
+            <p className="mt-2 text-sm text-gray-300 whitespace-pre-line border-l-2 border-emerald-500/40 pl-3">{e.note}</p>
+          )}
+        </div>
+      ) : e.isCommentary ? (
+        <div className="mt-3">
+          <div className="flex items-center gap-1.5 text-sm text-violet-300/90">
+            <MessageSquare className="w-3.5 h-3.5" />
+            {new Date(e.scheduledAt) < new Date()
+              ? 'Commentary event — watch the tone, not a number'
+              : 'Commentary event — no figure expected'}
+          </div>
+          {e.note && (
+            <p className="mt-2 text-sm text-gray-300 whitespace-pre-line border-l-2 border-violet-500/40 pl-3">{e.note}</p>
+          )}
+          {isAdmin && (
+            <Link href="/admin/calendar" className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-violet-300 hover:text-violet-200 bg-violet-500/10 border border-violet-500/30 rounded-lg px-2.5 py-1.5 transition">
+              <PencilLine className="w-3.5 h-3.5" /> {e.note ? 'Edit the takeaway' : 'Add the takeaway'}
+            </Link>
+          )}
         </div>
       ) : e.awaitingResult ? (
         <div className="mt-3">

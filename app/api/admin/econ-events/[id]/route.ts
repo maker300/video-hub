@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server'
 import { getAdminSession, getSessionInfo } from '@/lib/adminAuth'
 import { prisma } from '@/lib/prisma'
-import { classifySurprise, formatPrint, currencyBias } from '@/lib/econ-calendar'
+import { classifySurprise, formatPrint, currencyBias, isCommentaryEvent } from '@/lib/econ-calendar'
 import { slugsForCurrency, displayForSlug } from '@/lib/market-map'
 import { sendTelegramMessage } from '@/lib/telegram'
 
@@ -29,6 +29,7 @@ export async function PATCH(req: Request, { params }: Params) {
 
   const body = await req.json().catch(() => ({})) as {
     actual?: unknown; forecast?: unknown; previous?: unknown; unit?: string
+    note?: string
   }
 
   const existing = await db.economicEvent.findUnique({ where: { id } })
@@ -38,6 +39,7 @@ export async function PATCH(req: Request, { params }: Params) {
   const forecast = 'forecast' in body ? num(body.forecast) : existing.forecast
   const previous = 'previous' in body ? num(body.previous) : existing.previous
   const unit     = typeof body.unit === 'string' ? (body.unit.trim() || null) : existing.unit
+  const note     = typeof body.note === 'string' ? (body.note.trim().slice(0, 600) || null) : existing.note
 
   const { surprise, dir } = classifySurprise(actual, forecast)
   const now = new Date()
@@ -45,7 +47,7 @@ export async function PATCH(req: Request, { params }: Params) {
   const updated = await db.economicEvent.update({
     where: { id },
     data: {
-      actual, forecast, previous, unit,
+      actual, forecast, previous, unit, note,
       surprise, surpriseDir: dir,
       releasedAt: actual != null ? (existing.releasedAt ?? now) : null,
       editedBy:   session.email ?? 'admin',
@@ -53,15 +55,19 @@ export async function PATCH(req: Request, { params }: Params) {
     },
   })
 
-  // Announce the figure once, the first time one is supplied.
-  const shouldAnnounce = actual != null && !existing.figureAnnouncedAt
+  // Numeric releases publish when a figure arrives; commentary events publish
+  // when a takeaway is written, since a note is the only content they will ever
+  // have. Either way it announces once.
+  const commentary     = isCommentaryEvent(updated.event, forecast, previous)
+  const hasContent     = commentary ? !!note : actual != null
+  const shouldAnnounce = hasContent && !existing.figureAnnouncedAt
   if (!shouldAnnounce) {
     return NextResponse.json({ ok: true, announced: false, event: { id, actual, forecast, previous, surpriseDir: dir } })
   }
 
   const slugs    = slugsForCurrency(updated.currency)
   const affected = slugs.map(displayForSlug).join(', ')
-  const print    = formatPrint({ actual, forecast, previous, unit })
+  const print    = commentary ? updated.event : formatPrint({ actual, forecast, previous, unit })
   const dirNote  =
     dir === 'hotter' ? ' — above expectations'
     : dir === 'cooler' ? ' — below expectations'
@@ -76,8 +82,9 @@ export async function PATCH(req: Request, { params }: Params) {
   const content = [
     `${updated.currency} — ${updated.event}`,
     ``,
-    `${print}${dirNote}`,
-    biasLine,
+    ...(commentary
+      ? [note ?? '']
+      : [`${print}${dirNote}`, biasLine]),
     ``,
     `Instruments with exposure: ${affected}`,
     ``,

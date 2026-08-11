@@ -633,6 +633,10 @@ model EconomicEvent {
   // Who last edited the figures by hand, for the admin audit trail.
   editedBy      String?
   editedAt      DateTime?
+  // Admin commentary. The tradeable information in a speech, statement or press
+  // conference is prose, not a number — the RBA held at 4.35% exactly as
+  // expected while the guidance turned hawkish, and no figure captures that.
+  note          String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
