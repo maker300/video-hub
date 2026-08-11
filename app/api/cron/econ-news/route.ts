@@ -95,13 +95,20 @@ export async function GET(req: Request) {
       ? await db.economicEvent.update({ where: { eventKey: e.eventKey }, data })
       : await db.economicEvent.create({ data: { eventKey: e.eventKey, ...data } })
 
-    // Announce only on the null -> value transition, once, and only if the
-    // print is recent. `existing?.actual == null` covers both a brand-new row
-    // that already carries a print and one we watched resolve.
-    const justResolved = hasPrint && existing?.actual == null && !existing?.notifiedAt
+    // Announce when the scheduled time passes, not when a figure appears.
+    //
+    // The original trigger waited for `actual` to go from null to a value. The
+    // current provider never publishes actuals at all — 74 rows, zero carrying
+    // the key, including a rate decision four hours past — so that trigger could
+    // never fire and the agent stayed silent through every release. Firing on
+    // the clock still gives users the thing that matters: this just landed, here
+    // is what it touches, here is what was expected. If a provider with actuals
+    // is wired in later, the figure is included automatically.
+    const isDue        = e.scheduledAt <= now
+    const notAnnounced = !existing?.notifiedAt
     const isRecent     = now.getTime() - e.scheduledAt.getTime() < RELEASE_GRACE_MS
 
-    if (justResolved && isRecent) {
+    if (isDue && notAnnounced && isRecent) {
       newlyReleased.push({
         id: row.id, event: e.event, currency: e.currency, impact: e.impact,
         actual: e.actual, forecast: e.forecast, previous: e.previous,
@@ -112,8 +119,13 @@ export async function GET(req: Request) {
 
   // ── 3. Announce ────────────────────────────────────────────────────────────
   for (const r of newlyReleased) {
-    const print    = formatPrint(r)
-    const affected = r.affectedSlugs.map(displayForSlug).join(', ')
+    const hasFigure = r.actual != null
+    const print     = hasFigure
+      ? formatPrint(r)
+      : r.forecast != null
+        ? `figure pending — ${r.forecast}${r.unit ?? ''} was expected`
+        : 'figure pending'
+    const affected  = r.affectedSlugs.map(displayForSlug).join(', ')
     const dirNote  =
       r.surpriseDir === 'hotter' ? ' — above expectations'
       : r.surpriseDir === 'cooler' ? ' — below expectations'
@@ -151,8 +163,9 @@ export async function GET(req: Request) {
     // Publish to the community feed. economicEventId is unique, so a release
     // can only ever produce one post no matter how the poller behaves.
     const bias = currencyBias(r.event, r.surpriseDir as any)
-    const biasLine =
-      bias === 'positive' ? `Reads positive for ${r.currency}`
+    const biasLine = !hasFigure
+      ? `Watch ${r.currency} for the reaction — the number is not in our data feed yet.`
+      : bias === 'positive' ? `Reads positive for ${r.currency}`
       : bias === 'negative' ? `Reads negative for ${r.currency}`
       : `Neutral for ${r.currency} — in line with expectations`
 
@@ -183,6 +196,12 @@ export async function GET(req: Request) {
   // Hard-delete posts past their 24 hours. Runs every tick: the query is
   // indexed on expiresAt and the row count is small, so there is no reason to
   // defer it to a daily job. Comments and likes cascade.
+  // Calendar entries live 24 hours past their scheduled time, matching how long
+  // the page shows them.
+  await db.economicEvent.deleteMany({
+    where: { scheduledAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+  }).catch((e: unknown) => console.error('[econ-news] event purge failed:', e))
+
   await db.post.deleteMany({ where: { expiresAt: { lt: new Date() } } })
     .catch((e: unknown) => console.error('[econ-news] post purge failed:', e))
 

@@ -14,6 +14,7 @@ interface FeedEvent {
   scheduledAt: string
   releasedAt:  string | null
   print:       string | null
+  awaitingResult: boolean
   surpriseDir: 'hotter' | 'cooler' | 'inline' | null
   affected:    Affected[]
 }
@@ -64,6 +65,10 @@ function EventCard({ e }: { e: FeedEvent }) {
         <div className="mt-3">
           <div className="text-lg font-bold text-white">{e.print}</div>
           <div className="mt-1"><SurpriseBadge dir={e.surpriseDir} /></div>
+        </div>
+      ) : e.awaitingResult ? (
+        <div className="mt-3 flex items-center gap-1.5 text-sm text-amber-300/80">
+          <Clock className="w-3.5 h-3.5" /> Released — figure not published to our data source
         </div>
       ) : (
         <div className="mt-3 flex items-center gap-1.5 text-sm text-gray-500">
@@ -162,7 +167,7 @@ export default function NewsFeedClient() {
 
             {data.released.length > 0 && (
               <section>
-                <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500 mb-3">Released</h2>
+                <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500 mb-3">Last 24 hours</h2>
                 <div className="space-y-3">
                   {data.released.map(e => <EventCard key={e.id} e={e} />)}
                 </div>
