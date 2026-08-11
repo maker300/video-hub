@@ -689,6 +689,11 @@ model Post {
   // Soft delete so an owner/admin removal keeps the audit trail and the
   // comment thread does not vanish mid-read for someone else.
   deletedAt  DateTime?
+  // Agent posts are generated, so they will sometimes be wrong or want a human
+  // edit. Shown as "edited" in the feed rather than changed silently — readers
+  // may have already acted on the original.
+  editedAt   DateTime?
+  editedBy   String?
 
   user     User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
   likes    PostLike[]

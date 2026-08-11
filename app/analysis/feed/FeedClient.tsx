@@ -2,12 +2,13 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Navbar from '@/components/Navbar'
-import { Heart, MessageCircle, Trash2, Send, Loader2, Bot, User as UserIcon } from 'lucide-react'
+import { Heart, MessageCircle, Trash2, Send, Loader2, Bot, User as UserIcon, Pencil, X, Check } from 'lucide-react'
 
 interface Author { id?: string; name: string; image?: string | null; role?: string }
 interface Post {
   id: string; authorType: 'user' | 'agent'; content: string; createdAt: string
-  author: Author; likeCount: number; likedByMe: boolean; commentCount: number; canDelete: boolean
+  author: Author; likeCount: number; likedByMe: boolean; commentCount: number
+  canDelete: boolean; canEdit: boolean; editedAt: string | null
 }
 interface Comment {
   id: string; content: string; createdAt: string; author: Author; canDelete: boolean
@@ -31,6 +32,9 @@ export default function FeedClient() {
   const [comments, setComments] = useState<Record<string, Comment[]>>({})
   const [cDraft,   setCDraft]   = useState('')
   const [cBusy,    setCBusy]    = useState(false)
+  const [editId,   setEditId]   = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +105,24 @@ export default function FeedClient() {
         setPosts(cur => cur.map(x => x.id === postId ? { ...x, commentCount: x.commentCount + 1 } : x))
       }
     } finally { setCBusy(false) }
+  }
+
+  async function saveEdit(id: string) {
+    const content = editText.trim()
+    if (!content) return
+    setEditBusy(true)
+    try {
+      const res = await fetch(`/api/posts/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error ?? 'Could not save.')
+      setPosts(cur => cur.map(p => p.id === id ? { ...p, content: d.content, editedAt: d.editedAt } : p))
+      setEditId(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the edit.')
+    } finally { setEditBusy(false) }
   }
 
   async function deletePost(id: string) {
@@ -182,9 +204,39 @@ export default function FeedClient() {
                         <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">Admin</span>
                       )}
                       <span className="text-[11px] text-gray-600">{timeAgo(p.createdAt)}</span>
+                      {p.editedAt && <span className="text-[11px] text-gray-600 italic">· edited</span>}
                     </div>
-                    {/* Plain text — never a markup sink. */}
-                    <p className="text-sm text-gray-200 mt-2 whitespace-pre-line break-words">{p.content}</p>
+                    {editId === p.id ? (
+                      <div className="mt-2">
+                        <textarea
+                          value={editText}
+                          onChange={e => setEditText(e.target.value)}
+                          rows={8}
+                          maxLength={2000}
+                          className="w-full bg-[#0a0f1e] border border-white/15 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-emerald-500/50 resize-y"
+                        />
+                        <div className="flex items-center gap-2 mt-2">
+                          <button
+                            onClick={() => saveEdit(p.id)}
+                            disabled={editBusy || !editText.trim()}
+                            className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-[#052e21] text-xs font-bold px-3 py-1.5 rounded-lg transition"
+                          >
+                            {editBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditId(null)}
+                            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white px-2 py-1.5 transition"
+                          >
+                            <X className="w-3.5 h-3.5" /> Cancel
+                          </button>
+                          <span className="text-[11px] text-gray-600 ml-auto">{editText.length}/2000</span>
+                        </div>
+                      </div>
+                    ) : (
+                      /* Plain text — never a markup sink. */
+                      <p className="text-sm text-gray-200 mt-2 whitespace-pre-line break-words">{p.content}</p>
+                    )}
 
                     <div className="flex items-center gap-4 mt-3">
                       <button
@@ -201,8 +253,17 @@ export default function FeedClient() {
                         <MessageCircle className="w-4 h-4" />
                         {p.commentCount}
                       </button>
+                      {p.canEdit && editId !== p.id && (
+                        <button
+                          onClick={() => { setEditId(p.id); setEditText(p.content) }}
+                          className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-emerald-400 transition ml-auto"
+                          title={isAgent ? 'Edit this agent post' : 'Edit your post'}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       {p.canDelete && (
-                        <button onClick={() => deletePost(p.id)} className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-red-400 transition ml-auto">
+                        <button onClick={() => deletePost(p.id)} className={`flex items-center gap-1.5 text-xs text-gray-600 hover:text-red-400 transition ${p.canEdit ? '' : 'ml-auto'}`}>
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       )}

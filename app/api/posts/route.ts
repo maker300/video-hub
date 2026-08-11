@@ -46,6 +46,10 @@ export async function GET(req: Request) {
       likedByMe:  p.likes.some((l: any) => l.userId === userId),
       commentCount: p._count.comments,
       canDelete:  p.userId === userId || (session!.user as any)?.role === 'admin',
+      // Admins can edit anything including agent output; users only their own.
+      canEdit:    (session!.user as any)?.role === 'admin'
+                  || (p.userId === userId && p.authorType === 'user'),
+      editedAt:   p.editedAt,
     })),
     nextCursor: hasMore ? page[page.length - 1].id : null,
   })
