@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useSession } from 'next-auth/react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
-import { TrendingUp, TrendingDown, Minus, Clock, AlertCircle } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus, Clock, AlertCircle, PencilLine } from 'lucide-react'
 
 interface Affected { slug: string; display: string }
 interface FeedEvent {
@@ -42,7 +43,7 @@ function SurpriseBadge({ dir }: { dir: FeedEvent['surpriseDir'] }) {
   )
 }
 
-function EventCard({ e }: { e: FeedEvent }) {
+function EventCard({ e, isAdmin }: { e: FeedEvent; isAdmin: boolean }) {
   const when = new Date(e.releasedAt ?? e.scheduledAt)
   return (
     <div className="bg-[#0d1b2a] border border-white/10 rounded-xl p-4 sm:p-5">
@@ -67,8 +68,20 @@ function EventCard({ e }: { e: FeedEvent }) {
           <div className="mt-1"><SurpriseBadge dir={e.surpriseDir} /></div>
         </div>
       ) : e.awaitingResult ? (
-        <div className="mt-3 flex items-center gap-1.5 text-sm text-amber-300/80">
-          <Clock className="w-3.5 h-3.5" /> Released — figure not published to our data source
+        <div className="mt-3">
+          <div className="flex items-center gap-1.5 text-sm text-amber-300/80">
+            <Clock className="w-3.5 h-3.5" /> Released — figure not published to our data source
+          </div>
+          {/* The figure is entered by hand until a paid feed is wired in, so an
+              admin reading this page needs the entry screen one tap away. */}
+          {isAdmin && (
+            <Link
+              href="/admin/calendar"
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1.5 transition"
+            >
+              <PencilLine className="w-3.5 h-3.5" /> Add the figure
+            </Link>
+          )}
         </div>
       ) : (
         <div className="mt-3 flex items-center gap-1.5 text-sm text-gray-500">
@@ -99,6 +112,8 @@ function EventCard({ e }: { e: FeedEvent }) {
 }
 
 export default function NewsFeedClient() {
+  const { data: session } = useSession()
+  const isAdmin = (session?.user as { role?: string } | undefined)?.role === 'admin'
   const [data,    setData]    = useState<{ released: FeedEvent[]; upcoming: FeedEvent[] } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
@@ -134,6 +149,14 @@ export default function NewsFeedClient() {
             Macro releases as they print, with the instruments each one has exposure to.
             Exposure is not a trade call — open a pair for the directional read.
           </p>
+          {isAdmin && (
+            <Link
+              href="/admin/calendar"
+              className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 hover:text-emerald-200 bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-3 py-1.5 transition"
+            >
+              <PencilLine className="w-3.5 h-3.5" /> Manage figures
+            </Link>
+          )}
         </header>
 
         {loading && <div className="text-gray-500 text-sm">Loading releases…</div>}
@@ -160,7 +183,7 @@ export default function NewsFeedClient() {
               <section className="mb-10">
                 <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500 mb-3">Scheduled</h2>
                 <div className="space-y-3">
-                  {data.upcoming.map(e => <EventCard key={e.id} e={e} />)}
+                  {data.upcoming.map(e => <EventCard key={e.id} e={e} isAdmin={isAdmin} />)}
                 </div>
               </section>
             )}
@@ -169,7 +192,7 @@ export default function NewsFeedClient() {
               <section>
                 <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500 mb-3">Last 24 hours</h2>
                 <div className="space-y-3">
-                  {data.released.map(e => <EventCard key={e.id} e={e} />)}
+                  {data.released.map(e => <EventCard key={e.id} e={e} isAdmin={isAdmin} />)}
                 </div>
               </section>
             )}

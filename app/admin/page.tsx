@@ -11,8 +11,7 @@ import {
   TrendingUp, BookOpen, Activity, UserCheck, EyeOff, Eye, Mail, Send,
   Lock, Unlock, Calendar, RotateCcw, LineChart, MessageSquare,
   ChevronDown, ChevronUp, Bot, Clock, Flag, CircleCheck, Inbox,
-  Video, Sparkles, ExternalLink, DatabaseZap, TriangleAlert, Bitcoin, ArrowUpFromLine,
-} from 'lucide-react'
+  Video, Sparkles, ExternalLink, DatabaseZap, TriangleAlert, Bitcoin, ArrowUpFromLine, CalendarClock } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -320,6 +319,19 @@ function OverviewTab({ onTabChange }: { onTabChange: (tab: Tab) => void }) {
       </div>
 
       {/* Analysis access summary */}
+      {/* Calendar figures live on their own screen — the release feed publishes a
+          schedule but no actuals, so someone has to type them in. */}
+      <div className="mb-6">
+        <Link
+          href="/admin/calendar"
+          className="inline-flex items-center gap-2 bg-[#0d1b2a] hover:bg-[#122438] border border-white/10 hover:border-emerald-500/40 rounded-xl px-4 py-3 transition"
+        >
+          <CalendarClock className="w-4 h-4 text-emerald-400" />
+          <span className="text-sm font-semibold text-white">Calendar figures</span>
+          <span className="text-xs text-gray-500">Enter actuals after a release</span>
+        </Link>
+      </div>
+
       {analytics?.analysisAccess && (
         <div className="bg-[#131722] border border-white/10 rounded-2xl p-5">
           <div className="flex items-center gap-2 mb-4">
