@@ -219,6 +219,79 @@ export const forexFactoryProvider: CalendarProvider = {
   },
 }
 
+// ── Financial Modeling Prep ───────────────────────────────────────────────────
+//
+// Written ahead of having a key so switching is one line if FMP's free tier
+// carries actuals. Whether it does could not be determined from outside: the
+// calendar and every other endpoint return an identical 401 without a key, the
+// same dead end Finnhub presented. Set FMP_API_KEY and point ACTIVE_PROVIDER
+// here to find out.
+//
+// Response shape (v3): country is a 2-letter code, date is "YYYY-MM-DD HH:mm:ss"
+// in UTC, estimate is the forecast, and values are numbers rather than the
+// display strings ForexFactory returns.
+
+interface FMPRow {
+  event?:    string
+  date?:     string
+  country?:  string
+  actual?:   number | null
+  previous?: number | null
+  estimate?: number | null
+  impact?:   string
+}
+
+export const fmpProvider: CalendarProvider = {
+  name: 'fmp',
+
+  async fetchWindow(from: Date, to: Date): Promise<CalendarEvent[]> {
+    const key = process.env.FMP_API_KEY
+    if (!key) throw new Error('FMP_API_KEY is not set')
+
+    const url = `https://financialmodelingprep.com/api/v3/economic_calendar`
+      + `?from=${ymd(from)}&to=${ymd(to)}&apikey=${key}`
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) })
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`fmp calendar HTTP ${res.status}: ${body.slice(0, 200)}`)
+    }
+
+    const json = await res.json()
+    if (!Array.isArray(json)) {
+      // FMP returns an object with "Error Message" rather than a non-2xx on
+      // some plan errors, so a shape check is not optional here.
+      throw new Error(`fmp: unexpected payload — ${JSON.stringify(json).slice(0, 160)}`)
+    }
+
+    return (json as FMPRow[]).flatMap((r): CalendarEvent[] => {
+      const country  = (r.country ?? '').toUpperCase()
+      const currency = COUNTRY_TO_CURRENCY[country]
+      const impact   = (r.impact ?? '').toLowerCase()
+
+      if (!currency || !TRACKED_IMPACTS.has(impact)) return []
+      if (!r.event || !r.date) return []
+
+      // No zone marker; FMP publishes in UTC.
+      const scheduledAt = new Date(r.date.replace(' ', 'T') + 'Z')
+      if (Number.isNaN(scheduledAt.getTime())) return []
+
+      return [{
+        eventKey:    `fmp|${country}|${r.event}|${scheduledAt.toISOString()}`,
+        country,
+        currency,
+        event:       r.event,
+        impact:      impact as 'high' | 'medium',
+        scheduledAt,
+        actual:      r.actual   ?? null,
+        forecast:    r.estimate ?? null,
+        previous:    r.previous ?? null,
+        unit:        null,
+      }]
+    })
+  },
+}
+
 export const ACTIVE_PROVIDER: CalendarProvider = forexFactoryProvider
 
 // ── Surprise classification ───────────────────────────────────────────────────
