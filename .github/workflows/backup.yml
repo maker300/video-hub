@@ -33,7 +33,9 @@ jobs:
         # Ubuntu 24.04's default postgresql-client is v16 but Neon runs
         # v17.11 — pg_dump refuses to dump from a newer server than itself.
         # PGDG apt repo carries postgresql-client-17, which handles both
-        # our current Neon (17.x) and Supabase (17.6) sides.
+        # our current Neon (17.x) and Supabase (17.6) sides. Prepend the
+        # v17 bin dir to PATH (via GITHUB_PATH) because Ubuntu's own
+        # /usr/bin/pg_dump wins over update-alternatives.
         run: |
           sudo install -d /usr/share/postgresql-common/pgdg
           sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
@@ -41,6 +43,11 @@ jobs:
           sudo sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Verify PostgreSQL client version
+        run: |
+          which pg_dump
           pg_dump --version
           psql --version
 
