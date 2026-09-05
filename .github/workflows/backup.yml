@@ -68,9 +68,20 @@ jobs:
           #                           Neon's; skipping ownership avoids
           #                           permission errors on restore.
           # --format=plain          → streamable through psql on stdin.
+          # --exclude-extension=pg_session_jwt   → Neon-only extension for
+          #                                       their auth layer; Supabase
+          #                                       doesn't have it and CREATE
+          #                                       EXTENSION would abort the
+          #                                       transaction. Anthropic-side
+          #                                       features on our app don't
+          #                                       rely on this extension.
           pg_dump \
             --no-owner \
             --no-privileges \
+            --no-publications \
+            --no-subscriptions \
+            --exclude-extension=pg_session_jwt \
+            --exclude-extension=neon \
             --clean \
             --if-exists \
             --format=plain \
