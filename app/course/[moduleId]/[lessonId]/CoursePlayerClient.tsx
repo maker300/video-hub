@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   ChevronLeft, ChevronRight, CheckCircle2, Menu, X,
-  BookOpen, MessageSquare, HelpCircle, Home, TrendingUp, Clock
+  BookOpen, MessageSquare, HelpCircle, Home, Clock
 } from 'lucide-react'
 import type { Lesson, Module } from '@/types'
 import VideoPlayer from '@/components/VideoPlayer'
@@ -107,22 +107,28 @@ export default function CoursePlayerClient({
   return (
     <div className="h-[100dvh] bg-[#080e1a] text-white flex flex-col overflow-hidden">
       {/* Top bar */}
-      <header className="flex items-center gap-3 px-4 h-14 border-b border-white/10 bg-[#0a0f1a] shrink-0">
-        <Link href="/" className="flex items-center gap-1.5 text-gray-400 hover:text-white transition-colors">
-          <TrendingUp className="w-5 h-5 text-emerald-400" />
-          <span className="hidden sm:block text-sm font-bold text-white">
-            Forex<span className="text-emerald-400">Mastery</span>
-          </span>
+      <header className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 h-14 border-b border-white/10 bg-[#0a0f1a] shrink-0">
+        {/*
+          Home button. On mobile the header used to show two links back
+          home — the logo (icon-only, 20px) and a naked 12px Home icon in
+          the breadcrumb — neither of which was a comfortable tap target
+          and the second was a duplicate of the first.
+          Now: one Home button, meets 44px on mobile with a proper icon +
+          text label. The breadcrumb below no longer duplicates it.
+        */}
+        <Link
+          href="/"
+          aria-label="Home"
+          className="flex items-center gap-1.5 min-h-11 px-2 -mx-2 rounded-lg text-gray-300 hover:text-white hover:bg-white/5 transition-colors shrink-0"
+        >
+          <Home className="w-4 h-4 text-emerald-400" />
+          <span className="text-sm font-bold text-white">Home</span>
         </Link>
 
-        <div className="w-px h-5 bg-white/10 mx-1" />
+        <div className="w-px h-5 bg-white/10 mx-0.5 sm:mx-1" />
 
-        {/* Breadcrumb */}
+        {/* Breadcrumb — no more Home icon here; the button above owns that */}
         <div className="flex items-center gap-1.5 text-xs text-gray-500 flex-1 min-w-0">
-          <Link href="/" className="hover:text-gray-300 transition-colors flex items-center gap-1">
-            <Home className="w-3 h-3" />
-          </Link>
-          <ChevronRight className="w-3 h-3 shrink-0" />
           <span className="truncate hidden sm:block text-gray-400">{module.title}</span>
           <ChevronRight className="w-3 h-3 shrink-0 hidden sm:block" />
           <span className="truncate text-gray-300">{lesson.title}</span>

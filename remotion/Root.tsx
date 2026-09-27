@@ -1,4 +1,9 @@
 import { Composition } from 'remotion'
+import { SceneProof } from './SceneProof'
+import { LessonReal, lessonCues } from './LessonReal'
+import { Filmstrip } from './Filmstrip'
+import { TransStrip } from './TransStrip'
+import { LessonExport } from './LessonExport'
 import { LessonVideo } from './compositions/LessonVideo'
 import { LessonVideoFromManifest, type LessonManifest, type LessonVideoFromManifestProps } from './compositions/LessonVideoFromManifest'
 import { buildNarrationSegments, estimateFrames } from '../lib/lessonParser'
@@ -161,5 +166,21 @@ export const RemotionRoot: React.FC = () => (
     <Composition id="TradingSessionsMap"     component={TradingSessionsMap}     {...STILL} defaultProps={{}} />
     <Composition id="TraderMindset"          component={TraderMindset}          {...STILL} defaultProps={{}} />
     <Composition id="StopLossVisual"         component={StopLossVisual}         {...STILL} defaultProps={{}} />
-  </>
+        <Composition id="SceneProof" component={SceneProof as any} durationInFrames={1} fps={30} width={1800} height={1420} defaultProps={{ lessonIdx: 0, page: 0 } as any} />
+      <Composition id="LessonReal" component={LessonReal as any} fps={30} width={1280} height={720}
+        durationInFrames={Math.max(lessonCues(0).total, 60)} defaultProps={{ lessonIdx: 0 } as any}
+        calculateMetadata={({ props }: any) => ({ durationInFrames: Math.max(lessonCues(props.lessonIdx ?? 0).total, 60) })} />
+      <Composition id="Filmstrip" component={Filmstrip as any} durationInFrames={1} fps={30}
+        width={1340} height={1500} defaultProps={{ lessonIdx: 0, from: 0, count: 8 } as any} />
+      <Composition id="TransStrip" component={TransStrip as any} durationInFrames={1} fps={30}
+        width={1320} height={180} defaultProps={{ lessonIdx: 0, cueIdx: 3 } as any} />
+      <Composition id="LessonExport" component={LessonExport as any} fps={30}
+        width={1280} height={720} durationInFrames={900}
+        defaultProps={{ lessonTitle: '', moduleTitle: '', moduleNumber: 1, lessonNumber: 1, cuePoints: [] } as any}
+        calculateMetadata={({ props }: any) => {
+          const cues = props.cuePoints ?? []
+          const last = cues[cues.length - 1]
+          return { durationInFrames: Math.max(last?.endFrame ?? 900, 60) }
+        }} />
+</>
 )

@@ -1,8 +1,9 @@
 // Admin: list calendar events for manual figure entry.
 //
-// The free calendar feed publishes a schedule but no actuals, so until a paid
-// source is wired in an admin types the figure after each release. Doing so
-// runs the same pipeline an automatic figure would.
+// The Claude auto-fetch loop (cron/econ-news) now files most actuals via web
+// search, so this admin screen is a correction / fallback path — kept
+// admin-only so a team member cannot broadcast a wrong figure to every
+// USD-pair subscriber.
 import { NextResponse } from 'next/server'
 import { getAdminSession } from '@/lib/adminAuth'
 import { prisma } from '@/lib/prisma'

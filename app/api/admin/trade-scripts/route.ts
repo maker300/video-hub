@@ -36,6 +36,14 @@ export async function POST(req: Request) {
   const { isAdmin } = await getAdminSession()
   if (!isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
+  // Admin kill switch — perfFlags.tradeScript. When off, refuse the request
+  // instead of burning Anthropic credits.
+  const { getPerfFlags } = await import('@/lib/perf-flags')
+  const flags = await getPerfFlags()
+  if (!flags.tradeScript) {
+    return NextResponse.json({ error: 'Trade script writer is disabled in Performance Controls (Anthropic credit gate).' }, { status: 503 })
+  }
+
   const { predictionIds } = await req.json() as { predictionIds: string[] }
   if (!predictionIds?.length) {
     return NextResponse.json({ error: 'No predictions selected' }, { status: 400 })

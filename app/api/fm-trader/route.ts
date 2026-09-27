@@ -927,7 +927,18 @@ Respond with ONLY this JSON:
     // ── Resolve SL label → structural price → apply ATR buffer ────────────────
     const defaultSL  = slCandidates[0]?.price ?? (isBuy ? d.price * (1 - ewp * 3) : d.price * (1 + ewp * 3))
     const rawSLPrice = resolveLabel(raw.slChoice ?? 'auto', slCandidates, defaultSL)
-    const stopLoss   = round(isBuy ? rawSLPrice - atrBuf : rawSLPrice + atrBuf, dec)
+    const rawStop    = round(isBuy ? rawSLPrice - atrBuf : rawSLPrice + atrBuf, dec)
+
+    // Clamp: the SL must sit outside the entry zone. This mirrors the
+    // structural path (line 2373 / 2389). Without it, Claude occasionally
+    // picks an SL candidate that sits between entryLow and entryHigh
+    // (seen live on eur-gbp SELL) — the resulting trade is invalidated
+    // at a price the user would still be willing to enter at.
+    const minStopGap = atrBuf * 0.25 + (rawSLPrice * 0.00005)
+    const stopLoss   = isBuy
+      ? Math.min(rawStop, round(entryLow  - minStopGap, dec))
+      : Math.max(rawStop, round(entryHigh + minStopGap, dec))
+
     const risk       = isBuy ? entryHigh - stopLoss : stopLoss - entryLow
 
     if (risk <= 0) {
@@ -2250,7 +2261,12 @@ function extractSwingExtremes(
 //   intraday: 1H pattern candle, 1H+Wilder blended ATR, tight SL (~0.2 ATR), TPs 1.5/3/5 R
 //   swing:    4H pattern candle, Daily ATR, wide SL (~0.5 ATR daily), TPs 2.5/4.5/8 R,
 //             structural anchors from Daily AND Weekly swing highs/lows
-function recalcLevels(
+// Exported because the scheduled scanner needs it too. `runAnalysis` returns
+// zeroed levels by design (see its return block) and the POST handler fills
+// them in — so any other caller of runAnalysis MUST call this as well or it
+// will persist zeros. That is exactly what happened to SignalAlert rows
+// before this was exported.
+export function recalcLevels(
   body:       FMTraderRequest,
   decision:   'BUY' | 'SELL',
   setupGrade: 'A' | 'B' | 'C' = 'B',
@@ -3775,6 +3791,20 @@ export async function POST(req: Request) {
           fSL = round(isBuy ? refEntry - clampedDist : refEntry + clampedDist, dec)
         }
 
+        // Hard clamp: SL MUST sit outside the entry zone. The distance-based
+        // clamp above is measured from the FAR edge of the zone, so on tight-
+        // width forex ranges (EUR/USD ~15 pips) with normal FX ATR (~50 pips)
+        // the fSL can compute to a value INSIDE the near edge — the trade is
+        // then stopped out at a price the user would still be willing to
+        // enter at. Force fSL strictly past the near edge; a small ATR-based
+        // buffer keeps the stop from sitting on the boundary where a normal
+        // spread widening trips it instantly.
+        const nearEdge  = isBuy ? fEntryLow : fEntryHigh
+        const zoneEscape = atrUnit * 0.05    // ~2-3 pips on FX, meaningful on gold/BTC
+        fSL = isBuy
+          ? Math.min(fSL, round(nearEdge - zoneEscape, dec))
+          : Math.max(fSL, round(nearEdge + zoneEscape, dec))
+
         // TPs — bounded as R-multiples of the realised SL distance, with
         // pair-specific multipliers applied (e.g., 0.85 on a pair whose TP1
         // historically hits <35% of the time → pulls TP1 closer).
@@ -3804,13 +3834,49 @@ export async function POST(req: Request) {
       merged.tp1 = fTP1; merged.tp2 = fTP2; merged.tp3 = fTP3
       merged.rrRatio   = calcRR(fEntryLow, fEntryHigh, fSL, fTP2)
 
+      // ── Canonical invariant gate ─────────────────────────────────────
+      // Runs on the final merged levels (post rule-engine, post Claude
+      // clamps). Repairs mild rounding wobbles in place; if the layout is
+      // structurally broken past repair, converts to NO TRADE so nothing
+      // gets persisted or streamed with, e.g., entry == TP1. See
+      // lib/level-invariants.ts for the rules and rationale.
+      if (merged.decision === 'BUY' || merged.decision === 'SELL') {
+        const { enforceLevelInvariants } = await import('@/lib/level-invariants')
+        const check = enforceLevelInvariants(
+          { entryLow: fEntryLow, entryHigh: fEntryHigh, stopLoss: fSL, tp1: fTP1, tp2: fTP2, tp3: fTP3 },
+          { decision: merged.decision, price: body.price, dec, atr: atr.atrProxy },
+        )
+        if (!check.ok) {
+          console.error(`[fm-trader:invariants] REJECTED ${body.slug} ${merged.decision} → ${check.reason}`, check.failed)
+          merged.decision   = 'NO TRADE'
+          merged.entryZone  = [0, 0]
+          merged.stopLoss   = 0
+          merged.tp1 = 0; merged.tp2 = 0; merged.tp3 = 0
+          merged.rrRatio    = '—'
+          merged.traderNote = 'Setup was rejected by post-generation invariant check — the produced entry / SL / TP layout would have created an unplayable trade. Re-run FM Trader to try again.'
+        } else if (check.repaired.length > 0) {
+          console.warn(`[fm-trader:invariants] REPAIRED ${body.slug} ${merged.decision}:`, check.repaired)
+          const rl = check.levels
+          fEntryLow = rl.entryLow; fEntryHigh = rl.entryHigh
+          fSL  = rl.stopLoss
+          fTP1 = rl.tp1; fTP2 = rl.tp2; fTP3 = rl.tp3
+          merged.entryZone = [rl.entryLow, rl.entryHigh]
+          merged.stopLoss  = rl.stopLoss
+          merged.tp1 = rl.tp1; merged.tp2 = rl.tp2; merged.tp3 = rl.tp3
+          merged.rrRatio   = calcRR(rl.entryLow, rl.entryHigh, rl.stopLoss, rl.tp2)
+        }
+      }
+
       // Cache (BUY/SELL only)
       if (merged.decision !== 'NO TRADE' && !body.scanOnly) {
         cache.set(`${body.slug}:${utcHour}:${body.tradeHorizon ?? "intraday"}`, { data: merged, ts: nowTs, expiresAt: hourEnd.getTime() })
       }
 
-      // Persist prediction row (awaited — Vercel kills the function on response close)
-      if (decision !== 'NO TRADE' && dbUser && !body.scanOnly) {
+      // Persist prediction row (awaited — Vercel kills the function on response close).
+      // Guard on merged.decision (not the outer `decision`) so a setup that
+      // gets converted to NO TRADE by the invariant gate above is not
+      // written to the DB with its old BUY/SELL label.
+      if (merged.decision !== 'NO TRADE' && dbUser && !body.scanOnly) {
         try {
           const alreadySaved = await prisma.fMPrediction.findFirst({
             where: { userId: dbUser.id, slug: body.slug, tradeHorizon: body.tradeHorizon ?? 'intraday', generatedAt: { gte: hourStart } },

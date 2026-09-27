@@ -29,6 +29,32 @@ export interface PerfFlags {
   marketLivePoll:     PollMode
   // FM Trader streaming response: when off, return single buffered JSON
   fmTraderStreaming:  boolean
+
+  // ── Anthropic-credit gates ─────────────────────────────────────────────
+  // Each of the six Claude callers has its own on/off toggle so a specific
+  // feature can be silenced without knocking out the whole platform when the
+  // Anthropic credit balance is tight. When off, the caller returns null /
+  // skips gracefully — the surrounding feature keeps working with whatever
+  // fallback it already has (empty text, no auto-fetch, etc.).
+  //
+  // FM Trader's Claude narrative reuses the existing `claudeNarrative` flag
+  // above — it's the biggest and most user-visible caller.
+
+  // Daily recap post writer (Sonnet 4.6). Off: cron completes without
+  // publishing the recap post.
+  dailyRecap:         boolean
+  // FM News calendar auto-fetch (Haiku 4.5 + web search). Off: releases
+  // still get announced without figures; a human types the actual in.
+  newsAutoFetch:      boolean
+  // Trade script writer for Video Hub (Haiku 4.5). Off: admin POST returns
+  // an error until re-enabled.
+  tradeScript:        boolean
+  // Lesson manifest generator (Haiku 4.5). Off: admin regeneration is
+  // blocked; existing manifests continue to serve.
+  lessonManifest:     boolean
+  // Whiteboard scene planner for lesson images (Haiku 4.5). Off: whiteboard
+  // image generation falls back to Imagen only, no scene structuring.
+  whiteboardScene:    boolean
 }
 
 export const DEFAULT_FLAGS: PerfFlags = {
@@ -40,6 +66,11 @@ export const DEFAULT_FLAGS: PerfFlags = {
   liveTradePoll:      'normal',
   marketLivePoll:     'normal',
   fmTraderStreaming:  true,
+  dailyRecap:         true,
+  newsAutoFetch:      true,
+  tradeScript:        true,
+  lessonManifest:     true,
+  whiteboardScene:    true,
 }
 
 const KEY = 'perf_flags'

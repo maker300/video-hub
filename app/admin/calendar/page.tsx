@@ -9,6 +9,6 @@ export const metadata = { title: 'Calendar Figures — Admin' }
 export default async function CalendarAdminPage() {
   const session = await getServerSession(authOptions)
   if (!session?.user?.email) redirect('/auth/signin?callbackUrl=/admin/calendar')
-  if ((session.user as { role?: string }).role !== 'admin') redirect('/analysis')
+  if ((session.user as { role?: string }).role !== 'admin') redirect('/analysis/news')
   return <CalendarAdminClient />
 }

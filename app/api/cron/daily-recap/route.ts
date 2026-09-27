@@ -37,6 +37,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, skipped: 'recap already posted today', postId: existing.id })
   }
 
+  // Admin kill switch — perfFlags.dailyRecap. When off, the cron completes
+  // without calling Claude so no credits are consumed. No post is created.
+  const { getPerfFlags } = await import('@/lib/perf-flags')
+  const flags = await getPerfFlags()
+  if (!flags.dailyRecap) {
+    return NextResponse.json({ ok: true, skipped: 'dailyRecap disabled in admin performance controls' })
+  }
+
   const data = await gatherRecap(now)
   const script = await writeRecap(data)
 

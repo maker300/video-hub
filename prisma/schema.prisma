@@ -26,6 +26,68 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   lastSeenAt      DateTime?
+  // Set when the dormant-account warning email goes out, so the cron never
+  // emails the same person twice and can tell "warned, grace period running"
+  // apart from "not yet warned". Cleared on sign-in along with the clock.
+  dormantWarnedAt DateTime?
+
+  // ── Course access (paid) ────────────────────────────────────────────────
+  // The course moved from free to paid. Access is a one-off purchase, not a
+  // subscription — `coursePurchased` is the entitlement the lesson pages check.
+  coursePurchased     Boolean   @default(false)
+  coursePurchasedAt   DateTime?
+  // What they actually paid, in pence. Stored rather than derived so a future
+  // price change never rewrites history on old receipts.
+  coursePricePaid     Int?
+  // True for accounts that existed before the course became paid. These users
+  // signed up under "free / lifetime access" terms, so they are offered the
+  // reduced legacy price and are never charged without opting in. Backfilled
+  // once at launch; every new signup gets `false` and the standard price.
+  courseLegacyPricing Boolean   @default(false)
+
+  // ── 1-on-1 coaching subscription ────────────────────────────────────────
+  // £50/month recurring, distinct from the group calls bundled with the
+  // course. Stripe owns the billing lifecycle; these fields mirror it so the
+  // app can gate the booking page without calling Stripe on every request.
+  //   status: 'active' | 'past_due' | 'cancelled' | null (never subscribed)
+  coachingStatus      String?
+  coachingSubId       String?   @unique
+  coachingStartedAt   DateTime?
+  // Set when a cancellation is scheduled — access continues until this date.
+  coachingEndsAt      DateTime?
+  // True for accounts that existed when coaching was made free for current
+  // users — permanent, unbilled access with no Stripe subscription behind
+  // it. Backfilled once for everyone who had an account at that point; every
+  // new signup after gets `false` and pays the normal £50/month.
+  coachingLegacyFree  Boolean   @default(false)
+  coachingRequests    CoachingRequest[]
+  evaluations         Evaluation[]
+
+  // ── FM Trader auto-execute (MT4/5 EA) ───────────────────────────────────
+  // The site is the SIGNAL PUBLISHER. Execution happens on the user's own
+  // MetaTrader terminal via an Expert Advisor they download and attach to
+  // a chart. The EA authenticates against /api/fm-script/* endpoints with
+  // the opaque token in `autoTradeApiKey`. Site never touches broker creds.
+  //
+  // Regulatory framing: user is executor, this is legally a signal-service
+  // pattern (same as any MQL5 Market EA or TradingView-webhook bot), not a
+  // managed account. Do not present it any other way in UI or terms.
+  autoTradeApiKey        String?  @unique
+  autoTradeKeyCreatedAt  DateTime?
+  autoTradeEnabled       Boolean  @default(false)
+  // Risk per trade as a % of account equity. EA reads this to size the order.
+  autoTradeMaxRiskPct    Float    @default(1.0)
+  // Cap on concurrent open positions the EA will maintain for this user.
+  autoTradeMaxConcurrent Int      @default(3)
+  // Minimum confidence score (0-100) before EA takes a signal. Prevents
+  // low-conviction signals from firing while still populating the feed.
+  autoTradeMinConfidence Int      @default(70)
+  // JSON array of instrument slugs the user has opted in to. Empty = all.
+  autoTradeAllowedSlugs  Json     @default("[]")
+  // Master kill switch — user can pause auto-execution without deleting
+  // the API key. When true, /signals returns an empty list.
+  autoTradeKillSwitch    Boolean  @default(false)
+  autoTradeDispatches AutoTradeDispatch[]
 
   accounts          Account[]
   sessions          Session[]
@@ -637,6 +699,13 @@ model EconomicEvent {
   // conference is prose, not a number — the RBA held at 4.35% exactly as
   // expected while the guidance turned hawkish, and no figure captures that.
   note          String?
+  // Claude auto-fetch bookkeeping. The provider does not publish actuals, so
+  // after a release we ask Claude with web search to find the real number.
+  // These fields cap the loop: at most one attempt per attemptGap (~15 min)
+  // and at most searchAttempts total per event, so a release with no data
+  // ever published cannot burn the token budget indefinitely.
+  actualsSearchedAt DateTime?
+  searchAttempts    Int       @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -678,10 +747,16 @@ model Post {
   id         String   @id @default(cuid())
   // Null for agent posts: they belong to the system, not a person.
   userId     String?
-  authorType String   @default("user")     // user | agent
+  authorType String   @default("user")     // user | agent | admin_video
   content    String                         // plain text; never rendered as HTML
   // Set on agent posts so a release can only ever produce one post.
   economicEventId String? @unique
+  // When set, this post is a YouTube video embed. Rendered as an iframe.
+  // Only admin can create video posts (see /api/admin/posts/video). Video
+  // posts use `authorType = 'admin_video'` and get a far-future expiresAt
+  // (2100-01-01) so the 24h purge cron never touches them — they only go
+  // away when admin explicitly deletes. `content` acts as a caption.
+  youtubeVideoId String?
   createdAt  DateTime @default(now())
   // Posts live 24 hours. Set explicitly at creation rather than derived at read
   // time so the purge job can index on it.
@@ -730,4 +805,205 @@ model PostComment {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([postId, createdAt])
+}
+
+// One row per (user, signal) pairing the EA has been told about. Serves
+// three purposes:
+//   1. Idempotency — the EA polls every few seconds; without dedup, a
+//      network hiccup could cause the same signal to fire twice.
+//   2. Billing — creating a dispatch row is the moment we debit 1 token.
+//   3. Reconciliation — the ack endpoint updates status + brokerTicket so
+//      the profile page can show what actually happened at the broker.
+//
+// `signalAlertId` points at SignalAlert which is the platform's canonical
+// scheduled-scan signal source. Only signals from the scheduled scan flow
+// through auto-execute — per-user FM Trader runs (FMPrediction) are not
+// dispatched to prevent one user's ad-hoc analysis being fired at others.
+model AutoTradeDispatch {
+  id            String   @id @default(cuid())
+  userId        String
+  signalAlertId String
+  slug          String
+  display       String
+  decision      String   // 'BUY' | 'SELL'
+  confidence    Int
+  entryLow      Float
+  entryHigh     Float
+  stopLoss      Float
+  tp1           Float
+  tp2           Float?
+  tp3           Float?
+  createdAt     DateTime @default(now())
+  // Lifecycle: dispatched (sent to EA) → acked (EA responded) → filled/rejected/error
+  status        String   @default("dispatched")
+  brokerTicket  String?
+  filledPrice   Float?
+  filledAt      DateTime?
+  ackNote       String?  // free-text from the EA (e.g. "spread too wide")
+  ackedAt       DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One dispatch per user per signal. If EA polls twice within a poll
+  // window, the second call finds the existing row and just returns it.
+  @@unique([userId, signalAlertId])
+  @@index([userId, createdAt])
+}
+
+// A subscriber asking for a coaching slot. Deliberately simple: free-text
+// preferred times rather than a calendar integration, because a real
+// scheduling system (availability, timezones, reschedules, reminders) is a
+// product in its own right. Admin is notified on each request and confirms
+// out of band, which is honest about how this actually runs today.
+model CoachingRequest {
+  id            String   @id @default(cuid())
+  userId        String
+  // What the user typed, e.g. "weekday evenings UK, ideally Tue/Thu".
+  preferredTime String
+  topic         String?
+  timezone      String?
+  status        String   @default("requested")  // requested | scheduled | done | cancelled
+  // Admin fills these in when confirming.
+  scheduledAt   DateTime?
+  meetingUrl    String?
+  adminNote     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+
+// Prop-firm style funded-account evaluation.
+//
+// LEGAL SHAPE — do not change without advice. The member pays a one-off fee
+// for a SKILLS EVALUATION and trades a demo account under rules. They are
+// the trader; we never pool member funds, never trade on their behalf, and
+// losses fall on our own capital at the funded stage, not on other members.
+// That is what keeps this outside FSMA s.235 (collective investment scheme)
+// territory. Any move toward pooling contributions or managing money for
+// members would require FCA authorisation.
+//
+// Terms are SNAPSHOT onto each row at purchase rather than read from
+// constants at evaluation time, so changing the product later can never
+// silently rewrite the rules of a challenge someone is already trading.
+model Evaluation {
+  id     String @id @default(cuid())
+  userId String
+
+  //  evaluation → passed → funded → (payout | breached)
+  //  evaluation → breached  (rule broken during the challenge)
+  status String @default("evaluation")  // evaluation | passed | funded | breached | cancelled
+  // Two evaluation phases before funding. `profitTargetPct` below always
+  // holds the CURRENT phase's target, swapped when phase 1 is cleared, so
+  // every rule check reads one field regardless of stage.
+  phase  String @default("phase1")      // phase1 | phase2 | funded
+
+  // ── Terms, in pence / percent, fixed at purchase ───────────────────────
+  feePaid         Int     // what they paid, e.g. 25000 = £250
+  accountSize     Int     // simulated balance, e.g. 2500000 = £25,000
+  profitTargetPct Float   // target for the CURRENT phase
+  phase1TargetPct Float   @default(20)
+  phase2TargetPct Float   @default(40)
+  phase1PassedAt  DateTime?
+  maxDrawdownPct  Float   // peak-to-trough, total
+  maxDailyLossPct Float
+  minTradingDays  Int
+  profitSplitPct  Int     // trader's share once funded
+
+  // ── Live progress ──────────────────────────────────────────────────────
+  // Equity is reported by the member's MT5 EA (see /api/fm-script/equity)
+  // or set by an admin. Peak equity is tracked so drawdown is measured
+  // peak-to-trough rather than against the starting balance.
+  currentEquity Int?
+  peakEquity    Int?
+  tradingDays   Int       @default(0)
+  lastEquityAt  DateTime?
+  // Start-of-day equity, reset each UTC day, for the daily-loss rule.
+  dayStartEquity Int?
+  dayStartedOn   String?  // 'YYYY-MM-DD' UTC
+
+  // ── Funded stage ───────────────────────────────────────────────────────
+  // Set when admin issues the live funded account. The capital here is OURS,
+  // so a breach at this stage costs the firm — never another member.
+  fundedAt      DateTime?
+  fundedBalance Int?      // starting balance of the funded account, pence
+  // Profit baseline / high-water mark. Payouts are calculated on equity
+  // above this line, and it moves up after each payout so the same profit
+  // can never be claimed twice.
+  fundedBaseline Int?
+
+  breachReason String?
+  startedAt    DateTime  @default(now())
+  passedAt     DateTime?
+  endedAt      DateTime?
+
+  // Stripe reference so a purchase can be traced end to end.
+  stripeRef String?
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payouts   EvaluationPayout[]
+  positions SimPosition[]
+
+  @@index([userId, startedAt])
+  @@index([status])
+}
+
+// Profit payouts once funded. Append-only record of what was actually paid.
+model EvaluationPayout {
+  id           String   @id @default(cuid())
+  evaluationId String
+  // Trader's share in pence, already split.
+  amount       Int
+  // Gross profit the split was calculated from.
+  grossProfit  Int
+  status       String   @default("requested")  // requested | paid | rejected
+  note         String?
+  requestedAt  DateTime @default(now())
+  paidAt       DateTime?
+
+  evaluation Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId])
+}
+
+
+// A simulated position inside an evaluation or funded account.
+//
+// Nothing here touches a real broker. Prices come from our existing market
+// data feed and P/L is arithmetic — the member never deposits and we never
+// execute on an exchange, which is what keeps this a simulation rather than
+// a brokerage. Payouts at the funded stage come from firm revenue.
+//
+// Money is in PENCE. Prices are decimals at instrument precision.
+model SimPosition {
+  id           String @id @default(cuid())
+  evaluationId String
+  userId       String
+
+  slug    String
+  display String
+  side    String   // BUY | SELL
+  // Lots, in the conventional sense: 0.01 = micro. Combined with the
+  // instrument's contract size this gives the notional.
+  lots       Float
+  openPrice  Float
+  stopLoss   Float?
+  takeProfit Float?
+
+  status      String    @default("open")   // open | closed
+  closePrice  Float?
+  // Realised P/L in pence, set on close.
+  pnl         Int?
+  closeReason String?                      // manual | stop_loss | take_profit
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
+
+  evaluation Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId, status])
+  @@index([userId, openedAt])
 }

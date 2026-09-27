@@ -72,10 +72,18 @@ const BRAND_PALETTE = {
 
 const SYSTEM_PROMPT = `You're a video producer assigning one visual asset to each spoken segment of a forex-trading lesson script.
 
-Asset types available:
-1. "motion" — a pre-built Remotion motion graphic (best for technical concepts: candles, indicators, patterns, charts).
-2. "whiteboard" — a hand-drawn explainer image generated specifically for the segment (best for general explanations, definitions, narrative beats).
-3. "title" — a plain title card (only for "section header" segment types or short transitional beats).
+Asset types available, in STRICT preference order — only fall down this list when
+the option above genuinely does not fit:
+1. "motion" — a pre-built Remotion motion graphic. Free to render, no generation
+   cost. Prefer this whenever the segment touches ANY concept in the catalog
+   below, even loosely — a close match beats no illustration at all.
+2. "title" — a plain title card (section headers, short transitional beats, or
+   any segment that doesn't map to a motion graphic and isn't worth a bespoke
+   image). This is also free.
+3. "whiteboard" — a hand-drawn explainer image generated specifically for the
+   segment. This is NOT free — a generation request costs real money — so only
+   ever choose this for the lesson's intro/welcome and outro/wrap-up segments,
+   never for ordinary teaching content. If in doubt, choose "title" instead.
 
 Motion graphics catalog (pick the EXACT name):
 {{CATALOG}}
@@ -96,9 +104,10 @@ For each segment you return:
 
 Rules:
 - Section-header segments (just an "X." heading) → "title"
-- Intro / outro segments → "whiteboard" (hand-drawn welcome / wrap-up)
+- Intro / outro segments → "whiteboard" (hand-drawn welcome / wrap-up) — the
+  ONLY case where "whiteboard" is allowed
 - Segments mentioning specific named concepts that match a motion graphic → "motion"
-- Everything else → "whiteboard"
+- Everything else (general explanation, no motion-graphic match, not intro/outro) → "title"
 - Never assign the same motion graphic twice in a row.
 - The output MUST be a JSON array, one entry per segment IN ORDER. No prose, no markdown fence.`
 
@@ -155,11 +164,19 @@ export async function buildManifestForLesson(lessonId: string): Promise<LessonMa
   const segments = buildTimestampedSegments(lessonRow, moduleTitle)
   if (segments.length === 0) return null
 
-  // Ask Claude to plan each segment
-  const planEntries = await callClaudeForPlan(
-    lessonRow.title,
-    segments.map(s => ({ segmentIndex: s.segmentIndex, type: s.type, heading: s.heading, spokenText: s.spokenText })),
-  )
+  // Admin kill switch — perfFlags.lessonManifest. When off, skip the Claude
+  // call and return an empty plan set (the manifest still gets built with
+  // segment metadata; downstream fills in default templates).
+  const { getPerfFlags } = await import('@/lib/perf-flags')
+  const flags = await getPerfFlags()
+
+  // Ask Claude to plan each segment (unless the kill switch is flipped)
+  const planEntries = flags.lessonManifest
+    ? await callClaudeForPlan(
+        lessonRow.title,
+        segments.map(s => ({ segmentIndex: s.segmentIndex, type: s.type, heading: s.heading, spokenText: s.spokenText })),
+      )
+    : []
   const planByIndex = new Map(planEntries.map(p => [p.segmentIndex, p]))
 
   // Look up any existing whiteboard / photoreal images so we can attach their URLs
@@ -183,9 +200,11 @@ export async function buildManifestForLesson(lessonId: string): Promise<LessonMa
     } else if (planned?.asset.type === 'title') {
       asset = { type: 'title', heading: s.heading || s.spokenText.slice(0, 40) }
     } else {
-      // Default to whiteboard. If we have an approved image for this segment,
-      // attach it; otherwise Video Hub knows to request generation (or fall
-      // back to title-only) on its side.
+      // Attach an existing approved image if one's already there — but never
+      // emit an empty whiteboard slot, because that is Video Hub's signal to
+      // request a new (paid) generation. Falling back to a title card keeps
+      // this whole pass free even when Claude asks for "whiteboard" on a
+      // segment nobody has pre-approved an image for.
       const img = imageBySegment.get(s.segmentIndex)
       if (img) {
         asset = {
@@ -195,8 +214,8 @@ export async function buildManifestForLesson(lessonId: string): Promise<LessonMa
         }
         if (!rationale) rationale = 'Pre-approved image attached.'
       } else {
-        asset = { type: 'whiteboard', imageId: '', imageUrl: '' }
-        if (!rationale) rationale = 'Whiteboard image needed — not yet generated/approved.'
+        asset = { type: 'title', heading: s.heading || s.spokenText.slice(0, 40) }
+        if (!rationale) rationale = 'No approved image on file — using a title card instead of requesting a paid generation.'
       }
     }
 

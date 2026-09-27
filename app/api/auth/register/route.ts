@@ -5,6 +5,9 @@ import { rateLimit, getClientIp } from '@/lib/rateLimit'
 import { sendTelegramMessage } from '@/lib/telegram'
 import { sendBulkEmail } from '@/lib/email'
 import { buildWelcomeEmail, buildWelcomeText } from '@/lib/email-templates'
+import { creditTokens } from '@/lib/tokens'
+
+const SIGNUP_TOKEN_GRANT = 10
 
 export async function POST(req: Request) {
   // 5 registration attempts per IP per 15 minutes
@@ -43,23 +46,19 @@ export async function POST(req: Request) {
       },
     })
 
-    // Grant free 1-month trial access
-    const trialEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
-    await prisma.analysisAccess.create({
-      data: {
-        userId:    user.id,
-        type:      'one_month',
-        startDate: new Date(),
-        endDate:   trialEnd,
-        active:    true,
-        note:      'Free trial on signup',
-      },
-    }).catch(() => {})  // non-fatal if already exists
+    // Grant signup tokens. One token = one FM Trader prediction. 10 is a
+    // taster: enough to judge the product, not enough to never need more.
+    // Buying the course adds another 10 (see lib/course-pricing). Awaited
+    // (not fire-and-forget) so the welcome copy cannot claim a grant that
+    // failed to land.
+    await creditTokens(user.id, SIGNUP_TOKEN_GRANT, 'signup_grant', 'welcome-grant').catch(err => {
+      console.error('[register] signup token grant failed:', err)
+    })
 
     // Welcome email + in-app notification (fire-and-forget)
     sendBulkEmail(
       [{ name: user.name, email: user.email }],
-      'Welcome to Forex Mastery — your free 1-month trial is active',
+      `Welcome to Forex Mastery — ${SIGNUP_TOKEN_GRANT} free FM Trader tokens are in your account`,
       () => buildWelcomeEmail(user.name),
       () => buildWelcomeText(user.name),
     ).catch(() => {})
@@ -67,14 +66,15 @@ export async function POST(req: Request) {
     prisma.adminNotification.create({
       data: {
         userId:  user.id,
-        subject: '🎉 Welcome to Forex Mastery — 1 Month Free Trial Activated',
-        message: `Your free 1-month trial is now active. You have full access to FM Trader analysis, live signals, and all pair insights until ${trialEnd.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}. Head to the Analysis page to run your first prediction.`,
+        subject: `🎉 Welcome — ${SIGNUP_TOKEN_GRANT} free FM Trader tokens added`,
+        message: `Your account is ready and ${SIGNUP_TOKEN_GRANT} FM Trader tokens have been credited to your balance. One token runs one prediction on any instrument — head to the Analysis page to try FM Trader.`,
+        linkUrl: '/analysis',
       },
     }).catch(() => {})
 
     // Notify admin via Telegram (fire-and-forget)
     sendTelegramMessage(
-      `🆕 <b>New User Signup</b>\n👤 ${user.name ?? 'No name'}\n📧 ${user.email}\n🕐 ${new Date().toUTCString()}`
+      `🆕 <b>New User Signup</b>\n👤 ${user.name ?? 'No name'}\n📧 ${user.email}\n🎁 ${SIGNUP_TOKEN_GRANT} tokens granted\n🕐 ${new Date().toUTCString()}`
     ).catch(() => {})
 
     return NextResponse.json({

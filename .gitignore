@@ -42,3 +42,7 @@ next-env.d.ts
 prisma/dev.db
 .env*.local
 DEPLOYMENT_NOTES.md
+
+# Rendered lesson MP4s — large binaries, served via the admin route
+rendered-videos/
+public/render-tmp/

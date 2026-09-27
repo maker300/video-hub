@@ -5,13 +5,15 @@ import { courseModules } from '@/lib/courseData'
 import Link from 'next/link'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
+import CoachingAdmin from '@/components/admin/CoachingAdmin'
+import EvaluationsAdmin from '@/components/admin/EvaluationsAdmin'
 import {
   Home, Users, BarChart2, Settings, Shield, Loader2, AlertCircle, CheckCircle2,
   Play, RefreshCw, Search, Trash2, Edit3, KeyRound, X,
   TrendingUp, BookOpen, Activity, UserCheck, EyeOff, Eye, Mail, Send,
   Lock, Unlock, Calendar, RotateCcw, LineChart, MessageSquare,
   ChevronDown, ChevronUp, Bot, Clock, Flag, CircleCheck, Inbox,
-  Video, Sparkles, ExternalLink, DatabaseZap, TriangleAlert, Bitcoin, ArrowUpFromLine, CalendarClock } from 'lucide-react'
+  Video, Sparkles, ExternalLink, DatabaseZap, TriangleAlert, Bitcoin, ArrowUpFromLine, CalendarClock, Zap } from 'lucide-react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -332,6 +334,16 @@ function OverviewTab({ onTabChange }: { onTabChange: (tab: Tab) => void }) {
         </Link>
       </div>
 
+      {/* Live trading sessions + 1-on-1 coaching requests */}
+      <div className="mb-6">
+        <CoachingAdmin />
+      </div>
+
+      {/* Funded-account evaluations + payouts */}
+      <div className="mb-6">
+        <EvaluationsAdmin />
+      </div>
+
       {analytics?.analysisAccess && (
         <div className="bg-[#131722] border border-white/10 rounded-2xl p-5">
           <div className="flex items-center gap-2 mb-4">
@@ -643,6 +655,10 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
   const [pwdUser,    setPwdUser]    = useState<UserRow | null>(null)
   const [delUser,    setDelUser]    = useState<UserRow | null>(null)
   const [accessUser, setAccessUser] = useState<UserRow | null>(null)
+  const [grantUser,  setGrantUser]  = useState<UserRow | null>(null)
+  const [grantTier,  setGrantTier]  = useState(0)
+  const [granting,   setGranting]   = useState(false)
+  const [grantMsg,   setGrantMsg]   = useState('')
   const [editForm,   setEditForm]   = useState({ name: '', email: '', role: 'user', teamBalanceBtc: '' })
   const [pwdForm,    setPwdForm]    = useState({ password: '', confirm: '', show: false })
   const [saving,     setSaving]     = useState(false)
@@ -720,6 +736,25 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
     else { const e = await res.json(); setMsg(e.error ?? 'Error') }
   }
 
+  async function grantFundedAccount() {
+    if (!grantUser) return
+    setGranting(true); setGrantMsg('')
+    try {
+      const r = await fetch('/api/admin/evaluation/grant', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: grantUser.id, tier: grantTier }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error ?? 'Failed.')
+      setGrantMsg('Funded account granted — no payment taken.')
+      setTimeout(() => { setGrantUser(null); setGrantMsg('') }, 1000)
+    } catch (e) {
+      setGrantMsg(e instanceof Error ? e.message : 'Failed.')
+    } finally {
+      setGranting(false)
+    }
+  }
+
   async function savePassword() {
     if (!pwdUser) return
     if (pwdForm.password !== pwdForm.confirm) { setMsg('Passwords do not match.'); return }
@@ -778,7 +813,7 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
 
       <div className="bg-[#131722] border border-white/10 rounded-2xl overflow-hidden">
         <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
-          <table className="w-full text-sm min-w-[700px]">
+          <table className="w-full text-sm min-w-[820px]">
             <thead>
               <tr className="border-b border-white/10 bg-white/[0.02]">
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">User</th>
@@ -788,7 +823,7 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Role</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Analysis</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Joined</th>
-                <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider sticky right-0 bg-[#131722] shadow-[-12px_0_12px_-8px_rgba(0,0,0,0.5)]">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
@@ -919,28 +954,39 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{timeAgo(u.createdAt)}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-3 sticky right-0 bg-[#131722] shadow-[-12px_0_12px_-8px_rgba(0,0,0,0.5)]">
                       <div className="flex items-center justify-end gap-1">
                         {/* Analysis access button */}
                         {u.role !== 'admin' && (
                           <button
                             onClick={() => setAccessUser(u)}
-                            className={`p-1.5 rounded-lg hover:bg-white/10 transition ${hasAccess ? 'text-emerald-500 hover:text-emerald-400' : 'text-gray-500 hover:text-teal-400'}`}
+                            className={`p-1.5 shrink-0 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 transition ${hasAccess ? 'text-emerald-400 hover:text-emerald-300' : 'text-gray-300 hover:text-teal-300'}`}
                             title={hasAccess ? 'Manage analysis access' : 'Grant analysis access'}
                           >
-                            {hasAccess ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+                            {hasAccess
+                              ? <Unlock className="w-4 h-4 max-w-none shrink-0" strokeWidth={2.25} />
+                              : <Lock className="w-4 h-4 max-w-none shrink-0" strokeWidth={2.25} />}
                           </button>
                         )}
-                        <button onClick={() => openEdit(u)} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-500 hover:text-white transition" title="Edit user">
-                          <Edit3 className="w-3.5 h-3.5" />
+                        {u.role !== 'admin' && (
+                          <button
+                            onClick={() => { setGrantUser(u); setGrantTier(0); setGrantMsg('') }}
+                            className="p-1.5 shrink-0 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-amber-300 transition"
+                            title="Grant funded account (no payment)"
+                          >
+                            <Zap className="w-4 h-4 max-w-none shrink-0" strokeWidth={2.25} />
+                          </button>
+                        )}
+                        <button onClick={() => openEdit(u)} className="p-1.5 shrink-0 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-white transition" title="Edit user">
+                          <Edit3 className="w-4 h-4 max-w-none shrink-0" strokeWidth={2.25} />
                         </button>
                         <button onClick={() => { setPwdUser(u); setPwdForm({ password: '', confirm: '', show: false }); setMsg('') }}
-                          className="p-1.5 rounded-lg hover:bg-white/10 text-gray-500 hover:text-amber-400 transition" title="Reset password">
-                          <KeyRound className="w-3.5 h-3.5" />
+                          className="p-1.5 shrink-0 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-amber-300 transition" title="Reset password">
+                          <KeyRound className="w-4 h-4 max-w-none shrink-0" strokeWidth={2.25} />
                         </button>
                         <button onClick={() => { setDelUser(u); setMsg('') }}
-                          className="p-1.5 rounded-lg hover:bg-red-500/10 text-gray-500 hover:text-red-400 transition" title="Delete user">
-                          <Trash2 className="w-3.5 h-3.5" />
+                          className="p-1.5 shrink-0 rounded-lg bg-red-500/5 hover:bg-red-500/10 border border-white/10 text-gray-300 hover:text-red-400 transition" title="Delete user">
+                          <Trash2 className="w-4 h-4 max-w-none shrink-0" strokeWidth={2.25} />
                         </button>
                       </div>
                     </td>
@@ -1056,6 +1102,41 @@ function UsersTab({ onUsersLoaded }: { onUsersLoaded: (users: UserRow[]) => void
                 Update Password
               </button>
               <button onClick={() => setPwdUser(null)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm transition">Cancel</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Grant funded account — admin bypass, no payment, no evaluation phases */}
+      {grantUser && (
+        <Modal title={`Grant funded account — ${grantUser.name ?? grantUser.email}`} onClose={() => setGrantUser(null)}>
+          <div className="space-y-4">
+            <p className="text-xs text-gray-400 leading-relaxed">
+              Creates a live funded account for this user with no fee charged and no evaluation phase to clear.
+              Fails if they already have an active evaluation or funded account.
+            </p>
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Tier</label>
+              <select
+                value={grantTier}
+                onChange={e => setGrantTier(Number(e.target.value))}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500/50"
+              >
+                <option value={0} className="bg-[#0a0f1a]">£1,000 funded account</option>
+                <option value={1} className="bg-[#0a0f1a]">£2,000 funded account</option>
+                <option value={2} className="bg-[#0a0f1a]">£5,000 funded account</option>
+              </select>
+            </div>
+            {grantMsg && (
+              <p className={`text-xs ${grantMsg.startsWith('Funded') ? 'text-emerald-400' : 'text-red-400'}`}>{grantMsg}</p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button onClick={grantFundedAccount} disabled={granting}
+                className="flex-1 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-[#2b1a02] py-2.5 rounded-xl text-sm font-bold transition flex items-center justify-center gap-2">
+                {granting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Grant funded access
+              </button>
+              <button onClick={() => setGrantUser(null)} className="px-4 py-2.5 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm transition">Cancel</button>
             </div>
           </div>
         </Modal>
@@ -1842,6 +1923,13 @@ interface PerfFlags {
   liveTradePoll:      PollMode
   marketLivePoll:     PollMode
   fmTraderStreaming:  boolean
+  // Anthropic-credit gates — mirror lib/perf-flags.ts so this local
+  // type stays a full superset of the server-side shape.
+  dailyRecap:         boolean
+  newsAutoFetch:      boolean
+  tradeScript:        boolean
+  lessonManifest:     boolean
+  whiteboardScene:    boolean
 }
 
 interface PerfResponse {
@@ -1859,8 +1947,19 @@ const PERF_TOGGLE_META: Array<{
   label:  string
   effect: string
   kind:   'bool' | 'poll'
+  group?: 'anthropic'    // renders inside the "Anthropic credits" section
 }> = [
-  { key: 'claudeNarrative',   label: 'Claude narrative (FM Trader)',  effect: 'Off: rule-engine still produces decision/SL/TP, but thesis and market-bias prose stay empty. Saves the biggest single CPU+token cost per analysis.', kind: 'bool' },
+  // ── Anthropic-credit consumers ────────────────────────────────────────
+  // Each entry below flips whether that specific Claude caller can spend
+  // credits. When off, the caller returns null / skips gracefully.
+  { key: 'claudeNarrative',   label: 'FM Trader — Claude narrative',       effect: 'Off: rule-engine still produces decision/SL/TP, but thesis and market-bias prose stay empty. Biggest cumulative Anthropic cost — every user prediction.', kind: 'bool', group: 'anthropic' },
+  { key: 'dailyRecap',        label: 'Daily trader-feed recap',            effect: 'Off: the once-a-day recap post (Sonnet 4.6) is skipped. Cron returns 200 without creating a post. Feed still shows manual posts.', kind: 'bool', group: 'anthropic' },
+  { key: 'newsAutoFetch',     label: 'FM News — auto-fetch actuals',       effect: 'Off: calendar releases still get announced without figures; a human types the actual in from /admin/calendar. Saves per-release web-search fees.', kind: 'bool', group: 'anthropic' },
+  { key: 'tradeScript',       label: 'Trade script writer (Video Hub)',    effect: 'Off: admin POST to /api/admin/trade-scripts returns 503 until re-enabled. Existing scripts still play in Video Hub.', kind: 'bool', group: 'anthropic' },
+  { key: 'lessonManifest',    label: 'Lesson manifest generator',          effect: 'Off: admin regeneration of lesson manifests returns empty plan set. Existing manifests continue to serve.', kind: 'bool', group: 'anthropic' },
+  { key: 'whiteboardScene',   label: 'Whiteboard scene planner',           effect: 'Off: whiteboard image generation falls back to Imagen only, no scene structuring. Cheapest of the six but active per lesson image.', kind: 'bool', group: 'anthropic' },
+
+  // ── Non-Anthropic controls ────────────────────────────────────────────
   { key: 'lessonAudio',       label: 'Lesson audio generation',       effect: 'Off: new TTS requests are blocked; already-cached audio still plays. Lessons without cached audio show silent script.', kind: 'bool' },
   { key: 'lessonImageGen',    label: 'Lesson image generation (Imagen 3)', effect: 'Off: new Imagen 3 calls blocked; existing approved images still serve to Video Hub. Use when image-gen cost or CPU spikes.', kind: 'bool' },
   { key: 'autoCheckOutcomes', label: 'Auto check-outcomes cron',      effect: 'Off: pending FM Trader predictions stop auto-closing at TP1/SL. Crons return 200 immediately. Admin must close trades manually.', kind: 'bool' },
@@ -2089,9 +2188,17 @@ function PerformanceControls() {
         {scanMsg && <p className="text-[11px] text-gray-400 mt-2">{scanMsg}</p>}
       </div>
 
-      {/* Toggles */}
-      <div className="space-y-2">
-        {PERF_TOGGLE_META.map(meta => {
+      {/* Toggles — grouped so the Anthropic-credit consumers are visually
+          separate from the general perf/CPU toggles. Each Anthropic toggle
+          gates a specific Claude caller so admin can turn any one off
+          independently when the credit balance is tight. */}
+      {(() => {
+        const anthropicToggles = PERF_TOGGLE_META.filter(m => m.group === 'anthropic')
+        const otherToggles     = PERF_TOGGLE_META.filter(m => m.group !== 'anthropic')
+
+        const anthropicOffCount = anthropicToggles.filter(m => !flags[m.key as 'claudeNarrative']).length
+
+        function renderToggle(meta: typeof PERF_TOGGLE_META[number]) {
           const isOff = meta.kind === 'bool' ? !flags[meta.key] : flags[meta.key] !== 'normal'
           return (
             <div
@@ -2138,8 +2245,40 @@ function PerformanceControls() {
               <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">{meta.effect}</p>
             </div>
           )
-        })}
-      </div>
+        }
+
+        return (
+          <>
+            {/* Anthropic-credit gates */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-violet-300">Anthropic credits</h4>
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Each toggle gates a specific Claude caller. Flip off individually to shrink credit burn while keeping other features live.
+                  </p>
+                </div>
+                {anthropicOffCount > 0 && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+                    {anthropicOffCount} OFF
+                  </span>
+                )}
+              </div>
+              <div className="space-y-2">
+                {anthropicToggles.map(renderToggle)}
+              </div>
+            </div>
+
+            {/* Other perf / poll toggles */}
+            <div>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">Other</h4>
+              <div className="space-y-2">
+                {otherToggles.map(renderToggle)}
+              </div>
+            </div>
+          </>
+        )
+      })()}
 
       {error && (
         <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mt-4">
@@ -2919,16 +3058,18 @@ interface TradeScript {
 }
 
 function outcomeColor(o: string) {
-  if (o.startsWith('tp')) return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
-  if (o === 'sl_hit')     return 'text-red-400 bg-red-500/10 border-red-500/30'
+  if (o.startsWith('tp'))        return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
+  if (o === 'partial_profit')    return 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+  if (o === 'sl_hit')            return 'text-red-400 bg-red-500/10 border-red-500/30'
   return 'text-gray-400 bg-white/5 border-white/15'
 }
 function outcomeLabel(o: string) {
-  if (o === 'tp1_hit') return 'TP1 ✓'
-  if (o === 'tp2_hit') return 'TP2 ✓'
-  if (o === 'tp3_hit') return 'TP3 ✓'
-  if (o === 'sl_hit')  return 'SL ✗'
-  if (o === 'expired') return 'Expired'
+  if (o === 'tp1_hit')         return 'TP1 ✓'
+  if (o === 'tp2_hit')         return 'TP2 ✓'
+  if (o === 'tp3_hit')         return 'TP3 ✓'
+  if (o === 'partial_profit')  return 'Partial ✓'
+  if (o === 'sl_hit')          return 'SL ✗'
+  if (o === 'expired')         return 'Expired'
   return o
 }
 

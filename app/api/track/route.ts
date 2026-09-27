@@ -43,12 +43,15 @@ export async function POST(req: Request) {
       })
     } catch { /* ignore tracking errors — never break the UI */ }
 
-    // Update lastSeenAt for logged-in users so admin can see who is active
+    // Update lastSeenAt for logged-in users so admin can see who is active.
+    // This is also the dormant-account clock: any activity resets it AND
+    // clears a pending deletion warning, so a user who comes back after
+    // being warned is fully out of the cleanup queue.
     if (userId) {
       try {
         await db.user.update({
           where: { id: userId },
-          data: { lastSeenAt: new Date() },
+          data: { lastSeenAt: new Date(), dormantWarnedAt: null },
         })
       } catch { /* ignore — never break the UI */ }
     }

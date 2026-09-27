@@ -18,9 +18,16 @@ export async function GET(req: Request) {
   const cursor = url.searchParams.get('cursor')
 
   const db = prisma as any
+  // Two-tier ordering — video posts pinned to the top of the feed, then
+  // everything else in newest-first order. Prisma's multi-column orderBy
+  // sorts video posts (youtubeVideoId not null) above regular posts, then
+  // sorts each tier by createdAt desc. Same round-trip, no post-processing.
   const posts = await db.post.findMany({
     where:   { deletedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: 'desc' },
+    orderBy: [
+      { youtubeVideoId: { sort: 'desc', nulls: 'last' } },
+      { createdAt:      'desc' },
+    ],
     take:    21,                                   // 21 to detect a next page
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     include: {
@@ -35,21 +42,22 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     posts: page.map((p: any) => ({
-      id:         p.id,
-      authorType: p.authorType,
-      content:    p.content,
-      createdAt:  p.createdAt,
-      author:     p.authorType === 'agent'
-        ? { name: 'FM Trader', role: 'agent' }
+      id:             p.id,
+      authorType:     p.authorType,
+      content:        p.content,
+      youtubeVideoId: p.youtubeVideoId ?? null,
+      createdAt:      p.createdAt,
+      author:         p.authorType === 'agent' || p.authorType === 'admin_video'
+        ? { name: p.authorType === 'admin_video' ? 'Forex Mastery' : 'FM Trader', role: 'agent' }
         : { id: p.user?.id, name: p.user?.name ?? 'Trader', image: p.user?.image, role: p.user?.role },
-      likeCount:  p.likes.length,
-      likedByMe:  p.likes.some((l: any) => l.userId === userId),
-      commentCount: p._count.comments,
-      canDelete:  p.userId === userId || (session!.user as any)?.role === 'admin',
+      likeCount:      p.likes.length,
+      likedByMe:      p.likes.some((l: any) => l.userId === userId),
+      commentCount:   p._count.comments,
+      canDelete:      p.userId === userId || (session!.user as any)?.role === 'admin',
       // Admins can edit anything including agent output; users only their own.
-      canEdit:    (session!.user as any)?.role === 'admin'
-                  || (p.userId === userId && p.authorType === 'user'),
-      editedAt:   p.editedAt,
+      canEdit:        (session!.user as any)?.role === 'admin'
+                      || (p.userId === userId && p.authorType === 'user'),
+      editedAt:       p.editedAt,
     })),
     nextCursor: hasMore ? page[page.length - 1].id : null,
   })

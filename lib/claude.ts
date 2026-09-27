@@ -12,6 +12,8 @@ export const CLAUDE_MODEL = 'claude-opus-4-6'
 
 // Separate from CLAUDE_MODEL so the daily recap's voice can be tuned without
 // touching the analysis engine, which is measured and should not move for a
-// copy change. CLAUDE_MODEL is a generation behind (claude-opus-4-6) and is
-// worth upgrading on its own, deliberately, with the accuracy watched.
-export const WRITING_MODEL = 'claude-opus-5'
+// copy change. Sonnet 4.6 handles daily-recap writing well and costs
+// roughly 5× less per call than Opus 5 — the previous choice. The recap is
+// a copy task, not a reasoning task; the model class was the wrong tier for
+// the workload.
+export const WRITING_MODEL = 'claude-sonnet-4-6'

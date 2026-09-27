@@ -68,7 +68,8 @@ export async function PATCH(req: NextRequest) {
 
   if (body.preset === 'lowPower') {
     // Emergency throttle — keeps the rule engine running, kills everything
-    // that's expensive or optional.
+    // that's expensive or optional. Includes every Anthropic-credit
+    // consumer so a single click drops burn to zero.
     patch = {
       claudeNarrative:   false,
       lessonAudio:       false,
@@ -78,15 +79,21 @@ export async function PATCH(req: NextRequest) {
       liveTradePoll:     'slow',
       marketLivePoll:    'slow',
       fmTraderStreaming: false,
+      dailyRecap:        false,
+      newsAutoFetch:     false,
+      tradeScript:       false,
+      lessonManifest:    false,
+      whiteboardScene:   false,
     }
   } else if (body.preset === 'normal') {
     patch = DEFAULT_FLAGS
   } else {
-    // Targeted patch — only known flag keys are accepted
-    const allowed: (keyof PerfFlags)[] = [
-      'claudeNarrative', 'lessonAudio', 'lessonImageGen', 'autoCheckOutcomes', 'cronScan',
-      'liveTradePoll', 'marketLivePoll', 'fmTraderStreaming',
-    ]
+    // Targeted patch — only known flag keys are accepted. The allowlist is
+    // derived from DEFAULT_FLAGS so any new flag added there is
+    // automatically accepted here; the previous hardcoded list silently
+    // dropped valid updates for newly added keys (which is why the five
+    // Anthropic-credit toggles didn't respond to clicks).
+    const allowed = Object.keys(DEFAULT_FLAGS) as (keyof PerfFlags)[]
     for (const k of allowed) {
       if (k in body) (patch as Record<string, unknown>)[k] = (body as Record<string, unknown>)[k]
     }

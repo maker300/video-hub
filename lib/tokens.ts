@@ -50,6 +50,9 @@ export type LedgerReason =
   | 'refund_no_trade'
   | 'admin_grant'
   | 'admin_revoke'
+  | 'signup_grant'           // first-touch tokens on account creation
+  | 'auto_trade_dispatch'    // 1 token per signal handed to a user's MT4/5 EA
+  | 'course_purchase_bonus'  // tokens bundled with a course purchase
 
 /**
  * Debit tokens for an action, atomically.

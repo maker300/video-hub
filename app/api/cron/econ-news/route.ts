@@ -75,13 +75,25 @@ export async function GET(req: Request) {
     const affectedSlugs = slugsForCurrency(e.currency)
     if (affectedSlugs.length === 0) continue  // nothing we cover
 
-    const { surprise, dir } = classifySurprise(e.actual, e.forecast)
-    const hasPrint = e.actual != null
-
     const existing = await db.economicEvent.findUnique({
       where:  { eventKey: e.eventKey },
-      select: { id: true, actual: true, notifiedAt: true },
+      select: { id: true, actual: true, notifiedAt: true, releasedAt: true },
     })
+
+    // Preserve a user-filed actual when the provider does not have one.
+    //
+    // The current calendar provider (ForexFactory scrape) publishes the
+    // schedule but never publishes actuals — so a bare `actual: e.actual`
+    // would wipe every manual filing on the next ~5-min sync. That is what
+    // silently blanked out the July 2026 US CPI figures right after they
+    // were entered. The ?? chain means: provider value wins if it has one
+    // (so a real feed with actuals still supersedes user data), otherwise
+    // keep what was previously stored.
+    const finalActual         = e.actual ?? existing?.actual ?? null
+    const { surprise, dir }   = classifySurprise(finalActual, e.forecast)
+    const finalReleasedAt     = finalActual != null
+      ? (existing?.releasedAt ?? (e.scheduledAt <= now ? e.scheduledAt : now))
+      : null
 
     const data = {
       country:     e.country,
@@ -89,14 +101,14 @@ export async function GET(req: Request) {
       event:       e.event,
       impact:      e.impact,
       scheduledAt: e.scheduledAt,
-      actual:      e.actual,
+      actual:      finalActual,
       forecast:    e.forecast,
       previous:    e.previous,
       unit:        e.unit,
       surprise,
       surpriseDir: dir,
       affectedSlugs,
-      releasedAt:  hasPrint ? (e.scheduledAt <= now ? e.scheduledAt : now) : null,
+      releasedAt:  finalReleasedAt,
     }
 
     const row = existing
@@ -143,32 +155,41 @@ export async function GET(req: Request) {
       : r.surpriseDir === 'inline' ? ' — in line with expectations'
       : ''
 
-    // Telegram broadcast
-    await sendTelegramMessage(
-      `📊 <b>${r.currency} — ${r.event}</b>\n\n` +
-      `<b>${print}</b>${dirNote}\n\n` +
-      `Instruments with exposure: ${affected}\n` +
-      `<i>Exposure only — open the pair analysis for a directional read.</i>\n` +
-      `🔗 https://forexmastery.org/analysis/news`
-    ).catch(e => console.error('[econ-news] telegram failed:', e))
+    // Public Telegram + subscriber bell — only when there is real content to
+    // broadcast (a numeric print, or a commentary event whose signal is the
+    // tone itself). When a numeric release comes in without a figure yet, the
+    // auto-fetch loop below will publish the alert as soon as Claude finds
+    // the number — sending a "figure pending" broadcast first just spams
+    // subscribers with a placeholder that the real alert supersedes minutes
+    // later. Admin still gets the nudge (alertAdmins below) so a fetch that
+    // fails does not go unnoticed.
+    if (hasFigure || isCommentary) {
+      await sendTelegramMessage(
+        `📊 <b>${r.currency} — ${r.event}</b>\n\n` +
+        `<b>${print}</b>${dirNote}\n\n` +
+        `Instruments with exposure: ${affected}\n` +
+        `<i>Exposure only — open the pair analysis for a directional read.</i>\n` +
+        `🔗 https://forexmastery.org/analysis/news`
+      ).catch(e => console.error('[econ-news] telegram failed:', e))
 
-    // Bell — only users following an affected pair, one notification each even
-    // if they follow several of the instruments this release touches.
-    const subs = await prisma.pairSubscription.findMany({
-      where:  { slug: { in: r.affectedSlugs } },
-      select: { userId: true },
-      distinct: ['userId'],
-    })
+      // Bell — only users following an affected pair, one notification each
+      // even if they follow several of the instruments this release touches.
+      const subs = await prisma.pairSubscription.findMany({
+        where:  { slug: { in: r.affectedSlugs } },
+        select: { userId: true },
+        distinct: ['userId'],
+      })
 
-    if (subs.length > 0) {
-      await prisma.adminNotification.createMany({
-        data: subs.map(s => ({
-          userId:  s.userId,
-          subject: `${r.currency} ${r.event}: ${print}`,
-          message: `${r.event} came in at ${print}${dirNote}. Instruments you follow with exposure to ${r.currency}: ${affected}. This is an exposure flag, not a trade call — check the pair analysis for direction.`,
-          linkUrl: '/analysis/news',
-        })),
-      }).catch(e => console.error('[econ-news] bell notify failed:', e))
+      if (subs.length > 0) {
+        await prisma.adminNotification.createMany({
+          data: subs.map(s => ({
+            userId:  s.userId,
+            subject: `${r.currency} ${r.event}: ${print}`,
+            message: `${r.event} came in at ${print}${dirNote}. Instruments you follow with exposure to ${r.currency}: ${affected}. This is an exposure flag, not a trade call — check the pair analysis for direction.`,
+            linkUrl: '/analysis/news',
+          })),
+        }).catch(e => console.error('[econ-news] bell notify failed:', e))
+      }
     }
 
     // Publish to the community feed. economicEventId is unique, so a release
@@ -226,6 +247,158 @@ export async function GET(req: Request) {
     })
   }
 
+  // ── 4. Claude auto-fetch — find missing actuals via web search ───────────
+  //
+  // Runs on every cron tick. Any release that has just landed and does not
+  // yet have a figure is a candidate — Claude searches reputable financial
+  // sources for the print and applies it through the same publishActual
+  // pipeline the manual entry uses.
+  //
+  // Chase only the FRESH window. A CPI number is market-moving in the first
+  // half hour; after that, alerting people to it is noise. Anything older
+  // than FETCH_GRACE_MS is left for a human to backfill if it matters.
+  //
+  // Guarded to prevent runaway cost / bad data:
+  //   • Only if actual is still null AND figureAnnouncedAt is null (no
+  //     retry after the figure is already published)
+  //   • Only if the event actually has an expected figure (numeric release,
+  //     not a speech/press conference)
+  //   • At most MAX_SEARCH_ATTEMPTS per event
+  //   • At least SEARCH_INTERVAL_MS between attempts on the same event
+  //   • Only apply the actual when Claude reports 'high' confidence
+  //   • At most FETCH_BUDGET events fetched per tick to keep the cron
+  //     within its function-time budget on a burst of simultaneous releases
+  const FETCH_GRACE_MS      = 30 * 60 * 1000   // 30 min after release
+  const MAX_SEARCH_ATTEMPTS = 5
+  const SEARCH_INTERVAL_MS  = 5  * 60 * 1000   // 5 min — one attempt per cron tick
+  const FETCH_BUDGET        = 6                // per cron tick — clusters happen at :00 / :30
+  const searchCutoff        = new Date(now.getTime() - SEARCH_INTERVAL_MS)
+  const releaseFloor        = new Date(now.getTime() - FETCH_GRACE_MS)
+
+  const searchCandidates = await db.economicEvent.findMany({
+    where: {
+      actual:            null,
+      figureAnnouncedAt: null,
+      scheduledAt:       { lte: now, gte: releaseFloor },
+      searchAttempts:    { lt: MAX_SEARCH_ATTEMPTS },
+      OR: [
+        { actualsSearchedAt: null },
+        { actualsSearchedAt: { lt: searchCutoff } },
+      ],
+    },
+    orderBy: { scheduledAt: 'asc' },
+    take:    FETCH_BUDGET,
+  })
+
+  const fetched: Array<{ event: string; currency: string; applied: boolean; confidence?: string; actual?: number | null }> = []
+  let creditLowSeen = false   // set on the first credit-low error, alerts once at end of loop
+  // Admin kill switch — perfFlags.newsAutoFetch. When off, the cron still
+  // runs (announces releases, purges old rows) but skips every Claude call
+  // so no credits are consumed.
+  const { getPerfFlags } = await import('@/lib/perf-flags')
+  const perfFlags = await getPerfFlags()
+  if (searchCandidates.length > 0 && perfFlags.newsAutoFetch) {
+    const { fetchActualsFromWeb } = await import('@/lib/fetch-actuals')
+    const { publishActual }       = await import('@/lib/publish-actual')
+
+    for (const ev of searchCandidates) {
+      // Skip commentary — there is no number to find. A press conference's
+      // signal is the tone in the transcript, not a print, and that stays a
+      // human read.
+      if (isCommentaryEvent(ev.event, ev.forecast, ev.previous)) continue
+
+      // Stamp the last-attempt timestamp BEFORE the call so concurrent cron
+      // ticks throttle correctly. searchAttempts is bumped AFTER the call
+      // only if we got a real response back — a Claude billing/rate-limit
+      // failure returns null here and we don't want a temporary API outage
+      // to burn through the whole 5-attempt budget. When the outage clears,
+      // the event resumes retries on the next cron tick.
+      await db.economicEvent.update({
+        where: { id: ev.id },
+        data:  { actualsSearchedAt: now },
+      })
+
+      const { result, errorKind } = await fetchActualsFromWeb({
+        currency:    ev.currency,
+        event:       ev.event,
+        scheduledAt: ev.scheduledAt,
+        forecast:    ev.forecast,
+        previous:    ev.previous,
+        unit:        ev.unit,
+      })
+
+      // No response at all (Claude API failure — billing, rate limit, timeout).
+      // Leave searchAttempts unchanged so the event can retry next tick.
+      if (result === null) {
+        console.warn(`[econ-news:fetch] ${ev.currency} ${ev.event} → Claude call returned null (errorKind=${errorKind})`)
+        fetched.push({ event: ev.event, currency: ev.currency, applied: false, confidence: `error:${errorKind}`, actual: null })
+        // Depleted credits blocks EVERY event in this tick — stop the loop
+        // and surface it to admin so they can top up. Continuing wastes CPU
+        // on calls that will all 400.
+        if (errorKind === 'credit_low') {
+          creditLowSeen = true
+          break
+        }
+        continue
+      }
+
+      // Got a real response — count it against the attempt budget whether
+      // it found the number or not (a low-confidence miss is still a used
+      // credit and repeatedly re-asking is unlikely to change the answer).
+      await db.economicEvent.update({
+        where: { id: ev.id },
+        data:  { searchAttempts: { increment: 1 } },
+      })
+
+      const entry = { event: ev.event, currency: ev.currency, applied: false, confidence: result.confidence, actual: result.actual }
+      fetched.push(entry)
+
+      if (result.actual === null || result.confidence !== 'high') {
+        console.log(`[econ-news:fetch] ${ev.currency} ${ev.event} → no confident actual (conf=${result.confidence}, actual=${result.actual ?? 'null'}, source=${result.source})`)
+        continue
+      }
+
+      try {
+        await publishActual({
+          eventId:  ev.id,
+          actual:   result.actual,
+          editedBy: `agent:web-search (${result.source})`.slice(0, 200),
+        })
+        entry.applied = true
+        console.log(`[econ-news:fetch] ${ev.currency} ${ev.event} → applied ${result.actual} (source: ${result.source})`)
+      } catch (err) {
+        console.error(`[econ-news:fetch] publishActual failed for ${ev.id}:`, err)
+      }
+    }
+
+    // Alert admin once when the Anthropic balance is depleted. Throttled to
+    // one alert per 6 hours so a persistent zero-balance state doesn't spam
+    // the bell every cron tick. Auto-fetch has been silent-broken for a
+    // day at a time waiting for someone to notice — this closes that gap.
+    if (creditLowSeen) {
+      const setting = await db.adminSetting.findUnique({ where: { key: 'anthropic_credit_alert_at' } })
+      const lastAlert = setting?.value ? new Date(setting.value as string).getTime() : 0
+      const SIX_HOURS = 6 * 60 * 60 * 1000
+      if (Date.now() - lastAlert > SIX_HOURS) {
+        await alertAdmins({
+          linkUrl: 'https://console.anthropic.com/settings/billing',
+          subject: 'Anthropic credits depleted — calendar auto-fetch is silent',
+          message: `The FM News auto-fetch is failing on every call because the Anthropic account balance is too low. Calendar releases are being posted without their actual figures. Top up at https://console.anthropic.com/settings/billing to resume auto-fetch on the next cron tick.`,
+          telegramHtml:
+            `🚨 <b>Anthropic credits depleted</b>\n\n` +
+            `The FM News auto-fetch is failing on every call.\n` +
+            `Calendar releases posting without figures.\n\n` +
+            `🔗 https://console.anthropic.com/settings/billing`,
+        }).catch(e => console.error('[econ-news] credit alert failed:', e))
+        await db.adminSetting.upsert({
+          where:  { key: 'anthropic_credit_alert_at' },
+          create: { key: 'anthropic_credit_alert_at', value: new Date().toISOString() },
+          update: { value: new Date().toISOString() },
+        }).catch(() => {})
+      }
+    }
+  }
+
   // Hard-delete posts past their 24 hours. Runs every tick: the query is
   // indexed on expiresAt and the row count is small, so there is no reason to
   // defer it to a daily job. Comments and likes cascade.
@@ -244,5 +417,6 @@ export async function GET(req: Request) {
     scanned:   events.length,
     announced: newlyReleased.length,
     events:    newlyReleased.map(r => `${r.currency} ${r.event}`),
+    fetched,
   })
 }

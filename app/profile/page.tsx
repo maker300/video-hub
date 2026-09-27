@@ -4,6 +4,7 @@ import { useSession } from 'next-auth/react'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { courseModules as modules, totalLessons } from '@/lib/courseData'
+import AutoTradeCard from '@/components/AutoTradeCard'
 
 interface ProgressData {
   completedLessons: string[]
@@ -172,6 +173,9 @@ export default function ProfilePage() {
             })}
           </div>
         </div>
+
+        {/* MT4/5 auto-execute */}
+        <AutoTradeCard />
 
         {/* Achievement badges */}
         <div>

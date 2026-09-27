@@ -9,10 +9,25 @@ interface GateOverlayProps {
   allModules: Module[]
   prev: { moduleId: string; lessonId: string } | null
   next: { moduleId: string; lessonId: string } | null
+  /**
+   * 'signin'   — visitor isn't logged in (original behaviour)
+   * 'purchase' — logged in, but hasn't bought the course
+   */
+  mode?: 'signin' | 'purchase'
+  /** Price in pence for this user. Only used in 'purchase' mode. */
+  price?: number
+  /** True when they qualify for the reduced existing-member price. */
+  legacy?: boolean
+  totalLessons?: number
 }
 
-export default function GateOverlay({ lesson, module, allModules, prev, next }: GateOverlayProps) {
+export default function GateOverlay({
+  lesson, module, allModules, prev, next,
+  mode = 'signin', price = 10000, legacy = false, totalLessons = 72,
+}: GateOverlayProps) {
   void prev; void next // kept for future use
+
+  const priceLabel = `£${(price / 100).toFixed(price % 100 === 0 ? 0 : 2)}`
 
   return (
     <div className="min-h-screen bg-[#080e1a] text-white flex flex-col">
@@ -56,29 +71,70 @@ export default function GateOverlay({ lesson, module, allModules, prev, next }: 
                 Module {module.moduleNumber} · {module.title}
               </div>
               <h2 className="text-xl font-bold text-white mb-2">{lesson.title}</h2>
-              <p className="text-sm text-gray-400 mb-6">
-                Create a free account to unlock this lesson and all{' '}
-                <span className="text-white font-medium">72 lessons</span> in the full course.
-              </p>
 
-              <div className="space-y-3">
-                <Link
-                  href={`/auth/signup?callbackUrl=/course/${module.id}/${lesson.id}`}
-                  className="block w-full py-3 rounded-lg bg-[#1D9E75] hover:bg-[#17856A] text-white font-semibold text-sm transition"
-                >
-                  Create free account
-                </Link>
-                <Link
-                  href={`/auth/signin?callbackUrl=/course/${module.id}/${lesson.id}`}
-                  className="block w-full py-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-medium transition"
-                >
-                  Sign in
-                </Link>
-              </div>
+              {mode === 'purchase' ? (
+                <>
+                  <p className="text-sm text-gray-400 mb-1">
+                    Unlock this lesson and all{' '}
+                    <span className="text-white font-medium">{totalLessons} lessons</span> with one-off
+                    lifetime access.
+                  </p>
+                  <div className="my-5">
+                    <div className="text-3xl font-black text-white">{priceLabel}</div>
+                    {legacy && (
+                      <div className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2.5 py-1">
+                        Existing-member price · normally £100
+                      </div>
+                    )}
+                    <p className="text-[11px] text-gray-600 mt-2">One payment · no subscription</p>
+                  </div>
 
-              <p className="text-xs text-gray-600 mt-4">
-                No credit card required · Free forever for the first 3 lessons
-              </p>
+                  <div className="space-y-3">
+                    <Link
+                      href="/course/purchase"
+                      className="block w-full py-3 rounded-lg bg-[#1D9E75] hover:bg-[#17856A] text-white font-semibold text-sm transition"
+                    >
+                      Get full access — {priceLabel}
+                    </Link>
+                    <Link
+                      href="/course"
+                      className="block w-full py-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-medium transition"
+                    >
+                      Back to curriculum
+                    </Link>
+                  </div>
+
+                  <p className="text-xs text-gray-600 mt-4">
+                    Includes 4 weekly live calls + 10 bonus tokens · First lesson stays free
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-400 mb-6">
+                    Sign in to continue this lesson and see the full{' '}
+                    <span className="text-white font-medium">{totalLessons}-lesson</span> curriculum.
+                  </p>
+
+                  <div className="space-y-3">
+                    <Link
+                      href={`/auth/signup?callbackUrl=/course/${module.id}/${lesson.id}`}
+                      className="block w-full py-3 rounded-lg bg-[#1D9E75] hover:bg-[#17856A] text-white font-semibold text-sm transition"
+                    >
+                      Create free account
+                    </Link>
+                    <Link
+                      href={`/auth/signin?callbackUrl=/course/${module.id}/${lesson.id}`}
+                      className="block w-full py-3 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-medium transition"
+                    >
+                      Sign in
+                    </Link>
+                  </div>
+
+                  <p className="text-xs text-gray-600 mt-4">
+                    Free account · First lesson free · 10 FM Trader tokens on signup
+                  </p>
+                </>
+              )}
             </div>
           </div>
         </main>

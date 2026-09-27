@@ -81,15 +81,26 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials?.password) return null
 
         // ── Admin special case ─────────────────────────────────────────────────
-        // Disabled if ADMIN_EMAIL / ADMIN_PASSWORD env vars are not set
+        // Disabled if ADMIN_EMAIL / ADMIN_PASSWORD env vars are not set.
+        //
+        // The id returned here MUST be a real User row's id, not a bare
+        // literal — anything keyed off userId via a foreign key (evaluations,
+        // token balances, sim positions...) would otherwise fail to attach to
+        // this login at all. Upsert so this works even before the row exists.
         if (ADMIN_USERNAME && ADMIN_PASSWORD &&
             credentials.email.trim().toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
           if (!safeEqual(credentials.password, ADMIN_PASSWORD)) return null
+          const adminEmail = 'admin@forexmastery.internal'
+          const adminUser = await prisma.user.upsert({
+            where:  { email: adminEmail },
+            update: { role: 'admin' },
+            create: { email: adminEmail, name: 'Admin', role: 'admin' },
+          })
           return {
-            id:    'admin',
-            email: 'admin@forexmastery.internal',
-            name:  'Admin',
-            image: null,
+            id:    adminUser.id,
+            email: adminUser.email,
+            name:  adminUser.name ?? 'Admin',
+            image: adminUser.image,
             role:  'admin',
           }
         }

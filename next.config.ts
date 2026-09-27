@@ -7,7 +7,8 @@ import type { NextConfig } from 'next'
 //   img-src     'self' data: blob: https: — images from same origin + data URIs + any HTTPS
 //   font-src    'self' — fonts from same origin
 //   connect-src 'self' https://api.stripe.com wss: — API calls + Stripe + WebSockets
-//   frame-src   https://js.stripe.com https://hooks.stripe.com — Stripe payment iframes
+//   frame-src   https://js.stripe.com https://hooks.stripe.com https://www.youtube-nocookie.com https://www.youtube.com
+//               — Stripe payment iframes + YouTube embeds for admin video posts on the feed
 //   object-src  'none' — block Flash/plugins entirely
 //   base-uri    'self' — prevent base tag hijacking
 const CSP = [
@@ -17,7 +18,9 @@ const CSP = [
   "img-src 'self' data: blob: https:",
   "font-src 'self'",
   "connect-src 'self' https://api.stripe.com wss:",
-  "frame-src https://js.stripe.com https://hooks.stripe.com",
+  // YouTube: we embed videos via /embed on youtube-nocookie.com. The player
+  // internally can also load off youtube.com, so both hosts are allowed.
+  "frame-src https://js.stripe.com https://hooks.stripe.com https://www.youtube-nocookie.com https://www.youtube.com",
   "object-src 'none'",
   "base-uri 'self'",
 ].join('; ')

@@ -244,14 +244,20 @@ export function buildWelcomeEmail(name: string | null): string {
       ${firstName ? `Hey ${firstName},` : 'Hey,'}
     </p>
     <p style="margin:0 0 20px;font-size:15px;color:#374151;line-height:1.7">
-      Welcome to <strong>Forex Mastery</strong>! We've activated a <strong>free 1-month trial</strong> on your account — you have full access to FM Trader analysis, live signals, and all pair insights for the next 30 days.
+      Welcome to <strong>Forex Mastery</strong>! We've credited <strong>10 FM Trader tokens</strong> to your account — one token runs one prediction on any instrument, so that's 10 free analyses to get you started.
     </p>
     <p style="margin:0 0 20px;font-size:15px;color:#374151;line-height:1.7">
       Head to the <strong>Analysis</strong> page to run your first FM Trader prediction.
     </p>
+
+    <p style="margin:0 0 20px;font-size:13px;color:#9ca3af;line-height:1.6">
+      One housekeeping note: accounts with no sign-in for 6 months are closed automatically and their
+      data deleted. We'll email you 14 days beforehand, and signing in is all it takes to keep it.
+      Accounts with course access or any token purchase are never closed.
+    </p>
     <p style="margin:0 0 0;font-size:15px;color:#374151">— The Forex Mastery Team</p>
   `
-  return wrap('Welcome to Forex Mastery — your free 1-month trial is active', body)
+  return wrap('Welcome to Forex Mastery — 10 free FM Trader tokens are in your account', body)
 }
 
 export function buildWelcomeText(name: string | null): string {
@@ -259,11 +265,15 @@ export function buildWelcomeText(name: string | null): string {
   return [
     `${firstName ? `Hey ${firstName},` : 'Hey,'}`,
     ``,
-    `Welcome to Forex Mastery! We've activated a free 1-month trial on your account.`,
-    `You have full access to FM Trader analysis, live signals, and all pair insights for the next 30 days.`,
+    `Welcome to Forex Mastery! We've credited 10 FM Trader tokens to your account.`,
+    `One token runs one prediction on any instrument — that's 10 free analyses to get you started.`,
     ``,
     `Head to the Analysis page to run your first FM Trader prediction:`,
     `${BASE_URL}/analysis`,
+    ``,
+    `One housekeeping note: accounts with no sign-in for 6 months are closed automatically`,
+    `and their data deleted. We'll email you 14 days beforehand, and signing in keeps it.`,
+    `Accounts with course access or any token purchase are never closed.`,
     ``,
     `— The Forex Mastery Team`,
   ].join('\n')

@@ -56,27 +56,52 @@ export async function GET(req: Request) {
   const fiveHoursAgo  = new Date(now.getTime() -  5 * 60 * 60 * 1000)
 
   // ── 1. Expire predictions past their validity window ─────────────────────
-  // Fetch first so we can create outcome notifications, then update.
+  // Fetch first so we can decide per-prediction whether this is a true expiry
+  // or a partial-profit resolution. If the move_sl_breakeven advisory ever
+  // fired for a trade — meaning price got to at least 50% of the way to TP1
+  // and the user was told to take partial profit — then hitting the expiry
+  // clock without a TP or SL is not a neutral timeout; the partial that was
+  // banked earlier gives it a positive net outcome. Recorded as
+  // `partial_profit`, exactly like the SL-reversal case.
   const newlyExpired = await prisma.fMPrediction.findMany({
     where:  { outcome: 'pending', expiresAt: { lt: now } },
-    select: { id: true, userId: true, slug: true, display: true, decision: true, priceAtCall: true },
+    select: {
+      id: true, userId: true, slug: true, display: true, decision: true, priceAtCall: true,
+      tradeUpdates: { where: { type: 'move_sl_breakeven' }, select: { id: true }, take: 1 },
+    },
   })
   if (newlyExpired.length > 0) {
-    await prisma.fMPrediction.updateMany({
-      where: { id: { in: newlyExpired.map(p => p.id) } },
-      data:  { outcome: 'expired', outcomeAt: now },
-    })
+    const partialIds = newlyExpired.filter(p => p.tradeUpdates.length > 0).map(p => p.id)
+    const expiredIds = newlyExpired.filter(p => p.tradeUpdates.length === 0).map(p => p.id)
+
+    if (partialIds.length > 0) {
+      await prisma.fMPrediction.updateMany({
+        where: { id: { in: partialIds } },
+        data:  { outcome: 'partial_profit', outcomeAt: now },
+      })
+    }
+    if (expiredIds.length > 0) {
+      await prisma.fMPrediction.updateMany({
+        where: { id: { in: expiredIds } },
+        data:  { outcome: 'expired', outcomeAt: now },
+      })
+    }
+
     for (const p of newlyExpired) {
+      const isPartial = p.tradeUpdates.length > 0
       // Bell notification — silent expiry is confusing; the user should know
-      // their prediction timed out without hitting TP or SL.
+      // their prediction timed out without hitting TP or SL. Partial-profit
+      // resolutions get their own copy so it's clear this isn't a loss.
       await prisma.tradeUpdate.create({
         data: {
           predictionId: p.id,
           userId:       p.userId,
           slug:         p.slug,
           display:      p.display,
-          type:         'expired',
-          message:      `${p.decision} ${p.display} prediction expired without reaching TP or SL. The validity window has passed — re-run FM Trader if you still want to trade this pair.`,
+          type:         isPartial ? 'partial_profit' : 'expired',
+          message:      isPartial
+            ? `${p.decision} ${p.display} closed at expiry without reaching TP or SL. Marked as partial profit — the break-even advisory fired earlier, so the partial you were advised to take at the ~50%-to-TP1 mark banked gains before the trade timed out.`
+            : `${p.decision} ${p.display} prediction expired without reaching TP or SL. The validity window has passed — re-run FM Trader if you still want to trade this pair.`,
           currentPrice: p.priceAtCall,
         },
       }).catch(() => { /* unique constraint dupe — ignore */ })
@@ -263,9 +288,13 @@ export async function GET(req: Request) {
     }
 
     // Determine effective SL level and outcome label based on any trade advisories.
-    // trail_sl fired → user locked profit near TP1; if price drops back, count as tp1_hit.
-    // move_sl_breakeven fired → user moved SL to entry; if price drops back, count as expired.
-    // No advisory → original SL, outcome = sl_hit.
+    //   trail_sl        → user locked profit near TP1; if price drops back, count as tp1_hit.
+    //   move_sl_breakeven → advisory told the user to take partial profit and move SL to
+    //                       break-even. We assume the partial was taken, so a subsequent
+    //                       hit on the ORIGINAL stop loss still nets a partial win — the
+    //                       gains from the partial exit already banked. The trade is
+    //                       scored as `partial_profit`, not `sl_hit`.
+    //   No advisory     → original SL, outcome = sl_hit.
     const trailUpdate = pred.tradeUpdates.find(u => u.type === 'trail_sl')
     const beUpdate    = pred.tradeUpdates.find(u => u.type === 'move_sl_breakeven')
     let effectiveSL: number
@@ -274,24 +303,83 @@ export async function GET(req: Request) {
       effectiveSL = trailUpdate.suggestedSL
       slOutcome   = 'tp1_hit'   // trailed stop exits with profit
     } else if (beUpdate?.suggestedSL != null) {
-      effectiveSL = beUpdate.suggestedSL
-      slOutcome   = 'expired'   // break-even exit, no win no loss
+      // Keep the ORIGINAL SL as the trigger — user was told to take partial
+      // profit at the ~50%-to-TP1 mark, so even if price wicks all the way
+      // back to the original stop, they've already banked something.
+      effectiveSL = pred.stopLoss
+      slOutcome   = 'partial_profit'
     } else {
       effectiveSL = pred.stopLoss
       slOutcome   = 'sl_hit'
     }
 
+    // ── Outcome detection ────────────────────────────────────────────────
+    // Use the day's range (dayHigh / dayLow) as well as the current price
+    // to catch WICKS that touched TP or SL between check-outcomes runs and
+    // then reverted before the next check. Without this, FX pairs (which
+    // are more mean-reverting than crypto/commodities and have smaller
+    // intraday moves) rarely register a hit at the exact check moment and
+    // sit pending until the expiry sweep marks them 'expired' — that's why
+    // FX and index predictions almost never got a resolved outcome.
+    //
+    // IMPORTANT: Yahoo's regularMarketDayHigh / regularMarketDayLow is the
+    // CURRENT UTC day's range, which includes intraday activity from BEFORE
+    // the prediction was created. A prediction born at 11:28 UTC and checked
+    // moments later was being marked sl_hit off a wick that happened at
+    // 03:00 UTC — hours before the trade existed. To avoid falsely closing
+    // fresh predictions on pre-existing wicks, only use dayHigh/dayLow when
+    // the prediction was CREATED before today's UTC midnight; same-day
+    // predictions resolve on current-price only. Between-check wicks on
+    // same-day predictions can be missed by this — accepted tradeoff, since
+    // check-outcomes runs every ~4h and current-price catches the common
+    // case where price sits at or beyond the level.
+    const todayUtcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+    const useDayRange = new Date(pred.createdAt).getTime() < todayUtcMidnight.getTime()
+
+    // When BOTH SL and a TP were touched in the same day, we can't know
+    // which happened first from the day's range alone, so we use CURRENT
+    // price as the tiebreaker: if price is currently past TP, the trade
+    // is still on the winning side (TP was likely the last touch); if it
+    // is past SL, SL was likely the last touch; otherwise we take the
+    // conservative view and mark it a stop-out.
     if (isBuy) {
-      if (price <= effectiveSL)   outcome = slOutcome
-      else if (price >= pred.tp3) outcome = 'tp3_hit'
-      else if (price >= pred.tp2) outcome = 'tp2_hit'
-      else if (price >= pred.tp1) outcome = 'tp1_hit'
+      const slHit  = price <= effectiveSL || (useDayRange && dayLow  <= effectiveSL)
+      const tp1Hit = price >= pred.tp1    || (useDayRange && dayHigh >= pred.tp1)
+      const tp2Hit = price >= pred.tp2    || (useDayRange && dayHigh >= pred.tp2)
+      const tp3Hit = price >= pred.tp3    || (useDayRange && dayHigh >= pred.tp3)
+
+      if (slHit && tp1Hit) {
+        // Both touched — disambiguate with current price
+        if (price >= pred.tp1) {
+          outcome = tp3Hit && price >= pred.tp3 ? 'tp3_hit'
+                  : tp2Hit && price >= pred.tp2 ? 'tp2_hit'
+                  : 'tp1_hit'
+        } else {
+          outcome = slOutcome
+        }
+      } else if (slHit)      outcome = slOutcome
+      else if (tp3Hit)       outcome = 'tp3_hit'
+      else if (tp2Hit)       outcome = 'tp2_hit'
+      else if (tp1Hit)       outcome = 'tp1_hit'
     } else {
-      // SELL
-      if (price >= effectiveSL)   outcome = slOutcome
-      else if (price <= pred.tp3) outcome = 'tp3_hit'
-      else if (price <= pred.tp2) outcome = 'tp2_hit'
-      else if (price <= pred.tp1) outcome = 'tp1_hit'
+      // SELL — mirror of the BUY logic
+      const slHit  = price >= effectiveSL || (useDayRange && dayHigh >= effectiveSL)
+      const tp1Hit = price <= pred.tp1    || (useDayRange && dayLow  <= pred.tp1)
+      const tp2Hit = price <= pred.tp2    || (useDayRange && dayLow  <= pred.tp2)
+      const tp3Hit = price <= pred.tp3    || (useDayRange && dayLow  <= pred.tp3)
+
+      if (slHit && tp1Hit) {
+        if (price <= pred.tp1) {
+          outcome = tp3Hit && price <= pred.tp3 ? 'tp3_hit'
+                  : tp2Hit && price <= pred.tp2 ? 'tp2_hit'
+                  : 'tp1_hit'
+        } else {
+          outcome = slOutcome
+        }
+      } else if (slHit)      outcome = slOutcome
+      else if (tp3Hit)       outcome = 'tp3_hit'
+      else if (tp2Hit)       outcome = 'tp2_hit'
+      else if (tp1Hit)       outcome = 'tp1_hit'
     }
 
     if (outcome) {
@@ -309,10 +397,11 @@ export async function GET(req: Request) {
       const dec = price >= 100 ? 2 : price >= 1 ? 4 : 5
       const fmt = (n: number) => n.toFixed(dec)
       const outcomeMessage =
-          outcome === 'tp3_hit'  ? `${pred.decision} ${pred.display} hit TP3 (${fmt(pred.tp3)}) — full target reached at price ${fmt(price)}. Maximum reward captured.`
-        : outcome === 'tp2_hit' ? `${pred.decision} ${pred.display} hit TP2 (${fmt(pred.tp2)}) at price ${fmt(price)}. Trail stop loss aggressively and let TP3 run if structure supports it.`
-        : outcome === 'tp1_hit' ? `${pred.decision} ${pred.display} hit TP1 (${fmt(pred.tp1)}) at price ${fmt(price)}. ${trailUpdate ? 'Trailed stop locked in profit.' : beUpdate ? 'Break-even stop exited the trade flat — no loss.' : 'Move stop loss to break-even and let the remainder run.'}`
-        : outcome === 'sl_hit'  ? `${pred.decision} ${pred.display} hit Stop Loss (${fmt(pred.stopLoss)}) at price ${fmt(price)}. Trade closed at planned risk — review setup quality before re-entering.`
+          outcome === 'tp3_hit'         ? `${pred.decision} ${pred.display} hit TP3 (${fmt(pred.tp3)}) — full target reached at price ${fmt(price)}. Maximum reward captured.`
+        : outcome === 'tp2_hit'         ? `${pred.decision} ${pred.display} hit TP2 (${fmt(pred.tp2)}) at price ${fmt(price)}. Trail stop loss aggressively and let TP3 run if structure supports it.`
+        : outcome === 'tp1_hit'         ? `${pred.decision} ${pred.display} hit TP1 (${fmt(pred.tp1)}) at price ${fmt(price)}. ${trailUpdate ? 'Trailed stop locked in profit.' : beUpdate ? 'Break-even stop exited the trade flat — no loss.' : 'Move stop loss to break-even and let the remainder run.'}`
+        : outcome === 'partial_profit'  ? `${pred.decision} ${pred.display} reversed after the break-even advisory and closed at Stop Loss (${fmt(pred.stopLoss)}). Marked as partial profit — the partial you were advised to take at the ~50%-to-TP1 mark banked the gains before this pullback.`
+        : outcome === 'sl_hit'          ? `${pred.decision} ${pred.display} hit Stop Loss (${fmt(pred.stopLoss)}) at price ${fmt(price)}. Trade closed at planned risk — review setup quality before re-entering.`
         : null
       if (outcomeMessage) {
         updates.push(
@@ -342,10 +431,15 @@ export async function GET(req: Request) {
         // setup hitting TP1 half the time scored -0.25. Every feature drifted
         // negative regardless of real performance, and the resulting all-negative
         // state was fed to the model as "these conditions historically lose".
-        const outcomeVal = outcome === 'sl_hit'  ? -1.0
-          : outcome === 'tp3_hit' ? +1.5
-          : outcome === 'tp2_hit' ? +1.25
-          : outcome === 'tp1_hit' ? +1.0
+        const outcomeVal = outcome === 'sl_hit'         ? -1.0
+          : outcome === 'tp3_hit'                       ? +1.5
+          : outcome === 'tp2_hit'                       ? +1.25
+          : outcome === 'tp1_hit'                       ? +1.0
+          // Partial-profit: a mild positive signal for the learner. The setup
+          // got price to the halfway point (real strength), but the trade
+          // couldn't hold. Small-plus, not a full win — 0.3 keeps it clearly
+          // above `expired` (0) and well below `tp1_hit` (1.0).
+          : outcome === 'partial_profit'                ? +0.3
           : 0
         // Fire-and-forget — never block outcome resolution on learning.
         // Learner is binned by horizon so swing outcomes don't pollute intraday weights.
@@ -539,7 +633,7 @@ export async function GET(req: Request) {
     })
     if (breakEvenAdvice && !cancelAdvice) advisories.push({
       type:       'move_sl_breakeven',
-      message:    `Price (${fmt(price)}) has moved ${Math.round(((isBuy ? price - entry : entry - price) / tp1Dist) * 100)}% toward TP1. Consider moving your stop loss to break even at ${fmt(suggestedBE)} to protect the trade.`,
+      message:    `Price (${fmt(price)}) has moved ${Math.round(((isBuy ? price - entry : entry - price) / tp1Dist) * 100)}% toward TP1. Consider taking partial profit here and moving your stop loss to break even at ${fmt(suggestedBE)} to lock in gains while letting the rest run.`,
       suggestedSL: suggestedBE,
       urgent:     false,
     })

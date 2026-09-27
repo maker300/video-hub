@@ -130,7 +130,7 @@ export default async function CourseDashboardPage() {
                     className="flex items-center justify-center gap-2 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all mb-4 text-sm"
                   >
                     <Play className="w-4 h-4 fill-white" />
-                    Start Course Now
+                    Start free preview
                   </Link>
                   <div className="space-y-3">
                     {[
@@ -139,6 +139,7 @@ export default async function CourseDashboardPage() {
                       { label: 'Duration',       value: `${Math.round(totalDuration / 60)}+ hours` },
                       { label: 'Skill Level',    value: 'Beginner → Advanced' },
                       { label: 'Access',         value: 'Lifetime' },
+                      { label: 'Price',          value: 'One-off \u00a3100' },
                     ].map(item => (
                       <div key={item.label} className="flex justify-between text-sm">
                         <span className="text-gray-500">{item.label}</span>

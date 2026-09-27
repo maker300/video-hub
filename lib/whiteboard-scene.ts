@@ -88,6 +88,12 @@ Narration for this segment:
 
 Build the whiteboard scene JSON.`
 
+  // Admin kill switch — perfFlags.whiteboardScene. Off = skip scene call,
+  // caller falls back to a plain Imagen generation without scene structure.
+  const { getPerfFlags } = await import('@/lib/perf-flags')
+  const flags = await getPerfFlags()
+  if (!flags.whiteboardScene) return null
+
   try {
     const msg = await anthropic.messages.create({
       model:      'claude-haiku-4-5-20251001',  // fast + cheap; scene gen is structured

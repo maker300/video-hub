@@ -171,6 +171,14 @@ function SignUpContent() {
           <span className="text-gray-400">Privacy Policy</span>
         </p>
 
+        {/* Dormancy policy disclosed up front, not buried in terms — users
+            are told before they hand over an email that the account has a
+            use-it-or-lose-it clock on it. */}
+        <p className="text-center text-[11px] text-gray-600 mt-3 leading-relaxed">
+          Includes 10 free FM Trader tokens. Accounts unused for 6 months are closed automatically
+          (we email you 14 days first). Accounts with course access or any token purchase are never closed.
+        </p>
+
         <p className="text-center text-sm text-gray-500 mt-4">
           Already have an account?{' '}
           <Link href="/auth/signin" className="text-[#1D9E75] hover:underline font-medium">

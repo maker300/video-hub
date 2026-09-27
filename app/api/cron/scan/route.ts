@@ -9,7 +9,8 @@ import { sendBulkEmail } from '@/lib/email'
 import { buildSignalEmail, buildSignalText } from '@/lib/email-templates'
 import { calcLotSize, SLUG_TO_MT4 } from '@/lib/metaapi'
 import type { FMTraderRequest, FMTraderResponse, SessionSlotId } from '@/lib/fm-trader-types'
-import { runAnalysis } from '@/app/api/fm-trader/route'
+import { runAnalysis, recalcLevels } from '@/app/api/fm-trader/route'
+import { getPairTuning } from '@/lib/pair-tuning'
 import { getPerfFlags } from '@/lib/perf-flags'
 import { Prisma } from '@prisma/client'
 
@@ -182,7 +183,28 @@ export async function GET(req: Request) {
       if (!mdRes.ok) throw new Error(`Market data ${slug}: ${mdRes.status}`)
       const data = await mdRes.json() as FMTraderRequest
 
-      const analysis = runAnalysis({ ...data, sessionSlot: slotId, tradeHorizon: horizon })
+      const req      = { ...data, sessionSlot: slotId, tradeHorizon: horizon }
+      const analysis = runAnalysis(req)
+
+      // runAnalysis returns entryZone [0,0] / stopLoss 0 / tp 0 by design —
+      // the levels are computed separately so the POST handler can merge
+      // Claude's structural picks over them. The scanner has no POST handler,
+      // so without this step every SignalAlert, signal email, bell alert and
+      // BrokerTrade row persisted zeros for entry/SL/TP.
+      if (analysis.decision === 'BUY' || analysis.decision === 'SELL') {
+        try {
+          const tuning = await getPairTuning(slug, horizon)
+          const lvl = recalcLevels(req, analysis.decision, analysis.setupGrade ?? 'B', tuning)
+          analysis.entryZone = [lvl.entryLow, lvl.entryHigh]
+          analysis.stopLoss  = lvl.stopLoss
+          analysis.tp1       = lvl.tp1
+          analysis.tp2       = lvl.tp2
+          analysis.tp3       = lvl.tp3
+          analysis.rrRatio   = lvl.rrRatio
+        } catch (e) {
+          console.error(`[scan] level calc failed for ${slug}:`, e)
+        }
+      }
 
       return { slug, display: data.display, analysis, price: data.price }
     })

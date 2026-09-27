@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { useSession } from 'next-auth/react'
+import { Download, Loader2 } from 'lucide-react'
 import { Player, type PlayerRef } from '@remotion/player'
 import { LessonVideo, type SlideCue } from '@/remotion/compositions/LessonVideo'
 
@@ -32,6 +34,11 @@ export default function VideoPlayer({
   const [totalFrames, setTotalFrames] = useState(900)
   const [loadState,   setLoadState]   = useState<LoadState>('loading')
   const [errorMsg,    setErrorMsg]    = useState('')
+
+  const { data: session } = useSession()
+  const isAdmin = (session?.user as { role?: string } | undefined)?.role === 'admin'
+  const [dlState, setDlState] = useState<'idle' | 'working' | 'missing'>('idle')
+  const [dlHint,  setDlHint]  = useState('')
 
   const playerRef    = useRef<PlayerRef>(null)
   // Keep a stable ref to onVideoEnd so the subscription handler never goes stale
@@ -102,6 +109,37 @@ export default function VideoPlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl, cuePoints.length])
 
+  // Admin-only: fetch the rendered MP4 through the gated route and hand it to
+  // the browser as a download. A plain <a href> can't be used because the
+  // route is auth-checked and returns JSON when nothing has been rendered.
+  async function downloadMp4() {
+    setDlState('working'); setDlHint('')
+    try {
+      const res = await fetch(`/api/admin/lesson-video/${lessonId}`)
+      if (res.status === 404) {
+        const info = await res.json()
+        setDlState('missing')
+        setDlHint(info.command ? `Not rendered yet — run: ${info.command}` : 'Not rendered yet.')
+        return
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${lessonId}.mp4`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setDlState('idle')
+    } catch (e) {
+      setDlState('missing')
+      setDlHint(e instanceof Error ? e.message : 'Download failed.')
+    }
+  }
+
   const inputProps = {
     lessonTitle, moduleTitle, moduleNumber, lessonNumber,
     cuePoints, audioUrl, accentColor,
@@ -170,7 +208,30 @@ export default function VideoPlayer({
             <span className="text-red-300/60 truncate">{errorMsg}</span>
           </>
         )}
+
+        {isAdmin && (
+          <button
+            onClick={downloadMp4}
+            disabled={dlState === 'working'}
+            title="Download this lesson as MP4 (admin only)"
+            className="ml-auto shrink-0 inline-flex items-center gap-1.5 rounded-md border border-white/15
+                       bg-white/5 px-2 py-1 text-[11px] font-semibold text-gray-300
+                       hover:bg-white/10 hover:text-white disabled:opacity-50 transition"
+          >
+            {dlState === 'working'
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Download className="w-3.5 h-3.5" />}
+            MP4
+          </button>
+        )}
       </div>
+
+      {isAdmin && dlState === 'missing' && dlHint && (
+        <div className="px-3 py-1.5 bg-amber-500/10 border-t border-amber-500/20
+                        text-[11px] text-amber-200/90 font-mono break-all">
+          {dlHint}
+        </div>
+      )}
     </div>
   )
 }

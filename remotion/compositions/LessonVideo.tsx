@@ -2,6 +2,7 @@
 import {
   AbsoluteFill,
   Audio,
+  Img,
   useCurrentFrame,
   useVideoConfig,
   interpolate,
@@ -12,6 +13,14 @@ import {
 } from 'remotion'
 import { useEffect, useState, useMemo } from 'react'
 import type { SlideCue, SlideType } from '@/lib/lessonParser'
+import { buildSceneSpecs, type SceneSpec } from '@/lib/lesson-scene-spec'
+import { bestDiagram } from '@/lib/lesson-visual-match'
+import { FullScene, SW, SH } from '@/remotion/lesson-visuals/FullScene'
+import { buildBackdropPlan } from '@/lib/scene-backdrop'
+import { artFor } from '@/lib/lesson-scene-art'
+import { normaliseProse } from '@/lib/lesson-scene-spec'
+import { VARIANT_COUNTS } from '@/remotion/lesson-visuals/visuals'
+
 
 // ─── Re-export types so VideoPlayer can import them ───────────────────────────
 
@@ -32,6 +41,9 @@ export interface LessonVideoProps {
   keyPoints?:   KeyPoint[]
   terms?:       Term[]
   accentColor?: string
+  /** Dev-only: render a specific frame regardless of the timeline position,
+   *  so a review harness can tile many moments of one lesson at once. */
+  frameOverride?: number
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -201,6 +213,169 @@ function LessonHeader({ lessonTitle, currentSection, frame, total }: {
   )
 }
 
+// ─── Photographic backdrop ───────────────────────────────────────────────────
+// Sits behind everything, heavily darkened and slowly pushing in. It sets a
+// scene; it never competes with the diagram or the caption.
+
+function SceneBackdrop({ file, frame, cue }: { file: string; frame: number; cue: SlideCue }) {
+  const local = frame - cue.startFrame
+  const len   = cue.endFrame - cue.startFrame
+  const inT   = easeOut(Math.min(local / 26, 1))
+  const outT  = Math.max(1 - (local - (len - 18)) / 18, 0)
+  const op    = Math.min(inT, outT)
+  const push  = 1.06 + Math.min(local / Math.max(len, 1), 1) * 0.07
+
+  return (
+    // No z-index: the backdrop must stay below the slides, which stack at
+    // auto. Giving it z-index 1 painted the dark overlay OVER the scene and
+    // greyed out every title on it.
+    <AbsoluteFill style={{ overflow: 'hidden' }}>
+      <Img
+        src={staticFile(file)}
+        style={{
+          width: '100%', height: '100%', objectFit: 'cover',
+          transform: `scale(${push})`,
+          opacity: op * 0.5,
+        }}
+      />
+      {/* Knock the photo back so text and charts stay legible on top of it. */}
+      <AbsoluteFill style={{
+        background:
+          'linear-gradient(180deg, rgba(8,14,26,0.86) 0%, rgba(8,14,26,0.62) 38%, rgba(8,14,26,0.88) 100%)',
+        opacity: op,
+      }} />
+    </AbsoluteFill>
+  )
+}
+
+// ─── Stage + captions ────────────────────────────────────────────────────────
+// The illustration is the hero: it plays large and centred while the spoken
+// sentence runs underneath as a caption, the way an explainer video reads.
+// Each scene enters with a different move so consecutive scenes don't feel
+// like a slideshow of static boards.
+
+type Transition = 'slide-left' | 'slide-right' | 'slide-up' | 'zoom-in' | 'zoom-out'
+
+const TRANSITIONS: Transition[] = [
+  'slide-left', 'zoom-in', 'slide-up', 'zoom-out', 'slide-right', 'zoom-in',
+]
+
+/** Entrance transform for a scene, plus a slow drift so it never sits still. */
+function stageMotion(local: number, len: number, kind: Transition) {
+  const inT  = easeOut(Math.min(local / 20, 1))
+  const outT = Math.max(1 - (local - (len - 16)) / 16, 0)
+  const op   = Math.min(inT, outT)
+
+  // Ken Burns: a continuous, barely-perceptible push over the whole scene.
+  const drift = Math.min(local / Math.max(len, 1), 1)
+  const kb = 1 + drift * 0.035
+
+  let x = 0, y = 0, scale = kb
+  switch (kind) {
+    case 'slide-left':  x = (1 - inT) * 90;  break
+    case 'slide-right': x = (1 - inT) * -90; break
+    case 'slide-up':    y = (1 - inT) * 70;  break
+    case 'zoom-in':     scale = kb * (0.86 + inT * 0.14); break
+    case 'zoom-out':    scale = kb * (1.16 - inT * 0.16); break
+  }
+  // Ease the exit out as well, so scenes hand over rather than cut.
+  scale *= 0.99 + outT * 0.01
+  return { op, transform: `translate(${x}px, ${y}px) scale(${scale})` }
+}
+
+/** Word-by-word caption bar, like subtitles under the picture. */
+function CaptionBar({ text, frame, cue }: { text: string; frame: number; cue: SlideCue }) {
+  const local = frame - cue.startFrame
+  const len   = cue.endFrame - cue.startFrame
+  const words = text.split(' ').filter(Boolean)
+  if (words.length === 0) return null
+
+  const revealed = wordReveal(local, words.length, len)
+  const op = Math.min(easeOut(local / 16), Math.max(1 - (local - (len - 12)) / 12, 0))
+
+  // Size to the sentence so a long caption stays within its band instead of
+  // growing upward into the illustration.
+  const chars = text.length
+  const fontSize = chars > 190 ? 21 : chars > 130 ? 23 : chars > 80 ? 25 : 28
+
+  return (
+    <div style={{
+      position: 'absolute', left: 0, right: 0, bottom: 0, height: 206,
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      padding: '0 84px 30px',
+      background: 'linear-gradient(180deg, rgba(8,14,26,0) 0%, rgba(8,14,26,0.80) 42%, rgba(8,14,26,0.96) 100%)',
+      opacity: op, zIndex: 12, pointerEvents: 'none',
+    }}>
+      <p style={{
+        margin: 0, textAlign: 'center', fontFamily: FONT,
+        fontSize, lineHeight: 1.4, fontWeight: 600, maxWidth: 1112,
+        textShadow: '0 2px 18px rgba(0,0,0,0.85)',
+      }}>
+        {words.map((w, i) => (
+          <span key={i} style={{
+            color: i < revealed
+              ? (i === revealed - 1 ? '#ffffff' : 'rgba(255,255,255,0.92)')
+              : 'rgba(255,255,255,0.28)',
+          }}>
+            {w}{' '}
+          </span>
+        ))}
+      </p>
+    </div>
+  )
+}
+
+/** One content scene: illustration on stage, narration captioned below. */
+function StageSlide({ cue, frame, visual, index, badge }: {
+  cue: SlideCue; frame: number; visual: SceneSpec | null
+  index: number; badge?: string
+}) {
+  const local = frame - cue.startFrame
+  const len   = cue.endFrame - cue.startFrame
+  const kind  = TRANSITIONS[index % TRANSITIONS.length]
+  const { op, transform } = stageMotion(local, len, kind)
+
+  return (
+    <AbsoluteFill>
+      {/* Stage — the scene owns the full width above the caption band. No
+          card chrome: a bordered box floating mid-frame made every scene look
+          like the same slide with different contents inside it. */}
+      <div style={{
+        position: 'absolute', top: 48, left: 0, right: 0, bottom: 196,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{
+          opacity: op, transform, transformOrigin: 'center center',
+          width: '100%', height: '100%',
+        }}>
+          {visual && (
+            <svg viewBox={`0 0 ${SW} ${SH}`} width="100%" height="100%"
+              preserveAspectRatio="xMidYMid meet" style={{ display: 'block' }}>
+              <FullScene spec={visual} localFrame={local} />
+            </svg>
+          )}
+        </div>
+      </div>
+
+      {badge && (
+        <div style={{
+          position: 'absolute', top: 70, left: 52, opacity: easeOut(local / 18),
+          display: 'inline-flex', alignItems: 'center', gap: 9,
+          background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)',
+          borderRadius: 24, padding: '7px 16px', zIndex: 13,
+        }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: ACCENT }} />
+          <span style={{ color: ACCENT, fontSize: 11, fontWeight: 800, letterSpacing: '0.14em', fontFamily: FONT }}>
+            {badge}
+          </span>
+        </div>
+      )}
+
+      <CaptionBar text={normaliseProse(cue.body || cue.meta || '')} frame={frame} cue={cue} />
+    </AbsoluteFill>
+  )
+}
+
 // ─── SLIDE: Intro ─────────────────────────────────────────────────────────────
 
 function IntroSlide({ cue, frame, fps, moduleNumber, lessonNumber }: {
@@ -307,198 +482,6 @@ function SectionHeaderSlide({ cue, frame, fps, sectionIndex }: {
   )
 }
 
-// ─── SLIDE: Paragraph ─────────────────────────────────────────────────────────
-
-function ParagraphSlide({ cue, frame }: { cue: SlideCue; frame: number }) {
-  const f      = frame - cue.startFrame
-  const op     = slideOpacity(frame, cue)
-  const dur    = cue.endFrame - cue.startFrame
-
-  const header = fadeSlide(f, 0, 16)
-  const text   = fadeSlide(f, 12, 22)
-
-  const isSubHeading = cue.heading === 'Caution'
-  const accent = isSubHeading ? ACCENT_WARM : ACCENT
-
-  const words    = cue.body.split(' ')
-  const revealed = wordReveal(f, words.length, dur)
-
-  // Animated circle (decorative right-hand element)
-  const circleLen = interpolate(f, [0, 100], [0, 754], { extrapolateLeft:'clamp', extrapolateRight:'clamp' })
-
-  return (
-    <AbsoluteFill style={{ opacity:op }}>
-      {/* Decorative ring */}
-      <div style={{ position:'absolute', right:48, top:'50%', transform:'translateY(-50%)', opacity:0.05 }}>
-        <svg width="280" height="280" viewBox="0 0 280 280">
-          <circle cx="140" cy="140" r="130" stroke={accent} strokeWidth="1" fill="none"
-            strokeDasharray={`${circleLen} 817`} />
-          <circle cx="140" cy="140" r="86" stroke={accent} strokeWidth="0.6" fill="none" opacity="0.6" />
-        </svg>
-      </div>
-
-      <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column',
-        justifyContent:'center', padding:'0 88px', paddingTop:52 }}>
-        {/* Section chip */}
-        <div style={{ opacity:header.op, transform:`translateY(${header.y}px)`,
-          display:'inline-flex', alignItems:'center', gap:10, marginBottom:26 }}>
-          <div style={{ width:3, height:20, background:accent, borderRadius:2 }} />
-          <span style={{ color: isSubHeading ? ACCENT_WARM : '#6ee7b7',
-            fontSize:12, fontWeight:700, letterSpacing:'0.1em',
-            textTransform:'uppercase', fontFamily:FONT }}>
-            {cue.heading}
-          </span>
-        </div>
-
-        {/* Body text with word-by-word reveal */}
-        <div style={{ opacity:text.op, transform:`translateY(${text.y}px)`,
-          color:'rgba(255,255,255,0.90)', fontSize:28, lineHeight:1.72,
-          maxWidth:'78%', fontWeight:400, fontFamily:FONT }}>
-          {words.map((word, i) => (
-            <span key={i} style={{
-              opacity: i < revealed ? 1 : 0.07,
-              color:   i < revealed ? (i === revealed - 1 ? '#e2e8f0' : 'rgba(255,255,255,0.86)') : 'transparent',
-            }}>
-              {word}{' '}
-            </span>
-          ))}
-        </div>
-      </div>
-    </AbsoluteFill>
-  )
-}
-
-// ─── SLIDE: Key point ─────────────────────────────────────────────────────────
-
-function KeyPointSlide({ cue, frame, fps, totalPoints }: {
-  cue: SlideCue; frame: number; fps: number; totalPoints: number
-}) {
-  const f   = frame - cue.startFrame
-  const op  = slideOpacity(frame, cue)
-  const sc  = spring({ frame: f, fps, config: { damping: 12, stiffness: 60 } })
-  const dur = cue.endFrame - cue.startFrame
-
-  const num  = fadeSlide(f, 0, 14)
-  const txt  = fadeSlide(f, 14, 22)
-  const meta = fadeSlide(f, 26, 20)
-
-  const pointNum = parseInt(cue.heading, 10)
-
-  const words    = cue.body.split(' ')
-  const revealed = wordReveal(f, words.length, dur)
-
-  return (
-    <AbsoluteFill style={{ opacity:op }}>
-      <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center',
-        padding:'0 88px', paddingTop:52, gap:52 }}>
-        {/* Large number */}
-        <div style={{ opacity:num.op, transform:`scale(${0.65+sc*0.35})`,
-          color:ACCENT, fontSize:128, fontWeight:900, lineHeight:1,
-          flexShrink:0, textShadow:`0 0 60px rgba(29,158,117,0.5)`, fontFamily:FONT }}>
-          {cue.heading}
-        </div>
-
-        <div style={{ flex:1 }}>
-          <div style={{ color:'#6ee7b7', fontSize:11, fontWeight:700,
-            letterSpacing:'0.22em', textTransform:'uppercase',
-            fontFamily:FONT, marginBottom:16, opacity:txt.op }}>
-            Key Point
-          </div>
-
-          <div style={{ color:'#fff', fontSize:30, fontWeight:600,
-            lineHeight:1.55, fontFamily:FONT, transform:`translateY(${txt.y}px)` }}>
-            {words.map((word, i) => (
-              <span key={i} style={{ opacity: i < revealed ? 1 : 0.08 }}>
-                {word}{' '}
-              </span>
-            ))}
-          </div>
-
-          {cue.meta && (
-            <div style={{ opacity:meta.op, transform:`translateY(${meta.y}px)`,
-              color:'rgba(255,255,255,0.55)', fontSize:18, lineHeight:1.6,
-              fontFamily:FONT, marginTop:18,
-              borderLeft:`3px solid ${ACCENT}`, paddingLeft:16 }}>
-              {cue.meta}
-            </div>
-          )}
-
-          {/* Progress dots */}
-          <div style={{ display:'flex', gap:8, marginTop:24 }}>
-            {Array.from({ length: totalPoints }).map((_, i) => (
-              <div key={i} style={{ width: i === pointNum - 1 ? 20 : 7,
-                height:7, borderRadius:3,
-                background: i < pointNum ? ACCENT : 'rgba(255,255,255,0.15)',
-                boxShadow: i < pointNum ? `0 0 8px rgba(29,158,117,0.6)` : 'none' }} />
-            ))}
-          </div>
-        </div>
-      </div>
-    </AbsoluteFill>
-  )
-}
-
-// ─── SLIDE: Term ─────────────────────────────────────────────────────────────
-
-function TermSlide({ cue, frame, fps, termIndex, totalTerms }: {
-  cue: SlideCue; frame: number; fps: number; termIndex: number; totalTerms: number
-}) {
-  const f   = frame - cue.startFrame
-  const op  = slideOpacity(frame, cue)
-  const sc  = spring({ frame: f, fps, config: { damping: 13, stiffness: 75 } })
-  const dur = cue.endFrame - cue.startFrame
-
-  const word = fadeSlide(f, 0, 18)
-  const def  = fadeSlide(f, 18, 24)
-  const barW = interpolate(f, [14, 55], [0, 100], { extrapolateLeft:'clamp', extrapolateRight:'clamp' })
-
-  const defWords = cue.body.split(' ')
-  const revealed = wordReveal(f, defWords.length, dur)
-
-  return (
-    <AbsoluteFill style={{ opacity:op, display:'flex', flexDirection:'column',
-      justifyContent:'center', alignItems:'center' }}>
-      <div style={{ width:'64%', opacity:Math.min(sc,1), transform:`scale(${0.92+sc*0.08})`,
-        background:'rgba(255,255,255,0.038)', border:`1px solid rgba(147,197,253,0.22)`,
-        borderRadius:20, padding:'44px 52px' }}>
-        {/* Counter */}
-        <div style={{ color:ACCENT_COOL, fontSize:10, fontWeight:800,
-          letterSpacing:'0.24em', textTransform:'uppercase',
-          marginBottom:14, opacity:word.op, fontFamily:FONT }}>
-          TERM {termIndex + 1} OF {totalTerms}
-        </div>
-
-        {/* Word */}
-        <div style={{ color:'#fff', fontSize:46, fontWeight:800,
-          marginBottom: cue.body ? 22 : 0,
-          opacity:word.op, transform:`translateY(${word.y}px)`,
-          textShadow:`0 0 40px rgba(147,197,253,0.35)`, fontFamily:FONT }}>
-          {cue.heading}
-        </div>
-
-        {/* Definition word-reveal */}
-        {cue.body && (
-          <div style={{ color:'rgba(255,255,255,0.72)', fontSize:22,
-            lineHeight:1.65, opacity:def.op,
-            transform:`translateY(${def.y}px)`, fontFamily:FONT }}>
-            {defWords.map((word, i) => (
-              <span key={i} style={{ opacity: i < revealed ? 1 : 0.08 }}>
-                {word}{' '}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Accent line */}
-        <div style={{ marginTop:28, height:2,
-          width:`${barW}%`,
-          background:`linear-gradient(90deg, ${ACCENT_COOL}, rgba(147,197,253,0.15))`,
-          borderRadius:2 }} />
-      </div>
-    </AbsoluteFill>
-  )
-}
-
 // ─── SLIDE: Outro ─────────────────────────────────────────────────────────────
 
 function OutroSlide({ cue, frame, fps }: { cue: SlideCue; frame: number; fps: number }) {
@@ -556,8 +539,10 @@ export const LessonVideo: React.FC<LessonVideoProps> = ({
   keyPoints = [],
   terms     = [],
   accentColor,
+  frameOverride,
 }) => {
-  const frame = useCurrentFrame()
+  const liveFrame = useCurrentFrame()
+  const frame = frameOverride ?? liveFrame
   const { fps, durationInFrames } = useVideoConfig()
 
   // Build fallback timeline if no cue points provided
@@ -567,6 +552,18 @@ export const LessonVideo: React.FC<LessonVideoProps> = ({
       : buildFallbackCues(lessonTitle, moduleTitle, keyPoints, terms),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [JSON.stringify(cuePointsProp), lessonTitle, moduleTitle],
+  )
+
+  // One illustration per cue, matched by keyword. Computed once for the whole
+  // timeline rather than per slide, because the matcher needs to see the
+  // sequence to avoid showing the same chart on consecutive slides.
+  // One bespoke card per scene, composed from that scene's own wording.
+  const visualPicks = useMemo(
+    () => buildSceneSpecs(
+      cuePoints, bestDiagram, VARIANT_COUNTS,
+      cue => artFor(lessonTitle, `${cue.heading ?? ''} ${cue.body ?? ''}`),
+    ),
+    [cuePoints, lessonTitle],
   )
 
   // ── Audio preload gate ────────────────────────────────────────────────────
@@ -587,7 +584,26 @@ export const LessonVideo: React.FC<LessonVideoProps> = ({
   }, [])
 
   // ── Active slide ─────────────────────────────────────────────────────────
-  const activeCue = cuePoints.findLast(c => frame >= c.startFrame) ?? cuePoints[0]
+  const activeIdx = Math.max(cuePoints.findLastIndex(c => frame >= c.startFrame), 0)
+  const activeCue = cuePoints[activeIdx] ?? cuePoints[0]
+  const activeVisual = visualPicks[activeIdx] ?? null
+
+  // Backdrops are reserved for the scenes a drawn chart serves least: the
+  // intro and outro, and prose with no structure to illustrate. Planned for
+  // the whole lesson at once so the same photo can't run back to back.
+  const backdropPlan = useMemo(
+    () => buildBackdropPlan(cuePoints.map((c, i) => {
+      const bookend = c.type === 'intro' || c.type === 'outro'
+      return {
+        text: `${c.heading ?? ''} ${c.body ?? ''} ${lessonTitle} ${moduleTitle}`,
+        allow: bookend || visualPicks[i]?.layout === 'quote',
+        bookend,
+        fallbackKey: `${moduleTitle}|${lessonTitle}`,
+      }
+    })),
+    [cuePoints, visualPicks, lessonTitle, moduleTitle],
+  )
+  const activeBackdrop = backdropPlan[activeIdx] ?? null
 
   // Section counters (for section headers and slide context)
   const sectionHeaders = cuePoints.filter(c => c.type === 'section-header')
@@ -596,11 +612,13 @@ export const LessonVideo: React.FC<LessonVideoProps> = ({
   const keyPointCues = cuePoints.filter(c => c.type === 'keypoint')
   const termCues     = cuePoints.filter(c => c.type === 'term')
 
-  const currentSectionName = activeCue.type === 'intro' || activeCue.type === 'outro'
+  // The section heading is often the lesson title verbatim; printing both
+  // sides of the breadcrumb then reads as a duplication bug.
+  const rawSection = activeCue.type === 'intro' || activeCue.type === 'outro'
     ? ''
-    : activeCue.type === 'section-header'
-      ? activeCue.heading
-      : activeCue.heading  // heading = parent section for paragraph/keypoint/term
+    : activeCue.heading
+  const currentSectionName =
+    rawSection.trim().toLowerCase() === lessonTitle.trim().toLowerCase() ? '' : rawSection
 
   return (
     <AbsoluteFill style={{ fontFamily: FONT }}>
@@ -610,6 +628,9 @@ export const LessonVideo: React.FC<LessonVideoProps> = ({
       )}
 
       <Background frame={frame} />
+      {activeBackdrop && (
+        <SceneBackdrop file={activeBackdrop.file} frame={frame} cue={activeCue} />
+      )}
       <ProgressBar frame={frame} total={durationInFrames} />
       <LessonHeader
         lessonTitle={lessonTitle}
@@ -633,27 +654,21 @@ export const LessonVideo: React.FC<LessonVideoProps> = ({
         />
       )}
 
-      {activeCue.type === 'paragraph' && (
-        <ParagraphSlide cue={activeCue} frame={frame} />
-      )}
-
-      {activeCue.type === 'keypoint' && (
-        <KeyPointSlide
-          cue={activeCue} frame={frame} fps={fps}
-          totalPoints={keyPointCues.length}
+      {(activeCue.type === 'paragraph' || activeCue.type === 'keypoint' || activeCue.type === 'term') && (
+        <StageSlide
+          cue={activeCue}
+          frame={frame}
+          visual={activeVisual}
+          index={activeIdx}
+          badge={
+            activeCue.type === 'keypoint'
+              ? `KEY POINT ${activeCue.heading}`
+              : activeCue.type === 'term'
+                ? `TERM · ${activeCue.heading}`
+                : undefined
+          }
         />
       )}
-
-      {activeCue.type === 'term' && (() => {
-        const termIdx = termCues.findIndex(c => c.startFrame === activeCue.startFrame)
-        return (
-          <TermSlide
-            cue={activeCue} frame={frame} fps={fps}
-            termIndex={Math.max(termIdx, 0)}
-            totalTerms={termCues.length}
-          />
-        )
-      })()}
 
       {activeCue.type === 'outro' && (
         <OutroSlide cue={activeCue} frame={frame} fps={fps} />

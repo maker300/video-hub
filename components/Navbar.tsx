@@ -2,15 +2,27 @@
 
 import Link from 'next/link'
 import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
-import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Settings, ChevronDown, Shield, Bell, TrendingDown, Minus, Mail, Zap, CalendarClock, MessagesSquare } from 'lucide-react'
+import { useRouter, usePathname } from 'next/navigation'
+import { TrendingUp, BookOpen, BarChart2, LineChart, Menu, X, User, LogOut, Settings, ChevronDown, Shield, Bell, TrendingDown, Minus, Mail, Zap, MessagesSquare, Video, ArrowLeft } from 'lucide-react'
 import { useSession, signOut } from 'next-auth/react'
 import { getProgress } from '@/lib/progress'
 import { totalLessons } from '@/lib/courseData'
 import { getNotifications, markAllRead, addNotification, patchNotifications, fireSignalBrowserNotification, firePairBrowserNotification, getSeenSignalIds, markSignalsSeen, getPairSubscriptions, type PriceNotification } from '@/lib/price-alerts'
 
+// A broadcast's linkUrl is sometimes an external meeting link (a live
+// trading session), not an internal route — router.push cannot navigate the
+// browser to those, so external links open in a new tab instead.
+function followLink(url: string, router: ReturnType<typeof useRouter>) {
+  if (/^https?:\/\//i.test(url)) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  } else {
+    router.push(url)
+  }
+}
+
 export default function Navbar() {
-  const router = useRouter()
+  const router   = useRouter()
+  const pathname = usePathname()
   const { data: session, status } = useSession()
   const [mobileOpen,    setMobileOpen]    = useState(false)
   const [dropdownOpen,  setDropdownOpen]  = useState(false)
@@ -39,6 +51,41 @@ export default function Navbar() {
   // Single combined poll every 10 min — replaces 3 separate loops to save server CPU
   useEffect(() => {
     if (status !== 'authenticated') return
+
+    // ── Session-scoped storage wipe ─────────────────────────────────────
+    //
+    // localStorage keys like `fm_notifications` and `fm_price_alerts` were
+    // shared across users of the same browser. An admin logging in and out
+    // used to leave their admin-only bell rows (e.g. "Anthropic credits
+    // depleted") in place for whichever user logged in next — a leak the
+    // server-side userId filter can't touch.
+    //
+    // Fix: stamp the current session's email into localStorage. On any
+    // subsequent Navbar mount, if the stamp doesn't match the current
+    // session (different user OR first mount after this deploy shipped, so
+    // no stamp exists yet), wipe the shared notification/alert keys before
+    // the sync-fetch below rebuilds them from the server. First deploy
+    // wipes any existing leaked state exactly once.
+    const currentEmail = session?.user?.email ?? null
+    if (currentEmail) {
+      const stampKey = 'fm_last_session_email'
+      const stored   = localStorage.getItem(stampKey)
+      if (stored !== currentEmail) {
+        localStorage.removeItem('fm_notifications')
+        localStorage.removeItem('fm_price_alerts')
+        localStorage.removeItem('fm_seen_trade_updates')
+        localStorage.removeItem('fm_seen_broadcasts')
+        localStorage.removeItem('fm_seen_signals')
+        localStorage.setItem(stampKey, currentEmail)
+        // Force the React state to re-read the (now empty) localStorage.
+        // Without this the previous session's leaked items remain in state
+        // because refreshNotifs() ran once on mount BEFORE this wipe — the
+        // storage was cleared but the component still showed the stale rows
+        // until the next full page reload. Dispatching the update event
+        // re-triggers refreshNotifs and clears the state.
+        window.dispatchEvent(new CustomEvent('fm-notification-update'))
+      }
+    }
 
     const seenUpdatesKey   = 'fm_seen_trade_updates'
     const seenBroadcastKey = 'fm_seen_broadcasts'
@@ -165,7 +212,7 @@ export default function Navbar() {
       clearInterval(t)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [status])
+  }, [status, session?.user?.email])
 
   const unread = notifications.filter(n => !n.read).length
 
@@ -205,16 +252,50 @@ export default function Navbar() {
     <nav className="sticky top-0 z-50 bg-[#0a0f1a]/95 backdrop-blur-md border-b border-white/10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 group">
-            <TrendingUp className="w-7 h-7 text-emerald-400 group-hover:text-emerald-300 transition-colors" />
-            <span className="text-white font-bold text-lg tracking-tight">
-              Forex<span className="text-emerald-400">Mastery</span>
-            </span>
-          </Link>
+          {/* Logo — a back arrow appears in front of it on every page except
+              home, so there is always a one-tap way back to wherever the
+              user came from without hunting for a browser back button.
+              /course counts as home too — it's the default post-login
+              landing page (see callbackUrl in auth/signin), the "Welcome
+              back" screen. */}
+          <div className="flex items-center gap-1.5">
+            {pathname !== '/' && pathname !== '/course' && (
+              <button
+                onClick={() => router.back()}
+                className="p-1.5 -ml-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 transition"
+                aria-label="Go back"
+                title="Go back"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+            )}
+            <Link href="/" className="flex items-center gap-2 group">
+              <TrendingUp className="w-7 h-7 text-emerald-400 group-hover:text-emerald-300 transition-colors" />
+              <span className="text-white font-bold text-lg tracking-tight">
+                Forex<span className="text-emerald-400">Mastery</span>
+              </span>
+            </Link>
+          </div>
 
-          {/* Desktop nav */}
+          {/* Desktop nav — Analysis / Funded / Feed / Course are shown to
+              signed-out visitors too so they can discover what the platform
+              offers before sign-in. The individual pages still gate content
+              behind auth where appropriate. Progress + Live Trade + Admin
+              stay role-gated (they are meaningless without a session).
+              Calendar is hidden from the menu for now — page still exists. */}
           <div className="hidden md:flex items-center gap-6">
+            <Link href="/analysis" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+              <LineChart className="w-4 h-4" />
+              Analysis
+            </Link>
+            <Link href="/funded" className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition-colors text-sm font-medium">
+              <Zap className="w-4 h-4" />
+              Funded
+            </Link>
+            <Link href="/analysis/feed" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+              <MessagesSquare className="w-4 h-4" />
+              Feed
+            </Link>
             <Link href="/course" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
               <BookOpen className="w-4 h-4" />
               Course
@@ -225,30 +306,10 @@ export default function Navbar() {
                 Progress
               </Link>
             )}
-            {session && (
-              <Link href="/analysis" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
-                <LineChart className="w-4 h-4" />
-                Analysis
-              </Link>
-            )}
-            {session && (
-              <Link href="/analysis/news" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
-                <CalendarClock className="w-4 h-4" />
-                Calendar
-              </Link>
-            )}
-            {session && (
-              <Link href="/analysis/feed" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
-                <MessagesSquare className="w-4 h-4" />
-                Feed
-              </Link>
-            )}
-            {(session?.user?.role === 'team' || session?.user?.role === 'admin') && (
-              <Link href="/analysis/live-trades" className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition-colors text-sm font-medium">
-                <Zap className="w-4 h-4" />
-                Live Trade
-              </Link>
-            )}
+            <Link href="/coaching" className="flex items-center gap-1.5 text-gray-300 hover:text-white transition-colors text-sm font-medium">
+              <Video className="w-4 h-4" />
+              Coaching
+            </Link>
             {session?.user?.role === 'admin' && (
               <Link href="/admin" className="flex items-center gap-1.5 text-amber-400 hover:text-amber-300 transition-colors text-sm font-medium">
                 <Shield className="w-4 h-4" />
@@ -336,7 +397,7 @@ export default function Navbar() {
                                 // second follows the link.
                                 if (needsExpand) { setExpandedNotif(n.id); return }
                                 if (isBroadcast) {
-                                  if (n.linkUrl) router.push(n.linkUrl)
+                                  if (n.linkUrl) followLink(n.linkUrl, router)
                                   return
                                 }
                                 router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`)
@@ -637,7 +698,7 @@ export default function Navbar() {
                                 // second follows the link.
                                 if (needsExpand) { setExpandedNotif(n.id); return }
                                 if (isBroadcast) {
-                                  if (n.linkUrl) router.push(n.linkUrl)
+                                  if (n.linkUrl) followLink(n.linkUrl, router)
                                   return
                                 }
                                 router.push(isTradeUpdate ? `/analysis/${n.slug}?fmtrader=1&history=1` : `/analysis/${n.slug}?fmtrader=1`)
@@ -735,72 +796,65 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* Mobile menu */}
+        {/* Mobile menu — same ordering as desktop nav: services first,
+            personalised (progress + gated) items after. */}
         {mobileOpen && (
           <div className="md:hidden py-4 border-t border-white/10 space-y-3">
             <Link
+              href="/analysis"
+              className="flex items-center gap-2 text-gray-300 hover:text-white px-3 py-3 rounded-lg hover:bg-white/5 transition-all"
+              onClick={() => setMobileOpen(false)}
+            >
+              <LineChart className="w-4 h-4" />
+              <span className="text-sm font-medium">Analysis</span>
+            </Link>
+            <Link
+              href="/funded"
+              className="flex items-center gap-2 text-amber-300 hover:text-amber-200 px-3 py-3 rounded-lg hover:bg-amber-500/10 transition-all"
+              onClick={() => setMobileOpen(false)}
+            >
+              <Zap className="w-4 h-4" />
+              <span className="text-sm font-medium">Funded</span>
+            </Link>
+            <Link
+              href="/analysis/feed"
+              className="flex items-center gap-2 text-gray-300 hover:text-white px-3 py-3 rounded-lg hover:bg-white/5 transition-all"
+              onClick={() => setMobileOpen(false)}
+            >
+              <MessagesSquare className="w-4 h-4" />
+              <span className="text-sm font-medium">Feed</span>
+            </Link>
+            <Link
               href="/course"
-              className="flex items-center gap-2 text-gray-300 hover:text-white px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all"
+              className="flex items-center gap-2 text-gray-300 hover:text-white px-3 py-3 rounded-lg hover:bg-white/5 transition-all"
               onClick={() => setMobileOpen(false)}
             >
               <BookOpen className="w-4 h-4" />
               <span className="text-sm font-medium">Course</span>
             </Link>
-
             {session && (
               <Link
                 href="/profile"
-                className="flex items-center gap-2 text-gray-300 hover:text-white px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all"
+                className="flex items-center gap-2 text-gray-300 hover:text-white px-3 py-3 rounded-lg hover:bg-white/5 transition-all"
                 onClick={() => setMobileOpen(false)}
               >
                 <User className="w-4 h-4" />
-                <span className="text-sm font-medium">Profile</span>
+                <span className="text-sm font-medium">Progress</span>
               </Link>
             )}
-            {session && (
-              <Link
-                href="/analysis"
-                className="flex items-center gap-2 text-gray-300 hover:text-white px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all"
-                onClick={() => setMobileOpen(false)}
-              >
-                <LineChart className="w-4 h-4" />
-                <span className="text-sm font-medium">Analysis</span>
-              </Link>
-            )}
-            {session && (
-              <Link
-                href="/analysis/news"
-                className="flex items-center gap-2 text-gray-300 hover:text-white px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all"
-                onClick={() => setMobileOpen(false)}
-              >
-                <CalendarClock className="w-4 h-4" />
-                <span className="text-sm font-medium">Calendar</span>
-              </Link>
-            )}
-            {session && (
-              <Link
-                href="/analysis/feed"
-                className="flex items-center gap-2 text-gray-300 hover:text-white px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all"
-                onClick={() => setMobileOpen(false)}
-              >
-                <MessagesSquare className="w-4 h-4" />
-                <span className="text-sm font-medium">Feed</span>
-              </Link>
-            )}
-            {(session?.user?.role === 'team' || session?.user?.role === 'admin') && (
-              <Link
-                href="/analysis/live-trades"
-                className="flex items-center gap-2 text-amber-300 hover:text-amber-200 px-2 py-1.5 rounded-lg hover:bg-amber-500/10 transition-all"
-                onClick={() => setMobileOpen(false)}
-              >
-                <Zap className="w-4 h-4" />
-                <span className="text-sm font-medium">Live Trade</span>
-              </Link>
-            )}
+            <Link
+              href="/coaching"
+              className="flex items-center gap-2 text-gray-300 hover:text-white px-3 py-3 rounded-lg hover:bg-white/5 transition-all"
+              onClick={() => setMobileOpen(false)}
+            >
+              <Video className="w-4 h-4" />
+              <span className="text-sm font-medium">Coaching</span>
+            </Link>
+
             {session?.user?.role === 'admin' && (
               <Link
                 href="/admin"
-                className="flex items-center gap-2 text-amber-400 hover:text-amber-300 px-2 py-1.5 rounded-lg hover:bg-amber-500/10 transition-all"
+                className="flex items-center gap-2 text-amber-400 hover:text-amber-300 px-3 py-3 rounded-lg hover:bg-amber-500/10 transition-all"
                 onClick={() => setMobileOpen(false)}
               >
                 <Shield className="w-4 h-4" />
@@ -818,7 +872,7 @@ export default function Navbar() {
             {session ? (
               <button
                 onClick={() => { setMobileOpen(false); signOut({ callbackUrl: '/' }) }}
-                className="flex items-center gap-2 w-full text-red-400 px-2 py-1.5 rounded-lg hover:bg-red-500/10 transition-all text-sm font-medium"
+                className="flex items-center gap-2 w-full text-red-400 px-3 py-3 rounded-lg hover:bg-red-500/10 transition-all text-sm font-medium"
               >
                 <LogOut className="w-4 h-4" />
                 Sign out

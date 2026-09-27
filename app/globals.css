@@ -30,14 +30,32 @@ body {
   overscroll-behavior-y: none;
 }
 
-/* Prevent horizontal overflow globally */
+/* Stop the page-level horizontal rubber-band on iOS Safari without
+ * clipping inner scroll containers.
+ *
+ * Previous attempt used `overflow-x: hidden` + `max-width: 100vw` on both
+ * <html> AND <body>. That killed the rubber-band, but it also:
+ *   - hard-clipped anything visually wider than the viewport (some FM
+ *     Trader rows, wide tables, long prose lines with fixed widths)
+ *   - prevented inner containers with their own `overflow-x: auto` from
+ *     showing the "there's more, scroll me" affordance
+ *
+ * New rule of thumb:
+ *   - <html> owns the page-level scroll box. Prevent horizontal scroll
+ *     there only, so the whole page can't be dragged sideways.
+ *   - <body> stays untouched by us — its intrinsic width matches its
+ *     content, and inner containers that need to scroll horizontally
+ *     still work (tables, code blocks, cards with `overflow-x: auto`).
+ *   - `overscroll-behavior-x: none` on both stops any residual swipe from
+ *     chaining upward into a browser gesture.
+ */
 html {
-  max-width: 100vw;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
 }
 
 body {
-  overflow-x: hidden;
-  max-width: 100vw;
+  overscroll-behavior-x: none;
 }
 
 img, video, svg {

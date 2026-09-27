@@ -378,17 +378,25 @@ function TradeHistoryPanel({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
-  const resolved = records.filter(r => r.outcome && r.outcome !== 'pending' && r.outcome !== 'expired')
-  const wins     = resolved.filter(r => r.outcome === 'tp1_hit' || r.outcome === 'tp2_hit' || r.outcome === 'tp3_hit')
-  const losses   = resolved.filter(r => r.outcome === 'sl_hit')
-  const winRate  = resolved.length > 0 ? Math.round((wins.length / resolved.length) * 100) : null
+  const resolved     = records.filter(r => r.outcome && r.outcome !== 'pending' && r.outcome !== 'expired')
+  // Three-way outcome split: full wins (any TP hit), partial wins (BE-advised
+  // trades that reversed to the original stop after the partial exit banked
+  // gains), and losses (stopped out with no advisory beforehand).
+  const wins         = resolved.filter(r => r.outcome === 'tp1_hit' || r.outcome === 'tp2_hit' || r.outcome === 'tp3_hit')
+  const partialWins  = resolved.filter(r => r.outcome === 'partial_profit')
+  const losses       = resolved.filter(r => r.outcome === 'sl_hit')
+  // Partial wins count as half a win for the aggregate rate — a positive net
+  // outcome, but strictly weaker than a full TP capture.
+  const scoredWins   = wins.length + partialWins.length * 0.5
+  const winRate      = resolved.length > 0 ? Math.round((scoredWins / resolved.length) * 100) : null
 
   function outcomeLabel(outcome: string) {
-    if (outcome === 'tp1_hit') return { label: 'TP1 ✓', color: 'text-emerald-400' }
-    if (outcome === 'tp2_hit') return { label: 'TP2 ✓', color: 'text-emerald-300' }
-    if (outcome === 'tp3_hit') return { label: 'TP3 ✓', color: 'text-green-300' }
-    if (outcome === 'sl_hit')  return { label: 'SL ✗',  color: 'text-red-400' }
-    if (outcome === 'expired') return { label: 'Exp.',  color: 'text-gray-500' }
+    if (outcome === 'tp1_hit')        return { label: 'TP1 ✓',   color: 'text-emerald-400' }
+    if (outcome === 'tp2_hit')        return { label: 'TP2 ✓',   color: 'text-emerald-300' }
+    if (outcome === 'tp3_hit')        return { label: 'TP3 ✓',   color: 'text-green-300' }
+    if (outcome === 'partial_profit') return { label: 'Partial ✓', color: 'text-amber-400' }
+    if (outcome === 'sl_hit')         return { label: 'SL ✗',    color: 'text-red-400' }
+    if (outcome === 'expired')        return { label: 'Exp.',    color: 'text-gray-500' }
     return { label: '—', color: 'text-gray-600' }
   }
 
@@ -426,18 +434,31 @@ function TradeHistoryPanel({ isAdmin }: { isAdmin: boolean }) {
         </button>
       </div>
       {/* Stats bar */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         {[
-          { label: 'Signals', value: String(records.length), color: 'text-white' },
-          { label: 'Win rate', value: winRate !== null ? `${winRate}%` : '—', color: winRate !== null ? (winRate >= 55 ? 'text-emerald-400' : winRate >= 45 ? 'text-amber-400' : 'text-red-400') : 'text-gray-500' },
-          { label: 'Wins',    value: String(wins.length),    color: 'text-emerald-400' },
-          { label: 'Losses',  value: String(losses.length),  color: 'text-red-400' },
+          { label: 'Wins',         value: String(wins.length),        color: 'text-emerald-400' },
+          { label: 'Partial Wins', value: String(partialWins.length), color: 'text-amber-400'   },
+          { label: 'Losses',       value: String(losses.length),      color: 'text-red-400'     },
         ].map(s => (
           <div key={s.label} className="bg-white/[0.04] border border-white/[0.07] rounded-xl p-3 text-center">
             <p className={`text-lg font-black tabular-nums ${s.color}`}>{s.value}</p>
             <p className="text-[9px] text-gray-600 uppercase tracking-wider font-medium mt-0.5">{s.label}</p>
           </div>
         ))}
+      </div>
+      {/* Signals / Win rate — second row so the three-outcome bar above stays
+          uncluttered but the aggregate context is still one glance away. */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="bg-white/[0.04] border border-white/[0.07] rounded-xl p-3 text-center">
+          <p className="text-lg font-black tabular-nums text-white">{String(records.length)}</p>
+          <p className="text-[9px] text-gray-600 uppercase tracking-wider font-medium mt-0.5">Signals</p>
+        </div>
+        <div className="bg-white/[0.04] border border-white/[0.07] rounded-xl p-3 text-center">
+          <p className={`text-lg font-black tabular-nums ${winRate !== null ? (winRate >= 55 ? 'text-emerald-400' : winRate >= 45 ? 'text-amber-400' : 'text-red-400') : 'text-gray-500'}`}>
+            {winRate !== null ? `${winRate}%` : '—'}
+          </p>
+          <p className="text-[9px] text-gray-600 uppercase tracking-wider font-medium mt-0.5">Win rate</p>
+        </div>
       </div>
 
       {/* Table */}

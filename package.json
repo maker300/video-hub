@@ -11,7 +11,8 @@
     "pregenerate:dry": "node scripts/pregenerate.mjs --dry",
     "render-stills": "node scripts/render-stills.mjs",
     "postinstall": "prisma generate",
-    "deploy": "bash deploy.sh"
+    "deploy": "bash deploy.sh",
+    "render:lesson": "node scripts/render-lesson.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
